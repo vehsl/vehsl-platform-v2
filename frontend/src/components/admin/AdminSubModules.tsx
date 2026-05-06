@@ -1,0 +1,551 @@
+// @ts-nocheck -- legacy port; tighten incrementally
+"use client";
+
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
+  Package, Eye, Edit3, Trash2, CheckCircle2, XCircle, Clock,
+  Truck, MapPin, Fuel, AlertTriangle, ArrowRight, Calendar,
+  Settings, Bell, Lock, Palette, Globe, Database, Mail,
+  ChevronRight, ArrowUpRight, TrendingUp, BarChart3, Star,
+  ClipboardCheck, Camera, Download, Upload, FileText, Hash,
+} from "lucide-react";
+import { StatCard } from "./StatCard";
+import { StatusPill } from "./StatusPill";
+import { BounceButton } from "./BounceButton";
+import { ProgressRing } from "./ProgressRing";
+import { CustomAreaChart, HorizontalBarList } from "./CustomCharts";
+
+/*
+ * ════════════════════════════════════════════════════════════
+ *  ADMIN SUB-MODULES — PLATONIC DESIGN
+ *
+ *  Each page answers ONE question clearly:
+ *    Users    → "Who's on the platform?"
+ *    Products → "What's being sold?"
+ *    Logistics→ "How's stuff moving?"
+ *    Quality  → "How good is everything?"
+ *    Settings → "How is the system configured?"
+ * ════════════════════════════════════════════════════════════
+ */
+
+// ─── SHARED ANIMATION ──────────────────────────────────────
+const stagger = {
+  container: { hidden: {}, visible: { transition: { staggerChildren: 0.06 } } },
+  item: { hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.25, 0.46, 0.45, 0.94] } } },
+};
+
+function SectionCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`bg-card rounded-3xl border border-border/40 shadow-[0_1px_3px_rgba(0,0,0,0.04)] p-6 sm:p-8 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN → USERS
+// ════════════════════════════════════════════════════════════
+
+const usersData = [
+  { id: 1, name: "James Rodriguez", email: "james@meridian.com", role: "Buyer", status: "active" as const, lastActive: "2 min ago", avatar: "JR", orders: 142 },
+  { id: 2, name: "Priya Sharma", email: "priya@greenleaf.co", role: "Seller", status: "active" as const, lastActive: "15 min ago", avatar: "PS", orders: 87 },
+  { id: 3, name: "David Chen", email: "david@brightstar.io", role: "Seller", status: "active" as const, lastActive: "1 hr ago", avatar: "DC", orders: 234 },
+  { id: 4, name: "Lisa Park", email: "lisa@freshpack.com", role: "Buyer", status: "pending" as const, lastActive: "3 hrs ago", avatar: "LP", orders: 0 },
+  { id: 5, name: "Robert Kim", email: "robert@atlas.co", role: "Seller", status: "active" as const, lastActive: "5 hrs ago", avatar: "RK", orders: 56 },
+  { id: 6, name: "Sarah Wilson", email: "sarah@logiprime.com", role: "Partner", status: "suspended" as const, lastActive: "2 days ago", avatar: "SW", orders: 18 },
+  { id: 7, name: "Marcus Brown", email: "marcus@tradeco.net", role: "Buyer", status: "active" as const, lastActive: "30 min ago", avatar: "MB", orders: 91 },
+  { id: 8, name: "Ana Garcia", email: "ana@novagoods.com", role: "Seller", status: "review" as const, lastActive: "1 day ago", avatar: "AG", orders: 12 },
+];
+
+const roleColors: Record<string, string> = {
+  Buyer: "#3B82F6", Seller: "#30A46C", Partner: "#D97706", Admin: "#0171E3",
+};
+
+export function AdminUsers() {
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
+  const filtered = usersData.filter(u =>
+    (roleFilter === "all" || u.role === roleFilter) &&
+    (u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  return (
+    <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Users</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Everyone on TradeFlow. Buyers, sellers, and partners.</p>
+        </div>
+        <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />}>Add User</BounceButton>
+      </motion.div>
+
+      {/* Stats */}
+      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+        <StatCard label="Total Users" value="2,847" icon={<Users size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} change="+12%" changeType="positive" accentColor="#0171E3" />
+        <StatCard label="Active Now" value="184" icon={<Shield size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" subtitle="Online right now" />
+        <StatCard label="Pending Review" value="23" icon={<Clock size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        <StatCard label="Suspended" value="4" icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+      </motion.div>
+
+      {/* Search + Filter */}
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <div className="flex flex-col sm:flex-row gap-3 mb-6">
+            <div className="flex-1 relative">
+              <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+              <input
+                type="text"
+                placeholder="Search by name or email..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+              />
+            </div>
+            <div className="flex gap-2">
+              {["all", "Buyer", "Seller", "Partner"].map(role => (
+                <button
+                  key={role}
+                  onClick={() => setRoleFilter(role)}
+                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer ${
+                    roleFilter === role ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {role === "all" ? "All" : role}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* User List */}
+          <div className="space-y-2">
+            {filtered.map((user, i) => (
+              <motion.div
+                key={user.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.03, duration: 0.3 }}
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
+              >
+                <div
+                  className="w-10 h-10 rounded-2xl flex items-center justify-center text-[0.75rem] text-white/90"
+                  style={{ backgroundColor: roleColors[user.role] || "#0171E3" }}
+                >
+                  {user.avatar}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[0.875rem] text-foreground truncate">{user.name}</span>
+                    <span className="text-[0.6875rem] px-2 py-0.5 rounded-full" style={{ backgroundColor: `${roleColors[user.role]}10`, color: roleColors[user.role] }}>{user.role}</span>
+                  </div>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{user.email}</span>
+                </div>
+                <div className="hidden sm:flex items-center gap-6 text-[0.75rem] text-muted-foreground/50">
+                  <span>{user.orders} orders</span>
+                  <span>{user.lastActive}</span>
+                </div>
+                <StatusPill
+                  status={user.status === "active" ? "success" : user.status === "pending" ? "pending" : user.status === "review" ? "warning" : "error"}
+                  label={user.status}
+                />
+                <button className="opacity-0 group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer">
+                  <MoreHorizontal size={16} className="text-muted-foreground/40" />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+        </SectionCard>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN → PRODUCTS
+// ════════════════════════════════════════════════════════════
+
+const productsData = [
+  { id: 1, name: "Organic Herbal Tea Collection", seller: "GreenLeaf Organics", category: "Food & Beverage", price: "$24.99", stock: 1240, status: "active" as const, rating: 4.8, hsCode: "0902.10" },
+  { id: 2, name: "LED Panel Light 60W", seller: "BrightStar Electronics", category: "Electronics", price: "$45.00", stock: 890, status: "active" as const, rating: 4.6, hsCode: "8539.50" },
+  { id: 3, name: "Protein Energy Bar (Box/24)", seller: "FreshPack Foods", category: "Food & Beverage", price: "$36.00", stock: 2100, status: "active" as const, rating: 4.3, hsCode: "1806.90" },
+  { id: 4, name: "Carbon Fiber Composite Sheet", seller: "Atlas Materials", category: "Industrial", price: "$189.00", stock: 45, status: "low-stock" as const, rating: 4.9, hsCode: "6815.10" },
+  { id: 5, name: "Vitamin D3 Supplements", seller: "FreshPack Foods", category: "Health", price: "$18.50", stock: 0, status: "out-of-stock" as const, rating: 4.5, hsCode: "2936.29" },
+  { id: 6, name: "Smart Sensor Module v2", seller: "BrightStar Electronics", category: "Electronics", price: "$72.00", stock: 320, status: "review" as const, rating: 0, hsCode: "9031.80" },
+];
+
+export function AdminProducts() {
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+  const categories = ["all", ...Array.from(new Set(productsData.map(p => p.category)))];
+  const filtered = productsData.filter(p =>
+    (catFilter === "all" || p.category === catFilter) &&
+    p.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Products</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Everything listed on TradeFlow. Manage catalog and compliance.</p>
+        </div>
+        <div className="flex gap-2">
+          <BounceButton variant="ghost" size="sm" icon={<Download size={14} />}>Export</BounceButton>
+          <BounceButton variant="primary" size="md" icon={<Package size={16} />}>Add Product</BounceButton>
+        </div>
+      </motion.div>
+
+      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+        <StatCard label="Total Products" value="1,284" icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
+        <StatCard label="Active Listings" value="1,148" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        <StatCard label="Low Stock" value="34" icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        <StatCard label="Pending Review" value="18" icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+      </motion.div>
+
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <div className="flex flex-col sm:flex-row gap-3 mb-6">
+            <div className="flex-1 relative">
+              <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+              <input
+                type="text" placeholder="Search products..." value={search} onChange={e => setSearch(e.target.value)}
+                className="w-full pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+              />
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {categories.map(cat => (
+                <button key={cat} onClick={() => setCatFilter(cat)}
+                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === cat ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
+                >{cat === "all" ? "All" : cat}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {filtered.map((p, i) => (
+              <motion.div key={p.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
+              >
+                <div className="w-10 h-10 rounded-2xl bg-primary/6 flex items-center justify-center">
+                  <Package size={18} className="text-primary/50" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[0.875rem] text-foreground truncate">{p.name}</span>
+                    <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hsCode}</span>
+                  </div>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller} · {p.category}</span>
+                </div>
+                <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
+                  <span className="text-foreground/70">{p.price}</span>
+                  <span className={`${p.stock === 0 ? "text-[#E5484D]/80" : p.stock < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>{p.stock === 0 ? "Out of stock" : `${p.stock} units`}</span>
+                  {p.rating > 0 && <span className="flex items-center gap-1 text-[#FFB224]/80"><Star size={12} fill="#FFB224" />{p.rating}</span>}
+                </div>
+                <StatusPill
+                  status={p.status === "active" ? "success" : p.status === "low-stock" ? "warning" : p.status === "out-of-stock" ? "error" : "pending"}
+                  label={p.status === "low-stock" ? "Low Stock" : p.status === "out-of-stock" ? "Out" : p.status === "review" ? "Review" : "Active"}
+                />
+              </motion.div>
+            ))}
+          </div>
+        </SectionCard>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN → LOGISTICS
+// ════════════════════════════════════════════════════════════
+
+const vehiclesData = [
+  { id: "VH-001", driver: "Mike Torres", type: "Van", plate: "IL-4829-TX", status: "in-transit" as const, location: "I-90 near Elgin", fuel: 72, currentTask: "Delivering to Meridian Corp" },
+  { id: "VH-002", driver: "Sam Wilson", type: "Truck", plate: "IL-7134-KV", status: "loading" as const, location: "Warehouse A", fuel: 85, currentTask: "Loading ORD-4835" },
+  { id: "VH-003", driver: "Nina Patel", type: "Van", plate: "IL-2956-RQ", status: "idle" as const, location: "Depot", fuel: 94, currentTask: "Waiting for assignment" },
+  { id: "VH-004", driver: "Tony Ruiz", type: "Refrigerated", plate: "IL-6281-WP", status: "in-transit" as const, location: "Route 59, Naperville", fuel: 58, currentTask: "Cold chain delivery — FreshPack" },
+  { id: "VH-005", driver: "Aisha Khan", type: "Van", plate: "IL-3847-LM", status: "maintenance" as const, location: "Service Center", fuel: 30, currentTask: "Scheduled oil change" },
+];
+
+const shipmentData = [
+  { month: "Mon", incoming: 28, outgoing: 35 },
+  { month: "Tue", incoming: 32, outgoing: 29 },
+  { month: "Wed", incoming: 45, outgoing: 42 },
+  { month: "Thu", incoming: 38, outgoing: 47 },
+  { month: "Fri", incoming: 52, outgoing: 51 },
+  { month: "Sat", incoming: 24, outgoing: 18 },
+  { month: "Sun", incoming: 12, outgoing: 8 },
+];
+
+const vehicleStatusColor: Record<string, string> = {
+  "in-transit": "#3B82F6", loading: "#FFB224", idle: "#30A46C", maintenance: "#E5484D",
+};
+
+export function AdminLogistics() {
+  return (
+    <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
+      <motion.div variants={stagger.item}>
+        <h1 className="text-foreground tracking-tight mb-1.5">Logistics</h1>
+        <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
+      </motion.div>
+
+      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+        <StatCard label="Active Vehicles" value="4/5" icon={<Truck size={20} className="text-[#3B82F6]" />} iconBg="bg-[#3B82F6]/8" index={0} accentColor="#3B82F6" />
+        <StatCard label="In Transit" value="2" icon={<MapPin size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={1} accentColor="#0171E3" />
+        <StatCard label="Avg Delivery" value="2.4h" icon={<Clock size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={2} accentColor="#30A46C" subtitle="−18 min vs last week" />
+        <StatCard label="On-Time Rate" value="96.2%" icon={<CheckCircle2 size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={3} accentColor="#FFB224" change="+1.4%" changeType="positive" />
+      </motion.div>
+
+      {/* Shipment Flow Chart */}
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-foreground text-[0.9375rem] mb-1">Shipment Flow — This Week</h2>
+              <p className="text-muted-foreground/50 text-[0.75rem]">Incoming vs outgoing parcels</p>
+            </div>
+          </div>
+          <CustomAreaChart
+            data={shipmentData}
+            xKey="month"
+            series={[
+              { dataKey: "incoming", color: "#3B82F6", label: "Incoming" },
+              { dataKey: "outgoing", color: "#30A46C", label: "Outgoing" },
+            ]}
+            height={200}
+          />
+        </SectionCard>
+      </motion.div>
+
+      {/* Fleet */}
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <h2 className="text-foreground text-[0.9375rem] mb-6">Fleet Status</h2>
+          <div className="space-y-2">
+            {vehiclesData.map((v, i) => (
+              <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+              >
+                <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${vehicleStatusColor[v.status]}10` }}>
+                  <Truck size={18} style={{ color: vehicleStatusColor[v.status] }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[0.875rem] text-foreground">{v.driver}</span>
+                    <span className="text-[0.6875rem] text-muted-foreground/40">{v.id} · {v.plate}</span>
+                  </div>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{v.currentTask}</span>
+                </div>
+                <div className="hidden sm:flex items-center gap-4">
+                  <div className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground/50">
+                    <MapPin size={12} />{v.location}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[0.75rem]" style={{ color: v.fuel < 40 ? "#E5484D" : "#30A46C" }}>
+                    <Fuel size={12} />{v.fuel}%
+                  </div>
+                </div>
+                <StatusPill
+                  status={v.status === "in-transit" ? "info" : v.status === "loading" ? "warning" : v.status === "idle" ? "success" : "error"}
+                  label={v.status.replace("-", " ")}
+                  pulse={v.status === "in-transit"}
+                />
+              </motion.div>
+            ))}
+          </div>
+        </SectionCard>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN → QUALITY
+// ════════════════════════════════════════════════════════════
+
+const qualityInspections = [
+  { id: "QI-482", product: "Herbal Tea Batch #284", seller: "GreenLeaf Organics", inspector: "Dr. Amara Johnson", status: "in-progress" as const, score: 82, date: "Mar 18, 2026" },
+  { id: "QI-481", product: "LED Panel Light 60W", seller: "BrightStar Electronics", inspector: "Marcus Lee", status: "passed" as const, score: 96, date: "Mar 17, 2026" },
+  { id: "QI-480", product: "Protein Energy Bar", seller: "FreshPack Foods", inspector: "Dr. Amara Johnson", status: "passed" as const, score: 91, date: "Mar 16, 2026" },
+  { id: "QI-479", product: "Carbon Fiber Sheet", seller: "Atlas Materials", inspector: "Marcus Lee", status: "failed" as const, score: 54, date: "Mar 15, 2026" },
+  { id: "QI-478", product: "Vitamin D3 Supplements", seller: "FreshPack Foods", inspector: "Dr. Amara Johnson", status: "passed" as const, score: 89, date: "Mar 14, 2026" },
+];
+
+const qualityTrend = [
+  { month: "Oct", score: 86 }, { month: "Nov", score: 88 }, { month: "Dec", score: 87 },
+  { month: "Jan", score: 91 }, { month: "Feb", score: 93 }, { month: "Mar", score: 92 },
+];
+
+export function AdminQuality() {
+  return (
+    <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
+      <motion.div variants={stagger.item}>
+        <h1 className="text-foreground tracking-tight mb-1.5">Quality Control</h1>
+        <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
+      </motion.div>
+
+      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+        <StatCard label="Avg Quality Score" value="92" icon={<Star size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={0} accentColor="#FFB224" subtitle="out of 100" change="+3" changeType="positive" />
+        <StatCard label="Pass Rate" value="94.2%" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        <StatCard label="Pending" value="7" icon={<Clock size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={2} accentColor="#0171E3" subtitle="Awaiting inspection" />
+        <StatCard label="Failed" value="3" icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" subtitle="This month" />
+      </motion.div>
+
+      <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+        <SectionCard className="lg:col-span-3">
+          <h2 className="text-foreground text-[0.9375rem] mb-1">Quality Score Trend</h2>
+          <p className="text-muted-foreground/50 text-[0.75rem] mb-4">Average inspection score over time</p>
+          <CustomAreaChart data={qualityTrend} xKey="month" series={[{ dataKey: "score", color: "#0171E3" }]} height={180} yDomain={[70, 100]} />
+        </SectionCard>
+        <SectionCard className="lg:col-span-2">
+          <h2 className="text-foreground text-[0.9375rem] mb-4">Score Distribution</h2>
+          <HorizontalBarList
+            data={[
+              { label: "Excellent (90+)", value: 64, color: "#30A46C" },
+              { label: "Good (80-89)", value: 22, color: "#3B82F6" },
+              { label: "Fair (70-79)", value: 8, color: "#FFB224" },
+              { label: "Poor (<70)", value: 6, color: "#E5484D" },
+            ]}
+            maxValue={100}
+            valueFormatter={v => `${v}%`}
+          />
+        </SectionCard>
+      </motion.div>
+
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <h2 className="text-foreground text-[0.9375rem] mb-6">Recent Inspections</h2>
+          <div className="space-y-2">
+            {qualityInspections.map((qi, i) => (
+              <motion.div key={qi.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+              >
+                <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ backgroundColor: qi.score >= 90 ? "#30A46C10" : qi.score >= 70 ? "#FFB22410" : "#E5484D10" }}>
+                  <span className="text-[0.875rem]" style={{ color: qi.score >= 90 ? "#30A46C" : qi.score >= 70 ? "#D97706" : "#E5484D" }}>{qi.score}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-[0.875rem] text-foreground block truncate">{qi.product}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{qi.seller} · {qi.inspector}</span>
+                </div>
+                <span className="text-[0.75rem] text-muted-foreground/40 hidden sm:block">{qi.date}</span>
+                <StatusPill
+                  status={qi.status === "passed" ? "success" : qi.status === "failed" ? "error" : "pending"}
+                  label={qi.status}
+                  pulse={qi.status === "in-progress"}
+                />
+              </motion.div>
+            ))}
+          </div>
+        </SectionCard>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN → SETTINGS
+// ════════════════════════════════════════════════════════════
+
+const settingsSections = [
+  {
+    title: "General",
+    icon: <Settings size={20} className="text-[#0171E3]" />,
+    color: "#0171E3",
+    items: [
+      { label: "Platform Name", value: "TradeFlow", type: "text" as const },
+      { label: "Default Currency", value: "USD", type: "select" as const },
+      { label: "Timezone", value: "America/Chicago (CST)", type: "select" as const },
+      { label: "Language", value: "English", type: "select" as const },
+    ],
+  },
+  {
+    title: "Notifications",
+    icon: <Bell size={20} className="text-[#FFB224]" />,
+    color: "#FFB224",
+    items: [
+      { label: "Email Notifications", value: "Enabled", type: "toggle" as const },
+      { label: "Push Notifications", value: "Enabled", type: "toggle" as const },
+      { label: "SMS Alerts", value: "Disabled", type: "toggle" as const },
+      { label: "Daily Digest", value: "Enabled", type: "toggle" as const },
+    ],
+  },
+  {
+    title: "Security",
+    icon: <Lock size={20} className="text-[#E5484D]" />,
+    color: "#E5484D",
+    items: [
+      { label: "Two-Factor Auth", value: "Enabled", type: "toggle" as const },
+      { label: "Session Timeout", value: "30 min", type: "select" as const },
+      { label: "IP Whitelisting", value: "Disabled", type: "toggle" as const },
+      { label: "Password Policy", value: "Strong (12+ chars)", type: "select" as const },
+    ],
+  },
+  {
+    title: "Integrations",
+    icon: <Globe size={20} className="text-[#30A46C]" />,
+    color: "#30A46C",
+    items: [
+      { label: "Stripe Payments", value: "Connected", type: "status" as const },
+      { label: "SendGrid Email", value: "Connected", type: "status" as const },
+      { label: "Twilio SMS", value: "Not Connected", type: "status" as const },
+      { label: "Google Maps", value: "Connected", type: "status" as const },
+    ],
+  },
+];
+
+export function AdminSettings() {
+  const [toggleStates, setToggleStates] = useState<Record<string, boolean>>({
+    "Email Notifications": true, "Push Notifications": true, "SMS Alerts": false,
+    "Daily Digest": true, "Two-Factor Auth": true, "IP Whitelisting": false,
+  });
+
+  return (
+    <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[900px]">
+      <motion.div variants={stagger.item}>
+        <h1 className="text-foreground tracking-tight mb-1.5">Settings</h1>
+        <p className="text-muted-foreground text-[0.875rem]">Configure TradeFlow to work the way you need.</p>
+      </motion.div>
+
+      {settingsSections.map((section, si) => (
+        <motion.div key={section.title} variants={stagger.item}>
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${section.color}10` }}>
+                {section.icon}
+              </div>
+              <h2 className="text-foreground text-[0.9375rem]">{section.title}</h2>
+            </div>
+            <div className="space-y-1">
+              {section.items.map((item, ii) => (
+                <div key={item.label} className="flex items-center justify-between px-4 py-4 rounded-2xl hover:bg-muted/20 transition-colors">
+                  <span className="text-[0.8125rem] text-foreground/70">{item.label}</span>
+                  {item.type === "toggle" ? (
+                    <button
+                      onClick={() => setToggleStates(prev => ({ ...prev, [item.label]: !prev[item.label] }))}
+                      className={`w-11 h-6 rounded-full transition-all duration-300 cursor-pointer relative ${
+                        toggleStates[item.label] ? "bg-primary" : "bg-muted/40"
+                      }`}
+                    >
+                      <motion.div
+                        className="w-5 h-5 bg-white rounded-full shadow-sm absolute top-0.5"
+                        animate={{ left: toggleStates[item.label] ? 22 : 2 }}
+                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                      />
+                    </button>
+                  ) : item.type === "status" ? (
+                    <StatusPill status={item.value === "Connected" ? "success" : "neutral"} label={item.value} />
+                  ) : (
+                    <span className="text-[0.8125rem] text-muted-foreground/60">{item.value}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        </motion.div>
+      ))}
+
+      <motion.div variants={stagger.item} className="flex justify-end">
+        <BounceButton variant="primary" size="md" icon={<CheckCircle2 size={16} />}>Save Changes</BounceButton>
+      </motion.div>
+    </motion.div>
+  );
+}

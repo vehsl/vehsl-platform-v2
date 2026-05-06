@@ -1,0 +1,7 @@
+@import '../styles/fonts.css';
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '../styles/theme.css';
+@import '../styles/custom-scrollbar.css';
+
+@source '../**/*.{js,ts,jsx,tsx}';

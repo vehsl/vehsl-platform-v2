@@ -1,0 +1,874 @@
+"use client";
+
+import svgPaths from "./svg-hr60i7rlt1";
+import { imgGroup } from "./svg-z6121";
+
+function Container1() {
+  return <div className="absolute bg-gradient-to-b from-[#edf2f7] h-[729.6px] left-0 to-[#e8eff8] top-0 via-1/2 via-[#f0f4fa] w-[1166.4px]" data-name="Container" />;
+}
+
+function Container2() {
+  return <div className="absolute h-[556px] left-[582px] rounded-[26843500px] top-0 w-[584px]" data-name="Container" style={{ backgroundImage: "url('data:image/svg+xml;utf8,<svg viewBox=\\'0 0 584 556\\' xmlns=\\'http://www.w3.org/2000/svg\\' preserveAspectRatio=\\'none\\'><rect x=\\'0\\' y=\\'0\\' height=\\'100%\\' width=\\'100%\\' fill=\\'url(%23grad)\\' opacity=\\'1\\'/><defs><radialGradient id=\\'grad\\' gradientUnits=\\'userSpaceOnUse\\' cx=\\'0\\' cy=\\'0\\' r=\\'10\\' gradientTransform=\\'matrix(0 -39.315 -41.295 0 292 278)\\'><stop stop-color=\\'rgba(1,113,227,0.1)\\' offset=\\'0\\'/><stop stop-color=\\'rgba(0,0,0,0)\\' offset=\\'0.7\\'/></radialGradient></defs></svg>')" }} />;
+}
+
+function Container3() {
+  return <div className="absolute h-[467px] left-0 rounded-[26843500px] top-[263px] w-[391px]" data-name="Container" style={{ backgroundImage: "url('data:image/svg+xml;utf8,<svg viewBox=\\'0 0 391 467\\' xmlns=\\'http://www.w3.org/2000/svg\\' preserveAspectRatio=\\'none\\'><rect x=\\'0\\' y=\\'0\\' height=\\'100%\\' width=\\'100%\\' fill=\\'url(%23grad)\\' opacity=\\'1\\'/><defs><radialGradient id=\\'grad\\' gradientUnits=\\'userSpaceOnUse\\' cx=\\'0\\' cy=\\'0\\' r=\\'10\\' gradientTransform=\\'matrix(0 -33.022 -27.648 0 195.5 233.5)\\'><stop stop-color=\\'rgba(52,141,233,0.1)\\' offset=\\'0\\'/><stop stop-color=\\'rgba(0,0,0,0)\\' offset=\\'0.7\\'/></radialGradient></defs></svg>')" }} />;
+}
+
+function Container4() {
+  return <div className="absolute h-[563px] left-[471px] rounded-[26843500px] top-[126px] w-[695px]" data-name="Container" style={{ backgroundImage: "url('data:image/svg+xml;utf8,<svg viewBox=\\'0 0 695 563\\' xmlns=\\'http://www.w3.org/2000/svg\\' preserveAspectRatio=\\'none\\'><rect x=\\'0\\' y=\\'0\\' height=\\'100%\\' width=\\'100%\\' fill=\\'url(%23grad)\\' opacity=\\'1\\'/><defs><radialGradient id=\\'grad\\' gradientUnits=\\'userSpaceOnUse\\' cx=\\'0\\' cy=\\'0\\' r=\\'10\\' gradientTransform=\\'matrix(0 -39.81 -49.144 0 347.5 281.5)\\'><stop stop-color=\\'rgba(153,198,244,0.12)\\' offset=\\'0\\'/><stop stop-color=\\'rgba(77,99,122,0.06)\\' offset=\\'0.35\\'/><stop stop-color=\\'rgba(0,0,0,0)\\' offset=\\'0.7\\'/></radialGradient></defs></svg>')" }} />;
+}
+
+function Container() {
+  return (
+    <div className="absolute h-[729.6px] left-0 overflow-clip top-0 w-[1166.4px]" data-name="Container">
+      <Container1 />
+      <Container2 />
+      <Container3 />
+      <Container4 />
+    </div>
+  );
+}
+
+function Icon() {
+  return (
+    <div className="relative shrink-0 size-[16px]" data-name="Icon">
+      <svg className="absolute block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 16 16">
+        <g id="Icon">
+          <path d={svgPaths.p203476e0} id="Vector" stroke="var(--stroke-0, #0171E3)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.33" />
+          <path d="M12.6667 8H3.33333" id="Vector_2" stroke="var(--stroke-0, #0171E3)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.33" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function Text() {
+  return (
+    <div className="flex-[1_0_0] h-[21px] min-h-px min-w-px relative" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <p className="-translate-x-1/2 absolute font-['Urbanist:SemiBold',sans-serif] leading-[21px] left-[14px] not-italic text-[#0171e3] text-[14px] text-center top-[-0.4px] tracking-[-0.35px] whitespace-nowrap">Back</p>
+      </div>
+    </div>
+  );
+}
+
+function Button() {
+  return (
+    <div className="h-[21px] relative shrink-0 w-[50.75px]" data-name="Button">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[6px] items-center relative size-full">
+        <Icon />
+        <Text />
+      </div>
+    </div>
+  );
+}
+
+function Heading() {
+  return (
+    <div className="h-[32px] relative shrink-0 w-[412px]" data-name="Heading 1">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-start relative size-full">
+        <p className="flex-[1_0_0] font-['Urbanist:Black',sans-serif] leading-[32px] min-h-px min-w-px not-italic relative text-[#002d5b] text-[26px] tracking-[-0.65px]">Select Location</p>
+      </div>
+    </div>
+  );
+}
+
+function Text1() {
+  return (
+    <div className="absolute h-[20px] left-0 top-0 w-[3.963px]" data-name="Text">
+      <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[20px] left-0 not-italic text-[14px] text-[rgba(0,45,91,0.35)] top-[-0.4px] whitespace-nowrap">1</p>
+    </div>
+  );
+}
+
+function Paragraph() {
+  return (
+    <div className="absolute h-[20px] left-0 top-[2.2px] w-[103.363px]" data-name="Paragraph">
+      <Text1 />
+      <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[20px] left-[3.96px] not-italic text-[14px] text-[rgba(0,45,91,0.35)] top-[-0.4px] whitespace-nowrap">{` option near you`}</p>
+    </div>
+  );
+}
+
+function Group() {
+  return (
+    <div className="absolute inset-[8.35%_8.34%_8.31%_8.32%] mask-alpha mask-intersect mask-no-clip mask-no-repeat mask-position-[-1.195px_-1.203px] mask-size-[14.4px_14.4px]" data-name="Group" style={{ maskImage: `url('${imgGroup}')` }}>
+      <div className="absolute inset-[-3.75%]">
+        <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 12.9 12.9">
+          <g id="Group">
+            <path clipRule="evenodd" d={svgPaths.pe06ec80} fillRule="evenodd" id="Vector" stroke="var(--stroke-0, #0171E3)" strokeLinejoin="round" strokeOpacity="0.6" strokeWidth="0.9" />
+            <path d={svgPaths.p7d88e80} id="Vector_2" stroke="var(--stroke-0, #0171E3)" strokeLinecap="round" strokeLinejoin="round" strokeOpacity="0.6" strokeWidth="0.9" />
+            <path clipRule="evenodd" d={svgPaths.p1a1d5a80} fill="var(--fill-0, #0171E3)" fillOpacity="0.6" fillRule="evenodd" id="Vector_3" />
+          </g>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function ClipPathGroup() {
+  return (
+    <div className="absolute contents inset-0" data-name="Clip path group">
+      <Group />
+    </div>
+  );
+}
+
+function Icon1() {
+  return (
+    <div className="relative shrink-0 size-[14.4px]" data-name="Icon">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid overflow-clip relative rounded-[inherit] size-full">
+        <ClipPathGroup />
+      </div>
+    </div>
+  );
+}
+
+function Container9() {
+  return (
+    <div className="absolute bg-[rgba(1,113,227,0.08)] content-stretch flex items-center justify-center left-[113.36px] rounded-[26843500px] size-[24.4px] top-0" data-name="Container">
+      <Icon1 />
+    </div>
+  );
+}
+
+function Container8() {
+  return (
+    <div className="h-[24.4px] relative shrink-0 w-[412px]" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <Paragraph />
+        <Container9 />
+      </div>
+    </div>
+  );
+}
+
+function Text2() {
+  return (
+    <div className="h-[14px] relative shrink-0 w-[57.688px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-start relative size-full">
+        <p className="font-['Urbanist:Medium',sans-serif] leading-[14px] not-italic relative shrink-0 text-[11px] text-[rgba(0,45,91,0.22)] whitespace-nowrap">Features for</p>
+      </div>
+    </div>
+  );
+}
+
+function Text3() {
+  return (
+    <div className="bg-[rgba(1,113,227,0.06)] h-[21.6px] relative rounded-[26843500px] shrink-0 w-[74.125px]" data-name="Text">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(1,113,227,0.1)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <div className="-translate-y-1/2 absolute flex flex-col font-['Urbanist:SemiBold',sans-serif] justify-center leading-[0] left-[calc(50%-26.5px)] not-italic text-[11px] text-[rgba(1,113,227,0.6)] top-1/2 whitespace-nowrap">
+          <p className="leading-[14px]">Electronics</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Container10() {
+  return (
+    <div className="h-[21.6px] relative shrink-0 w-[412px]" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[8px] items-center relative size-full">
+        <Text2 />
+        <Text3 />
+      </div>
+    </div>
+  );
+}
+
+function Container7() {
+  return (
+    <div className="h-[94px] relative shrink-0 w-[412px]" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col gap-[7px] items-start relative size-full">
+        <Heading />
+        <Container8 />
+        <Container10 />
+      </div>
+    </div>
+  );
+}
+
+function Container6() {
+  return (
+    <div className="absolute content-stretch flex flex-col gap-[18px] h-[165px] items-start left-0 pl-[24px] pt-[32px] top-0 w-[460px]" data-name="Container">
+      <Button />
+      <Container7 />
+    </div>
+  );
+}
+
+function Icon2() {
+  return (
+    <div className="h-[18.166px] overflow-clip relative shrink-0 w-full" data-name="Icon">
+      <div className="absolute inset-[12.5%_20.83%_20.83%_12.5%]" data-name="Vector">
+        <div className="absolute inset-[-6.25%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 13.6244 13.6244">
+            <path d={svgPaths.p31d15000} id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute inset-[69.58%_12.5%_12.5%_69.58%]" data-name="Vector">
+        <div className="absolute inset-[-23.26%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 4.76853 4.76853">
+            <path d={svgPaths.p284c2c80} id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Text4() {
+  return (
+    <div className="relative shrink-0 size-[18.166px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col items-start relative size-full">
+        <Icon2 />
+      </div>
+    </div>
+  );
+}
+
+function TextInput() {
+  return (
+    <div className="flex-[1_0_0] h-[21.194px] min-h-px min-w-px relative" data-name="Text Input">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-center overflow-clip relative rounded-[inherit] size-full">
+        <p className="font-['Urbanist:Medium',sans-serif] leading-[normal] not-italic relative shrink-0 text-[14px] text-[rgba(0,45,91,0.2)] whitespace-nowrap">no</p>
+      </div>
+    </div>
+  );
+}
+
+function Icon3() {
+  return (
+    <div className="relative shrink-0 size-[8.074px]" data-name="Icon">
+      <svg className="absolute block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 8.07378 8.07373">
+        <g id="Icon">
+          <path d={svgPaths.p14382780} id="Vector" stroke="var(--stroke-0, #1A1A1A)" strokeLinecap="round" strokeOpacity="0.35" strokeWidth="1.21106" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function Button1() {
+  return (
+    <div className="bg-[rgba(26,26,26,0.06)] relative rounded-[26843500px] shrink-0 size-[18.166px]" data-name="Button">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-center justify-center relative size-full">
+        <Icon3 />
+      </div>
+    </div>
+  );
+}
+
+function Icon4() {
+  return (
+    <div className="h-[18.166px] overflow-clip relative shrink-0 w-full" data-name="Icon">
+      <div className="absolute inset-[16.67%_12.5%_83.33%_58.33%]" data-name="Vector">
+        <div className="absolute inset-[-0.76px_-14.29%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 6.81219 1.51383">
+            <path d="M6.05528 0.756915H0.756915" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute inset-[16.67%_58.33%_83.33%_12.5%]" data-name="Vector">
+        <div className="absolute inset-[-0.76px_-14.29%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 6.81222 1.51383">
+            <path d="M6.0553 0.756915H0.756915" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute bottom-1/2 left-1/2 right-[12.5%] top-1/2" data-name="Vector">
+        <div className="absolute inset-[-0.76px_-11.11%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 8.32605 1.51383">
+            <path d="M7.56913 0.756915H0.756915" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute bottom-1/2 left-[12.5%] right-[66.67%] top-1/2" data-name="Vector">
+        <div className="absolute inset-[-0.76px_-20%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 5.2984 1.51383">
+            <path d="M4.54148 0.756915H0.756915" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute inset-[83.33%_12.5%_16.67%_66.67%]" data-name="Vector">
+        <div className="absolute inset-[-0.76px_-20%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 5.29843 1.51383">
+            <path d="M4.54151 0.756915H0.756915" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute bottom-[16.67%] left-[12.5%] right-1/2 top-[83.33%]" data-name="Vector">
+        <div className="absolute inset-[-0.76px_-11.11%]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 8.32605 1.51383">
+            <path d="M7.56913 0.756915H0.756915" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute bottom-3/4 left-[58.33%] right-[41.67%] top-[8.33%]" data-name="Vector">
+        <div className="absolute inset-[-25%_-0.76px]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 1.51383 4.54148">
+            <path d="M0.756915 0.756915V3.78457" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute inset-[41.67%_66.67%_41.67%_33.33%]" data-name="Vector">
+        <div className="absolute inset-[-25%_-0.76px]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 1.51383 4.54152">
+            <path d="M0.756915 0.756915V3.7846" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+      <div className="absolute bottom-[8.33%] left-[66.67%] right-[33.33%] top-3/4" data-name="Vector">
+        <div className="absolute inset-[-25%_-0.76px]">
+          <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 1.51383 4.54145">
+            <path d="M0.756915 0.756915V3.78454" id="Vector" stroke="var(--stroke-0, #C4CFDA)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.51383" />
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Text5() {
+  return (
+    <div className="relative shrink-0 size-[18.166px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col items-start relative size-full">
+        <Icon4 />
+      </div>
+    </div>
+  );
+}
+
+function Container11() {
+  return (
+    <div className="absolute bg-[rgba(255,255,255,0.53)] content-stretch flex gap-[10.092px] h-[46.424px] items-center left-[22.1px] px-[16.8px] py-[0.8px] rounded-[3000px] top-[180.79px] w-[415.799px]" data-name="Container">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(248,251,255,0.55)] border-solid inset-0 pointer-events-none rounded-[3000px] shadow-[0px_2px_12px_0px_rgba(0,0,0,0.03)]" />
+      <Text4 />
+      <TextInput />
+      <Button1 />
+      <Text5 />
+      <div className="absolute inset-0 pointer-events-none rounded-[inherit] shadow-[inset_0px_0px_0px_0px_rgba(255,255,255,0.4)]" />
+    </div>
+  );
+}
+
+function Text6() {
+  return (
+    <div className="content-stretch flex h-[16px] items-start relative shrink-0 w-full" data-name="Text">
+      <p className="font-['Urbanist:SemiBold',sans-serif] leading-[16px] not-italic relative shrink-0 text-[13px] text-center text-white whitespace-nowrap">All</p>
+    </div>
+  );
+}
+
+function Button2() {
+  return (
+    <div className="bg-[#348de9] h-[31.6px] relative rounded-[26843500px] shrink-0 w-[48.513px]" data-name="Button">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,255,255,0)] border-solid inset-0 pointer-events-none rounded-[26843500px] shadow-[0px_4px_16px_0px_rgba(1,113,227,0.15)]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col items-start pb-[0.8px] pt-[7.8px] px-[16.8px] relative size-full">
+        <Text6 />
+      </div>
+      <div className="absolute inset-0 pointer-events-none rounded-[inherit] shadow-[inset_0px_0px_0px_0px_rgba(255,255,255,0.08)]" />
+    </div>
+  );
+}
+
+function Text7() {
+  return (
+    <div className="content-stretch flex h-[16px] items-start relative shrink-0 w-full" data-name="Text">
+      <p className="font-['Urbanist:SemiBold',sans-serif] leading-[16px] not-italic relative shrink-0 text-[13px] text-[rgba(0,45,91,0.45)] text-center whitespace-nowrap">Nearest</p>
+    </div>
+  );
+}
+
+function Button3() {
+  return (
+    <div className="bg-[rgba(255,255,255,0.5)] h-[31.6px] relative rounded-[26843500px] shrink-0 w-[78.738px]" data-name="Button">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,255,255,0.6)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col items-start pb-[0.8px] pt-[7.8px] px-[16.8px] relative size-full">
+        <Text7 />
+      </div>
+    </div>
+  );
+}
+
+function Text8() {
+  return (
+    <div className="content-stretch flex h-[16px] items-start relative shrink-0 w-full" data-name="Text">
+      <p className="font-['Urbanist:SemiBold',sans-serif] leading-[16px] not-italic relative shrink-0 text-[13px] text-[rgba(0,45,91,0.45)] text-center whitespace-nowrap">Cheapest</p>
+    </div>
+  );
+}
+
+function Button4() {
+  return (
+    <div className="bg-[rgba(255,255,255,0.5)] h-[31.6px] relative rounded-[26843500px] shrink-0 w-[89.775px]" data-name="Button">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,255,255,0.6)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col items-start pb-[0.8px] pt-[7.8px] px-[16.8px] relative size-full">
+        <Text8 />
+      </div>
+    </div>
+  );
+}
+
+function Text9() {
+  return (
+    <div className="content-stretch flex h-[16px] items-start relative shrink-0 w-full" data-name="Text">
+      <p className="font-['Urbanist:SemiBold',sans-serif] leading-[16px] not-italic relative shrink-0 text-[13px] text-[rgba(0,45,91,0.45)] text-center whitespace-nowrap">Top Rated</p>
+    </div>
+  );
+}
+
+function Button5() {
+  return (
+    <div className="bg-[rgba(255,255,255,0.5)] h-[31.6px] relative rounded-[26843500px] shrink-0 w-[93.525px]" data-name="Button">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,255,255,0.6)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex flex-col items-start pb-[0.8px] pt-[7.8px] px-[16.8px] relative size-full">
+        <Text9 />
+      </div>
+    </div>
+  );
+}
+
+function Container12() {
+  return (
+    <div className="absolute content-stretch flex gap-[10px] h-[31.6px] items-center left-0 pl-[24px] top-[243px] w-[460px]" data-name="Container">
+      <Button2 />
+      <Button3 />
+      <Button4 />
+      <Button5 />
+    </div>
+  );
+}
+
+function Paragraph1() {
+  return (
+    <div className="absolute h-[15px] left-[24px] top-[288.6px] w-[412px]" data-name="Paragraph">
+      <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[15px] left-0 not-italic text-[10px] text-[rgba(0,45,91,0.18)] top-[-0.2px] tracking-[0.3px] whitespace-nowrap">Sorted by weekly rate, lowest first</p>
+    </div>
+  );
+}
+
+function Container14() {
+  return <div className="absolute h-[152.2px] left-0 rounded-[26px] top-0 w-[428px]" data-name="Container" style={{ backgroundImage: "linear-gradient(160.424deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.45) 50%, rgba(255, 255, 255, 0.55) 100%)" }} />;
+}
+
+function Container15() {
+  return (
+    <div className="absolute bg-[rgba(255,255,255,0)] border-[0.8px] border-[rgba(255,255,255,0.65)] border-solid h-[152.2px] left-0 rounded-[26px] shadow-[0px_2px_8px_0px_rgba(0,0,0,0.03),0px_8px_28px_0px_rgba(0,0,0,0.04)] top-0 w-[428px]" data-name="Container">
+      <div className="absolute inset-0 pointer-events-none rounded-[inherit] shadow-[inset_0px_1px_1px_0px_rgba(255,255,255,0.7)]" />
+    </div>
+  );
+}
+
+function Heading1() {
+  return (
+    <div className="h-[19px] relative shrink-0 w-[134.713px]" data-name="Heading 3">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-start overflow-clip relative rounded-[inherit] size-full">
+        <p className="font-['Urbanist:Bold',sans-serif] leading-[19px] not-italic relative shrink-0 text-[#002d5b] text-[15px] tracking-[-0.2px] whitespace-nowrap">Nordic Supply Depot</p>
+      </div>
+    </div>
+  );
+}
+
+function Icon5() {
+  return (
+    <div className="relative shrink-0 size-[14px]" data-name="Icon">
+      <svg className="absolute block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 14 14">
+        <g id="Icon">
+          <path d={svgPaths.p6be9d00} fill="var(--fill-0, #FC6188)" id="Vector" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function Text10() {
+  return (
+    <div className="h-[13px] relative shrink-0" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex h-full items-start relative">
+        <p className="font-['Nunito:Bold',sans-serif] leading-[13px] not-italic relative shrink-0 text-[#fc6188] text-[10px] whitespace-nowrap">+$204</p>
+      </div>
+    </div>
+  );
+}
+
+function Container19() {
+  return (
+    <div className="bg-[rgba(255,32,86,0.08)] h-[22.6px] relative rounded-[26843500px] shrink-0" data-name="Container">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,32,86,0.15)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[5px] h-full items-center px-[10.8px] py-[0.8px] relative">
+        <Icon5 />
+        <Text10 />
+      </div>
+    </div>
+  );
+}
+
+function Text11() {
+  return (
+    <div className="h-[13px] relative shrink-0 w-[14.113px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-start relative size-full">
+        <p className="font-['Urbanist:Medium',sans-serif] leading-[13px] not-italic relative shrink-0 text-[10.5px] text-[rgba(0,45,91,0.35)] whitespace-nowrap">4.0</p>
+      </div>
+    </div>
+  );
+}
+
+function Container20() {
+  return (
+    <div className="h-[13px] relative shrink-0" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[4px] h-full items-center relative">
+        <div className="h-[10.489px] relative shrink-0 w-[11px]" data-name="Vector">
+          <div className="absolute inset-[-81.52%_-77.73%]">
+            <svg className="block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 28.0999 27.5886">
+              <g filter="url(#filter0_d_49_2071)" id="Vector">
+                <path d={svgPaths.p48a7880} fill="var(--fill-0, #FFB900)" />
+                <path d={svgPaths.p48a7880} stroke="var(--stroke-0, #FFB900)" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.0999" />
+              </g>
+              <defs>
+                <filter colorInterpolationFilters="sRGB" filterUnits="userSpaceOnUse" height="27.5886" id="filter0_d_49_2071" width="28.0999" x="1.19209e-07" y="1.19209e-07">
+                  <feFlood floodOpacity="0" result="BackgroundImageFix" />
+                  <feColorMatrix in="SourceAlpha" result="hardAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" />
+                  <feOffset />
+                  <feGaussianBlur stdDeviation="4" />
+                  <feComposite in2="hardAlpha" operator="out" />
+                  <feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 0.72549 0 0 0 0 0 0 0 0 0.25 0" />
+                  <feBlend in2="BackgroundImageFix" mode="normal" result="effect1_dropShadow_49_2071" />
+                  <feBlend in="SourceGraphic" in2="effect1_dropShadow_49_2071" mode="normal" result="shape" />
+                </filter>
+              </defs>
+            </svg>
+          </div>
+        </div>
+        <Text11 />
+      </div>
+    </div>
+  );
+}
+
+function Container18() {
+  return (
+    <div className="h-[22.6px] relative shrink-0" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[8px] h-full items-center relative">
+        <Container19 />
+        <Container20 />
+      </div>
+    </div>
+  );
+}
+
+function Container17() {
+  return (
+    <div className="absolute content-stretch flex h-[22.6px] items-center justify-between left-[20px] top-[18px] w-[388px]" data-name="Container">
+      <Heading1 />
+      <Container18 />
+    </div>
+  );
+}
+
+function Icon6() {
+  return (
+    <div className="relative shrink-0 size-[14px]" data-name="Icon">
+      <svg className="absolute block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 14 14">
+        <g id="Icon">
+          <path d={svgPaths.p11dc1c00} fill="var(--fill-0, #99ACBF)" id="Vector" stroke="var(--stroke-0, #99ACBF)" strokeOpacity="0.4" strokeWidth="0.5" />
+          <path d={svgPaths.p181c0e00} fill="var(--fill-0, white)" id="Vector_2" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function Text12() {
+  return (
+    <div className="h-[15px] relative shrink-0 w-[200.6px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[15px] left-0 not-italic text-[11px] text-[rgba(0,45,91,0.38)] top-[-0.2px] whitespace-nowrap">775 Estudillo Ave, San Leandro, CA 94577</p>
+      </div>
+    </div>
+  );
+}
+
+function Container21() {
+  return (
+    <div className="absolute content-stretch flex gap-[6px] h-[15px] items-start left-[20px] top-[47.6px] w-[388px]" data-name="Container">
+      <Icon6 />
+      <Text12 />
+    </div>
+  );
+}
+
+function Icon7() {
+  return (
+    <div className="relative shrink-0 size-[10px]" data-name="Icon">
+      <svg className="absolute block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 10 10">
+        <g clipPath="url(#clip0_49_2035)" id="Icon">
+          <path d={svgPaths.p6405180} id="Vector" stroke="var(--stroke-0, #00BC7D)" strokeOpacity="0.7" strokeWidth="0.916667" />
+          <path d="M5 2.91667V5L6.25 6.25" id="Vector_2" stroke="var(--stroke-0, #00BC7D)" strokeLinecap="round" strokeLinejoin="round" strokeOpacity="0.7" strokeWidth="0.916667" />
+        </g>
+        <defs>
+          <clipPath id="clip0_49_2035">
+            <rect fill="white" height="10" width="10" />
+          </clipPath>
+        </defs>
+      </svg>
+    </div>
+  );
+}
+
+function Text14() {
+  return (
+    <div className="absolute content-stretch flex h-[12px] items-start left-[27px] opacity-50 top-0 w-[51.825px]" data-name="Text">
+      <p className="font-['Urbanist:SemiBold',sans-serif] leading-[13px] not-italic relative shrink-0 text-[10px] text-[rgba(0,188,125,0.7)] whitespace-nowrap">· Until 11 PM</p>
+    </div>
+  );
+}
+
+function Text13() {
+  return (
+    <div className="flex-[1_0_0] h-[13px] min-h-px min-w-px relative" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <p className="absolute font-['Urbanist:SemiBold',sans-serif] leading-[13px] left-0 not-italic text-[10px] text-[rgba(0,188,125,0.7)] top-0 whitespace-nowrap">Open</p>
+        <Text14 />
+      </div>
+    </div>
+  );
+}
+
+function Container23() {
+  return (
+    <div className="h-[13px] relative shrink-0 w-[90.563px]" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[4px] items-center relative size-full">
+        <Icon7 />
+        <Text13 />
+      </div>
+    </div>
+  );
+}
+
+function Text17() {
+  return <div className="absolute bg-[rgba(26,26,26,0.08)] left-[0.43px] rounded-[26843500px] size-[3px] top-[10.5px]" data-name="Text" />;
+}
+
+function Text16() {
+  return (
+    <div className="absolute h-[24px] left-0 top-0 w-[3.862px]" data-name="Text">
+      <Text17 />
+    </div>
+  );
+}
+
+function Text15() {
+  return (
+    <div className="h-[24px] relative shrink-0 w-[3.862px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <Text16 />
+      </div>
+    </div>
+  );
+}
+
+function Text18() {
+  return (
+    <div className="h-[13px] relative shrink-0 w-[37.425px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-center relative size-full">
+        <p className="font-['Urbanist:SemiBold',sans-serif] leading-[13px] not-italic relative shrink-0 text-[10px] text-[rgba(0,45,91,0.22)] whitespace-nowrap">40 spots</p>
+      </div>
+    </div>
+  );
+}
+
+function Container22() {
+  return (
+    <div className="absolute content-stretch flex gap-[8px] h-[24px] items-center left-[20px] pl-[19px] top-[67.6px] w-[388px]" data-name="Container">
+      <Container23 />
+      <Text15 />
+      <Text18 />
+    </div>
+  );
+}
+
+function Text19() {
+  return (
+    <div className="absolute h-[22px] left-0 top-0 w-[32.237px]" data-name="Text">
+      <p className="absolute font-['Urbanist:ExtraBold',sans-serif] leading-[22px] left-0 not-italic text-[#014488] text-[19px] top-[-0.8px] tracking-[-0.5px] whitespace-nowrap">$40</p>
+    </div>
+  );
+}
+
+function Text20() {
+  return (
+    <div className="absolute content-stretch flex h-[13px] items-start left-[36.24px] top-[8px] w-[42.688px]" data-name="Text">
+      <p className="font-['Urbanist:Medium',sans-serif] leading-[13px] not-italic relative shrink-0 text-[10px] text-[rgba(0,45,91,0.2)] whitespace-nowrap">/spot · wk</p>
+    </div>
+  );
+}
+
+function Container25() {
+  return (
+    <div className="h-[22px] relative shrink-0 w-[78.925px]" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <Text19 />
+        <Text20 />
+      </div>
+    </div>
+  );
+}
+
+function Text22() {
+  return (
+    <div className="absolute h-[12px] left-[8.8px] top-[3.8px] w-[10.988px]" data-name="Text">
+      <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[12px] left-0 not-italic text-[8px] text-[rgba(0,45,91,0.28)] top-[-0.2px] whitespace-nowrap">🔒</p>
+    </div>
+  );
+}
+
+function Text21() {
+  return (
+    <div className="bg-[rgba(255,255,255,0.5)] h-[19.6px] relative rounded-[26843500px] shrink-0 w-[64.063px]" data-name="Text">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,255,255,0.7)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <Text22 />
+        <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[12px] left-[22.79px] not-italic text-[9px] text-[rgba(0,45,91,0.28)] top-[3.8px] whitespace-nowrap">Security</p>
+      </div>
+    </div>
+  );
+}
+
+function Text24() {
+  return (
+    <div className="absolute h-[12px] left-[8.8px] top-[3.8px] w-[10.988px]" data-name="Text">
+      <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[12px] left-0 not-italic text-[8px] text-[rgba(0,45,91,0.28)] top-[-0.2px] whitespace-nowrap">📍</p>
+    </div>
+  );
+}
+
+function Text23() {
+  return (
+    <div className="bg-[rgba(255,255,255,0.5)] h-[19.6px] relative rounded-[26843500px] shrink-0 w-[65.613px]" data-name="Text">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(255,255,255,0.7)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <Text24 />
+        <p className="absolute font-['Urbanist:Medium',sans-serif] leading-[12px] left-[22.79px] not-italic text-[9px] text-[rgba(0,45,91,0.28)] top-[3.8px] whitespace-nowrap">Tracking</p>
+      </div>
+    </div>
+  );
+}
+
+function Container26() {
+  return (
+    <div className="flex-[1_0_0] h-[19.6px] min-h-px min-w-px relative" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[4px] items-center justify-end relative size-full">
+        <Text21 />
+        <Text23 />
+      </div>
+    </div>
+  );
+}
+
+function Text25() {
+  return (
+    <div className="h-[14px] relative shrink-0 w-[31.25px]" data-name="Text">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex items-start relative size-full">
+        <p className="font-['Urbanist:SemiBold',sans-serif] leading-[14px] not-italic relative shrink-0 text-[11px] text-[rgba(0,45,91,0.35)] tracking-[0.11px] whitespace-nowrap">Select</p>
+      </div>
+    </div>
+  );
+}
+
+function Arrow() {
+  return (
+    <div className="relative shrink-0 size-[14px]" data-name="Arrow">
+      <svg className="absolute block size-full" fill="none" preserveAspectRatio="none" viewBox="0 0 14 14">
+        <g id="Arrow">
+          <path d={svgPaths.p398ea600} fill="var(--fill-0, #A2B3C4)" id="Vector" />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function Container27() {
+  return (
+    <div className="bg-[rgba(255,255,255,0.55)] h-[28.6px] relative rounded-[26843500px] shrink-0" data-name="Container">
+      <div aria-hidden="true" className="absolute border-[0.8px] border-[rgba(1,68,136,0.08)] border-solid inset-0 pointer-events-none rounded-[26843500px]" />
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid content-stretch flex gap-[4px] h-full items-center justify-center px-[14.8px] py-[0.8px] relative">
+        <Text25 />
+        <Arrow />
+      </div>
+    </div>
+  );
+}
+
+function Container24() {
+  return (
+    <div className="absolute content-stretch flex gap-[8px] h-[28.6px] items-center left-[20px] top-[105.6px] w-[388px]" data-name="Container">
+      <Container25 />
+      <Container26 />
+      <Container27 />
+    </div>
+  );
+}
+
+function Container16() {
+  return (
+    <div className="absolute h-[152.2px] left-0 top-0 w-[428px]" data-name="Container">
+      <Container17 />
+      <Container21 />
+      <Container22 />
+      <Container24 />
+    </div>
+  );
+}
+
+function Button6() {
+  return (
+    <div className="absolute h-[152.2px] left-[16px] overflow-clip rounded-[26px] top-0 w-[428px]" data-name="Button">
+      <Container14 />
+      <Container15 />
+      <Container16 />
+    </div>
+  );
+}
+
+function Container13() {
+  return (
+    <div className="absolute h-[152.2px] left-0 top-[311.6px] w-[460px]" data-name="Container">
+      <Button6 />
+    </div>
+  );
+}
+
+function Container5() {
+  return (
+    <div className="h-[484px] relative shrink-0 w-[460px]" data-name="Container">
+      <div className="bg-clip-padding border-0 border-[transparent] border-solid relative size-full">
+        <Container6 />
+        <Container11 />
+        <Container12 />
+        <Paragraph1 />
+        <Container13 />
+      </div>
+    </div>
+  );
+}
+
+function PK() {
+  return (
+    <div className="absolute content-stretch flex h-[729.6px] items-start justify-center left-0 top-0 w-[1166.4px]" data-name="pK">
+      <Container5 />
+    </div>
+  );
+}
+
+export default function SelectLocationStoppedTypingSample() {
+  return (
+    <div className="relative size-full" data-name="Select location-stopped typing Sample 3">
+      <Container />
+      <PK />
+    </div>
+  );
+}

@@ -1,0 +1,206 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  
+  /* Grey Scale Palette Mapping - NEUTRALIZED for "Sober" Look */
+  --background: #FFFFFF; /* Pure White as requested */
+  --foreground: #18191A; /* Darkest Grey */
+  
+  --card: #FFFFFF; /* White */
+  --card-foreground: #18191A;
+  
+  --popover: #FFFFFF;
+  --popover-foreground: #18191A;
+  
+  /* Information (Blue) Palette Mapping - Only for primary actions */
+  --primary: #0171E3; /* Bright Blue */
+  --primary-foreground: #FFFFFF;
+  
+  /* Neutral Grays for Structure */
+  --secondary: #F4F4F5; /* Neutral Light Gray (Zinc-100 equivalent) */
+  --secondary-foreground: #18191A; 
+  
+  --muted: #F4F4F5; /* Neutral Light Gray */
+  --muted-foreground: #71717A; /* Zinc-500 equivalent */
+  
+  --accent: #F4F4F5;
+  --accent-foreground: #18191A;
+  
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  
+  --border: #E4E4E7; /* Neutral Border (Zinc-200 equivalent) */
+  --input: transparent;
+  --input-background: #F4F4F5;
+  
+  --switch-background: #D4D4D8; /* Zinc-300 equivalent */
+  
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  
+  --ring: #0171E3; /* Primary Blue Ring */
+  
+  --chart-1: #0171E3;
+  --chart-2: #348DE9;
+  --chart-3: #015AB6;
+  --chart-4: #67AAEE;
+  --chart-5: #002D5B;
+  
+  --radius: 0.625rem;
+  
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #18191A;
+  --sidebar-primary: #0171E3;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F4F4F5;
+  --sidebar-accent-foreground: #18191A;
+  --sidebar-border: #E4E4E7;
+  --sidebar-ring: #0171E3;
+}
+
+.dark {
+  --background: #09090b; /* Zinc-950 */
+  --foreground: #FAFAFA; /* Zinc-50 */
+  
+  --card: #09090b;
+  --card-foreground: #FAFAFA;
+  
+  --popover: #09090b;
+  --popover-foreground: #FAFAFA;
+  
+  --primary: #348DE9; /* Light Blue 1 */
+  --primary-foreground: #09090b;
+  
+  --secondary: #27272a; /* Zinc-800 */
+  --secondary-foreground: #FAFAFA;
+  
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa; /* Zinc-400 */
+  
+  --accent: #27272a;
+  --accent-foreground: #FAFAFA;
+  
+  --destructive: #7f1d1d;
+  --destructive-foreground: #ffffff;
+  
+  --border: #27272a;
+  --input: #27272a;
+  
+  --ring: #348DE9;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  
+  /* Original Design System Colors - Kept for reference but neutralized in usage */
+  --color-grey-light-1: #ABAFB2;
+  --color-grey-light-2: #C4C8CC;
+  --color-grey-light-3: #DCE1E5;
+  --color-grey-light-4: #E9EDF2;
+  --color-grey-light-5: #EDF2F7;
+  
+  /* Neutral scale for sober look */
+  --color-neutral-50: #FAFAFA;
+  --color-neutral-100: #F4F4F5;
+  --color-neutral-200: #E4E4E7;
+  --color-neutral-300: #D4D4D8;
+  --color-neutral-400: #A1A1AA;
+  --color-neutral-500: #71717A;
+  --color-neutral-900: #18181B;
+
+  --color-blue-primary: #0171E3;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+}
