@@ -1,15 +1,16 @@
-# syntax=docker/dockerfile:1.7
-FROM node:20-alpine AS deps
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
+FROM python:3.12-slim
 
-FROM node:20-alpine AS runner
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-RUN addgroup -S app && adduser -S api -G app
-USER api
-EXPOSE 4000
-CMD ["node", "src/server.js"]
+
+COPY requirement.txt /app/requirement.txt
+RUN pip install --no-cache-dir -r /app/requirement.txt
+
+COPY . /app
+
+EXPOSE 8000
+
+ENV DJANGO_SETTINGS_MODULE=config.settings.production
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "60"]
