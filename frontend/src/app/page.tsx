@@ -12,7 +12,7 @@ export default function Home() {
     <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-12 px-6 py-16">
       <header className="space-y-3">
         <h1 className="text-4xl font-semibold tracking-tight">Vehsl</h1>
-        <p className="text-muted-foreground">Commerce platform — Next.js 15 migration in progress.</p>
+        {/* <p className="text-muted-foreground">Commerce platform — Next.js 15 migration in progress.</p> */}
       </header>
       <section className="grid gap-4 sm:grid-cols-2">
         {modules.map((m) => (
