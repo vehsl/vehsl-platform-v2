@@ -17,11 +17,12 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
-    "apps.accounts",
-    "apps.catalog",
-    "apps.orders",
-    "apps.payments",
-    "apps.inventory",
+    "rest_framework_simplejwt.token_blacklist",
+    "apps.accounts.apps.AccountsConfig",
+    "apps.catalog.apps.CatalogConfig",
+    "apps.orders.apps.OrdersConfig",
+    "apps.payments.apps.PaymentsConfig",
+    "apps.inventory.apps.InventoryConfig",
 ]
 
 MIDDLEWARE = [
@@ -55,6 +56,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
+AUTH_USER_MODEL = "accounts.User"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -66,7 +69,12 @@ DATABASES = {
     }
 }
 
-AUTH_PASSWORD_VALIDATORS: list[dict] = []
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 10}},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
@@ -82,3 +90,12 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.AllowAny",),
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
+}

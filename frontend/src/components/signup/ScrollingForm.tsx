@@ -9,6 +9,7 @@ import {
   useMemo,
 } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { toast } from "sonner";
 import {
   ChevronDown,
   ChevronUp,
@@ -141,7 +142,7 @@ function isValidEmail(e: string) {
 }
 function getPasswordChecks(pw: string) {
   return [
-    { label: "8 characters minimum", met: pw.length >= 8 },
+    { label: "10 characters minimum", met: pw.length >= 10 },
     { label: "One uppercase letter (A–Z)", met: /[A-Z]/.test(pw) },
     { label: "One lowercase letter (a–z)", met: /[a-z]/.test(pw) },
     { label: "One number (0–9)", met: /[0-9]/.test(pw) },
@@ -175,6 +176,7 @@ export function ScrollingForm({
   const [emailCodeSent, setEmailCodeSent] = useState(false);
   const [phoneCodeSent, setPhoneCodeSent] = useState(false);
   const [showLivenessModal, setShowLivenessModal] = useState(false);
+  const [creatingAccount, setCreatingAccount] = useState(false);
 
   const scrollTo = useCallback((s: string) => {
     const el = sectionRefs.current[s];
@@ -245,6 +247,77 @@ export function ScrollingForm({
     onSectionEdit(s);
     setTimeout(() => scrollTo(s), 100);
   }, [onSectionEdit, scrollTo]);
+
+  const handleCreateAccount = useCallback(async () => {
+    if (creatingAccount) return;
+
+    const password = data.password || "";
+    const confirm = data.rePassword || "";
+    if (!isPasswordStrong(password) || password !== confirm) return;
+
+    const email = (data.email || "").trim();
+    const phone = (data.phone || "").trim();
+    const accountType = data.accountType;
+
+    if (!accountType) {
+      toast.error("Please select account type.");
+      return;
+    }
+    if (!email && !phone) {
+      toast.error("Please provide email or phone.");
+      return;
+    }
+
+    const base = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+
+    try {
+      setCreatingAccount(true);
+
+      const registerRes = await fetch(`${base}/api/v1/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email || undefined,
+          phone: phone || undefined,
+          first_name: (data.firstName || "").trim(),
+          last_name: (data.lastName || "").trim(),
+          account_type: accountType,
+          password,
+        }),
+      });
+
+      if (!registerRes.ok) {
+        const err = await registerRes.json().catch(() => null);
+        const msg =
+          (err && (err.detail || err.email || err.phone || err.password || err.non_field_errors)) ||
+          "Signup failed.";
+        toast.error(typeof msg === "string" ? msg : "Signup failed.");
+        return;
+      }
+
+      const loginRes = await fetch(`${base}/api/v1/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: email || phone, password }),
+      });
+
+      if (loginRes.ok) {
+        const tokens = await loginRes.json();
+        try {
+          window.localStorage.setItem("vehsl.access", tokens.access);
+          window.localStorage.setItem("vehsl.refresh", tokens.refresh);
+          window.localStorage.setItem("vehsl.user", JSON.stringify(tokens.user));
+        } catch {}
+      }
+
+      toast.success("Account created.");
+      handleDone("password");
+    } catch {
+      toast.error("Network error. Please try again.");
+    } finally {
+      setCreatingAccount(false);
+    }
+  }, [creatingAccount, data, handleDone]);
 
   // Auto-complete verification section when all documents are uploaded
   useEffect(() => {
@@ -772,11 +845,11 @@ export function ScrollingForm({
           <PwStrength pw={data.password || ""} confirm={data.rePassword || ""} />
           <motion.button
             disabled={!isPasswordStrong(data.password || "") || data.password !== data.rePassword}
-            onClick={() => handleDone("password")}
-            className="mt-5 w-full h-[48px] rounded-[14px] bg-[#0171e3] text-white font-['Urbanist',sans-serif] font-semibold text-[14px] disabled:opacity-15 disabled:cursor-not-allowed cursor-pointer"
+            onClick={handleCreateAccount}
+            className="mt-5 w-full h-[48px] rounded-[14px] bg-[#0171e3] text-white font-['Urbanist',sans-serif] font-semibold text-[14px] disabled:bg-[#dbeafe] disabled:text-[#7c7f87] disabled:opacity-100 disabled:cursor-not-allowed cursor-pointer"
             whileHover={isPasswordStrong(data.password || "") && data.password === data.rePassword ? { scale: 1.01 } : {}}
             whileTap={isPasswordStrong(data.password || "") && data.password === data.rePassword ? { scale: 0.98 } : {}}>
-            Create Account
+            {creatingAccount ? "Creating..." : "Create Account"}
           </motion.button>
         </Sec>
 
