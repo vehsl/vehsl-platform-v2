@@ -1,0 +1,251 @@
+{% extends "admin/base.html" %}
+{% load i18n static %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | VEHSL{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  :root {
+    --vehsl-bg: #0b1020;
+    --vehsl-card: rgba(255,255,255,0.06);
+    --vehsl-border: rgba(255,255,255,0.12);
+    --vehsl-text: rgba(255,255,255,0.92);
+    --vehsl-muted: rgba(255,255,255,0.62);
+    --vehsl-accent: #4f46e5;
+    --vehsl-accent-2: #22c55e;
+    --vehsl-warn: #f59e0b;
+    --vehsl-danger: #ef4444;
+  }
+
+  body {
+    background: radial-gradient(1200px 700px at 20% 0%, rgba(79,70,229,0.35), transparent 60%),
+      radial-gradient(1100px 700px at 80% 0%, rgba(34,197,94,0.22), transparent 55%),
+      var(--vehsl-bg);
+  }
+
+  #header {
+    background: rgba(255,255,255,0.06);
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+    backdrop-filter: blur(14px);
+  }
+
+  #branding h1, #branding h1 a:link, #branding h1 a:visited {
+    color: var(--vehsl-text);
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+
+  #user-tools, #user-tools a {
+    color: var(--vehsl-muted);
+  }
+
+  .module, .dashboard .module {
+    background: var(--vehsl-card);
+    border: 1px solid var(--vehsl-border);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .module h2, .module caption, .inline-group h2 {
+    background: transparent;
+    color: var(--vehsl-text);
+    border-bottom: 1px solid var(--vehsl-border);
+  }
+
+  a:link, a:visited {
+    color: rgba(255,255,255,0.85);
+  }
+
+  a:hover, a:focus {
+    color: #ffffff;
+  }
+
+  .button, input[type=submit], input[type=button], .submit-row input, a.button {
+    background: linear-gradient(180deg, rgba(79,70,229,1), rgba(67,56,202,1));
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(79,70,229,0.20);
+  }
+
+  .button:hover, input[type=submit]:hover, input[type=button]:hover, a.button:hover {
+    filter: brightness(1.03);
+  }
+
+  .breadcrumbs {
+    background: transparent;
+    color: var(--vehsl-muted);
+  }
+
+  .breadcrumbs a {
+    color: rgba(255,255,255,0.82);
+  }
+
+  #content {
+    color: var(--vehsl-text);
+  }
+
+  #content {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .vehsl-page-title {
+    font-size: 22px;
+    font-weight: 780;
+    letter-spacing: -0.2px;
+    line-height: 1.15;
+    margin: 0 0 8px 0;
+  }
+
+  .vehsl-subtitle {
+    color: var(--vehsl-muted);
+    margin: 0 0 14px 0;
+  }
+
+  .vehsl-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 12px;
+  }
+
+  .vehsl-card {
+    grid-column: span 3;
+    padding: 14px;
+    border-radius: 16px;
+    border: 1px solid var(--vehsl-border);
+    background: var(--vehsl-card);
+  }
+
+  .vehsl-card-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--vehsl-muted);
+  }
+
+  .vehsl-card-value {
+    margin-top: 10px;
+    font-size: 28px;
+    font-weight: 780;
+    letter-spacing: -0.4px;
+  }
+
+  .vehsl-pill-row {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .vehsl-pill {
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.78);
+    font-size: 12px;
+  }
+
+  .vehsl-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 8px 0 12px 0;
+  }
+
+  .vehsl-action {
+    text-decoration: none;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.92);
+    font-weight: 650;
+    font-size: 12px;
+  }
+
+  .vehsl-action--warn {
+    background: rgba(245,158,11,0.10);
+    border: 1px solid rgba(245,158,11,0.25);
+  }
+
+  .vehsl-action--danger {
+    background: rgba(239,68,68,0.10);
+    border: 1px solid rgba(239,68,68,0.25);
+  }
+
+  @media (max-width: 1100px) {
+    .vehsl-card { grid-column: span 6; }
+  }
+
+  @media (max-width: 720px) {
+    .vehsl-card { grid-column: span 12; }
+  }
+
+  .form-row, .aligned .form-row, fieldset.module, .inline-related {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 16px;
+  }
+
+  input, select, textarea {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.16);
+    color: var(--vehsl-text);
+    border-radius: 12px;
+  }
+
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 4px rgba(79,70,229,0.22);
+    border-color: rgba(79,70,229,0.60);
+  }
+
+  .quiet, p.help, .help {
+    color: var(--vehsl-muted);
+  }
+
+  table thead th {
+    background: rgba(255,255,255,0.06);
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+    color: var(--vehsl-muted);
+  }
+
+  table td, table th {
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .messagelist li.success {
+    background: rgba(34,197,94,0.10);
+    border: 1px solid rgba(34,197,94,0.25);
+    color: rgba(255,255,255,0.92);
+  }
+
+  .messagelist li.warning {
+    background: rgba(245,158,11,0.10);
+    border: 1px solid rgba(245,158,11,0.25);
+    color: rgba(255,255,255,0.92);
+  }
+
+  .messagelist li.error {
+    background: rgba(239,68,68,0.10);
+    border: 1px solid rgba(239,68,68,0.25);
+    color: rgba(255,255,255,0.92);
+  }
+
+  #nav-sidebar, #nav-sidebar .module {
+    background: transparent;
+  }
+
+  #nav-sidebar .current-app .section:link, #nav-sidebar .current-app .section:visited {
+    color: var(--vehsl-text);
+  }
+</style>
+{% endblock %}
+
+{% block branding %}
+<h1 id="site-name">
+  <a href="{% url 'admin:index' %}">VEHSL</a>
+</h1>
+{% endblock %}

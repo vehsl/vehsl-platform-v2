@@ -21,13 +21,58 @@ services:
       dockerfile: Dockerfile
     container_name: vehsl-backend
     restart: unless-stopped
-    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 60"
+    command:
+      - sh
+      - -c
+      - |
+          python - <<'PY'
+          import os
+          import time
+
+          import psycopg
+
+          host = os.environ.get("POSTGRES_HOST", "db")
+          port = int(os.environ.get("POSTGRES_PORT", "5432"))
+          name = os.environ.get("POSTGRES_DB", "vehsl")
+          user = os.environ.get("POSTGRES_USER", "vehsl")
+          pw = os.environ.get("POSTGRES_PASSWORD", "vehsl")
+
+          deadline = time.time() + 60
+          last = None
+          while time.time() < deadline:
+              try:
+                  psycopg.connect(
+                      host=host,
+                      port=port,
+                      dbname=name,
+                      user=user,
+                      password=pw,
+                      connect_timeout=2,
+                  ).close()
+                  print("db ready")
+                  break
+              except Exception as e:
+                  last = e
+                  time.sleep(1)
+          else:
+              raise SystemExit(f"db not ready: {last}")
+          PY
+
+          python manage.py collectstatic --noinput
+
+          python manage.py migrate --noinput
+
+          python manage.py shell -c "import os; from django.contrib.auth import get_user_model; User=get_user_model(); email=os.environ.get('DJANGO_SUPERUSER_EMAIL','admin@vehsl.local'); pw=os.environ.get('DJANGO_SUPERUSER_PASSWORD','admin'); u, _ = User.objects.get_or_create(email=email, defaults={'is_staff': True, 'is_superuser': True, 'is_active': True, 'role': 'admin', 'account_type': 'buyer'}); u.is_staff=True; u.is_superuser=True; u.is_active=True; u.role='admin'; u.account_type=u.account_type or 'buyer'; u.set_password(pw); u.save(); print('dev superuser ready:', email)"
+
+          exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 60
     environment:
       - DJANGO_DEBUG=${DJANGO_DEBUG:-0}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-insecure-secret-key}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       - CORS_ALLOW_ALL_ORIGINS=${CORS_ALLOW_ALL_ORIGINS:-1}
+      - DJANGO_SUPERUSER_EMAIL=${DJANGO_SUPERUSER_EMAIL:-admin@vehsl.local}
+      - DJANGO_SUPERUSER_PASSWORD=${DJANGO_SUPERUSER_PASSWORD:-admin}
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-vehsl}
@@ -36,7 +81,8 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - vehsl
 
@@ -52,6 +98,11 @@ services:
       - postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     networks:
       - vehsl
 

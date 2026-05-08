@@ -1,7 +1,6 @@
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
-
 from apps.catalog.models import Product, ProductVariation
 
 
@@ -217,9 +216,9 @@ class Review(models.Model):
         ]
         constraints = [
             models.CheckConstraint(
-                check=(
-                    (models.Q(target_type=TargetType.SELLER) & models.Q(target_seller__isnull=False) & models.Q(target_product__isnull=True))
-                    | (models.Q(target_type=TargetType.PRODUCT) & models.Q(target_product__isnull=False) & models.Q(target_seller__isnull=True))
+                condition=(
+                    models.Q(target_product__isnull=True, target_seller__isnull=False, target_type="seller")
+                    | models.Q(target_product__isnull=False, target_seller__isnull=True, target_type="product")
                 ),
                 name="review_target_exactly_one",
             ),

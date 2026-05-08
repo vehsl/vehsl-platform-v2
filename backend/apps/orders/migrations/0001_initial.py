@@ -185,6 +185,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name="review",
-            constraint=models.CheckConstraint(check=(models.Q(target_type="seller", target_seller__isnull=False, target_product__isnull=True) | models.Q(target_type="product", target_product__isnull=False, target_seller__isnull=True)), name="review_target_exactly_one"),
+            constraint=models.CheckConstraint(condition=(models.Q(target_product__isnull=True, target_seller__isnull=False, target_type="seller") | models.Q(target_product__isnull=False, target_seller__isnull=True, target_type="product")), name="review_target_exactly_one"),
         ),
     ]

@@ -1,0 +1,80 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block content %}
+  {% if vehsl_stats %}
+    <div style="margin: 0 0 18px 0;">
+      <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:14px;">
+        <div>
+          <div class="vehsl-page-title">Operations Dashboard</div>
+          <div class="vehsl-subtitle">Live overview · Updated {{ vehsl_stats.generated_at }}</div>
+        </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <div style="padding:10px 12px; border-radius:14px; border:1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06);">
+            <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.6px; color: rgba(255,255,255,0.62);">7 Days</div>
+            <div style="margin-top:3px; font-size:13px; font-weight:650;">+{{ vehsl_stats.users_7d }} users · +{{ vehsl_stats.orders_7d }} orders · +{{ vehsl_stats.payments_7d }} payments</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="vehsl-actions">
+        <a class="vehsl-action vehsl-action--warn" href="/admin/catalog/product/?status__exact=pending">Review pending products</a>
+        <a class="vehsl-action vehsl-action--danger" href="/admin/orders/order/?status__exact=disputed">Handle disputed orders</a>
+        <a class="vehsl-action" href="/admin/accounts/user/">User directory</a>
+        <a class="vehsl-action" href="/admin/orders/shipment/">Shipment tracking</a>
+      </div>
+
+      <div class="vehsl-grid">
+        <div class="vehsl-card">
+          <div class="vehsl-card-title">
+            <div>Users</div>
+            <div style="color: rgba(34,197,94,0.95); font-weight:650;">+{{ vehsl_stats.users_7d }} / 7d</div>
+          </div>
+          <div class="vehsl-card-value">{{ vehsl_stats.users_total }}</div>
+          <div class="vehsl-pill-row">
+            <span class="vehsl-pill">Buyers {{ vehsl_stats.buyers_total }}</span>
+            <span class="vehsl-pill">Sellers {{ vehsl_stats.sellers_total }}</span>
+          </div>
+        </div>
+
+        <div class="vehsl-card">
+          <div class="vehsl-card-title">
+            <div>Products</div>
+            <div style="color: rgba(34,197,94,0.95); font-weight:650;">+{{ vehsl_stats.products_7d }} / 7d</div>
+          </div>
+          <div class="vehsl-card-value">{{ vehsl_stats.products_total }}</div>
+          <div class="vehsl-pill-row">
+            <span class="vehsl-pill" style="background: rgba(245,158,11,0.10); border:1px solid rgba(245,158,11,0.25); color: rgba(255,255,255,0.90);">Pending review {{ vehsl_stats.products_pending }}</span>
+          </div>
+        </div>
+
+        <div class="vehsl-card">
+          <div class="vehsl-card-title">
+            <div>Orders</div>
+            <div style="color: rgba(34,197,94,0.95); font-weight:650;">+{{ vehsl_stats.orders_7d }} / 7d</div>
+          </div>
+          <div class="vehsl-card-value">{{ vehsl_stats.orders_total }}</div>
+          <div class="vehsl-pill-row">
+            {% for row in vehsl_stats.orders_by_status %}
+              <span class="vehsl-pill">{{ row.status }} {{ row.c }}</span>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="vehsl-card">
+          <div class="vehsl-card-title">
+            <div>Payments</div>
+            <div style="color: rgba(34,197,94,0.95); font-weight:650;">+{{ vehsl_stats.payments_7d }} / 7d</div>
+          </div>
+          <div class="vehsl-card-value">{{ vehsl_stats.payments_total }}</div>
+          <div class="vehsl-pill-row">
+            <span class="vehsl-pill">GMV {{ vehsl_stats.payments_sum }}</span>
+            <span class="vehsl-pill" style="background: rgba(239,68,68,0.10); border:1px solid rgba(239,68,68,0.25); color: rgba(255,255,255,0.90);">Open disputes {{ vehsl_stats.disputes_open }}</span>
+            <span class="vehsl-pill">Samples {{ vehsl_stats.sample_requests_total }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+  {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+{% endblock %}
