@@ -253,7 +253,13 @@ export function ScrollingForm({
 
     const password = data.password || "";
     const confirm = data.rePassword || "";
-    if (!isPasswordStrong(password) || password !== confirm) return;
+    if (!password) {
+      toast.error("Please enter a password.");
+      return;
+    }
+    if (confirm && password !== confirm) {
+      toast.warning("Passwords do not match. Submitting with the first password.");
+    }
 
     const email = (data.email || "").trim();
     const phone = (data.phone || "").trim();
@@ -268,7 +274,17 @@ export function ScrollingForm({
       return;
     }
 
-    const base = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+    const base = (() => {
+      const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+      const normalize = (u: string) => u.replace(/\/$/, "");
+      if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+        return normalize(fromEnv);
+      }
+      if (typeof window !== "undefined") {
+        return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+      }
+      return "http://localhost:8000";
+    })();
 
     try {
       setCreatingAccount(true);
@@ -312,8 +328,9 @@ export function ScrollingForm({
 
       toast.success("Account created.");
       handleDone("password");
-    } catch {
-      toast.error("Network error. Please try again.");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Network error.";
+      toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);
     } finally {
       setCreatingAccount(false);
     }
@@ -844,11 +861,11 @@ export function ScrollingForm({
           </div>
           <PwStrength pw={data.password || ""} confirm={data.rePassword || ""} />
           <motion.button
-            disabled={!isPasswordStrong(data.password || "") || data.password !== data.rePassword}
+            disabled={creatingAccount}
             onClick={handleCreateAccount}
             className="mt-5 w-full h-[48px] rounded-[14px] bg-[#0171e3] text-white font-['Urbanist',sans-serif] font-semibold text-[14px] disabled:bg-[#dbeafe] disabled:text-[#7c7f87] disabled:opacity-100 disabled:cursor-not-allowed cursor-pointer"
-            whileHover={isPasswordStrong(data.password || "") && data.password === data.rePassword ? { scale: 1.01 } : {}}
-            whileTap={isPasswordStrong(data.password || "") && data.password === data.rePassword ? { scale: 0.98 } : {}}>
+            whileHover={!creatingAccount ? { scale: 1.01 } : {}}
+            whileTap={!creatingAccount ? { scale: 0.98 } : {}}>
             {creatingAccount ? "Creating..." : "Create Account"}
           </motion.button>
         </Sec>
