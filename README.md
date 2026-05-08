@@ -1,6 +1,6 @@
 # Vehsl Platform v2
 
-Next.js 15 (App Router) frontend + Node/Express backend, orchestrated via Docker Compose.
+Next.js 15 (App Router) frontend + Django REST backend + Postgres, orchestrated via Docker Compose.
 
 ## Structure
 
@@ -17,38 +17,30 @@ vehsl-platform-v2/
 │       ├── hooks/
 │       ├── styles/             # tailwind, theme, fonts
 │       └── types/
-├── backend/                    # Node + Express
+├── backend/                    # Django + DRF
 │   ├── Dockerfile
-│   └── src/server.js
+│   ├── manage.py
+│   ├── config/                 # settings/urls/wsgi
+│   └── apps/                   # accounts, catalog, orders, payments, inventory
 └── _legacy/                    # original React + Vite modules (reference only)
 ```
 
 ## Local development
 
 ```bash
-# Frontend
-cd frontend && npm install && npm run dev    # → http://localhost:3000
-
-# Backend
-cd backend && npm install && npm run dev     # → http://localhost:4000
-```
-
-## Docker
-
-```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-Frontend on `:3000`, backend on `:4000`.
+## Docker
 
-## Migration status
+- Frontend: http://localhost:3000
+- Backend: http://localhost:8000
+- Admin: http://localhost:8000/admin/
 
-| Module | Source | Target route | Status |
-|---|---|---|---|
-| Signup | `_legacy/Signup page Vehsl complete/` | `/signup` | pending |
-| Product View | `_legacy/Product View Page/` | `/products/[id]` | pending |
-| Order Details | `_legacy/Order Details View/` | `/orders/[id]` | pending |
-| Admin | `_legacy/Admin Management Modules/` | `/admin` | pending |
-| Landing | `_legacy/Platonic E-commerce Platform Design 100426/` | `/` | pending |
-# vehsl-platform-v2
+### Dev admin user (auto-created)
+- Email: `admin@vehsl.local`
+- Password: `admin`
+- Override via `.env`: `DJANGO_SUPERUSER_EMAIL`, `DJANGO_SUPERUSER_PASSWORD`
+
+Do not use these credentials in production.
