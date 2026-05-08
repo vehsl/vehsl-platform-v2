@@ -6,7 +6,17 @@ from django.db.models import Q
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import User, UserProfile
+from .models import (
+    AdminProfile,
+    BuyerProfile,
+    ChatMessage,
+    ChatThread,
+    Notification,
+    SellerProfile,
+    Subscription,
+    User,
+    UserProfile,
+)
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -26,10 +36,96 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     profile = UserProfileSerializer(required=False)
+    buyer_profile = serializers.SerializerMethodField()
+    seller_profile = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "email", "phone", "first_name", "last_name", "account_type", "profile"]
+        fields = [
+            "id",
+            "email",
+            "phone",
+            "first_name",
+            "last_name",
+            "role",
+            "account_type",
+            "two_factor_enabled",
+            "status",
+            "profile",
+            "buyer_profile",
+            "seller_profile",
+        ]
+
+    def get_buyer_profile(self, obj: User):
+        if getattr(obj, "account_type", None) != User.AccountType.BUYER:
+            return None
+        prof = getattr(obj, "buyer_profile", None)
+        return BuyerProfileSerializer(prof).data if prof else None
+
+    def get_seller_profile(self, obj: User):
+        if getattr(obj, "account_type", None) != User.AccountType.SELLER:
+            return None
+        prof = getattr(obj, "seller_profile", None)
+        return SellerProfileSerializer(prof).data if prof else None
+
+
+class BuyerProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BuyerProfile
+        fields = [
+            "name",
+            "business_type",
+            "default_location",
+            "currency_preference",
+            "language_preference",
+        ]
+
+
+class SellerProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SellerProfile
+        fields = [
+            "business_name",
+            "business_license_url",
+            "tax_id",
+            "verification_status",
+            "country",
+            "region",
+            "vehsl_rating",
+            "sample_low_threshold",
+        ]
+
+
+class AdminProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdminProfile
+        fields = ["admin_role", "department"]
+
+
+class SubscriptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subscription
+        fields = ["id", "plan", "status", "trial_ends_at", "current_period_end", "created_at", "updated_at"]
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ["id", "channel", "event_type", "payload", "status", "sent_at", "created_at"]
+
+
+class ChatThreadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChatThread
+        fields = ["id", "type", "participants", "created_at", "updated_at"]
+
+
+class ChatMessageSerializer(serializers.ModelSerializer):
+    sender_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = ChatMessage
+        fields = ["id", "thread", "sender_id", "content", "attachments", "sent_at", "read_by"]
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -83,8 +179,14 @@ class RegisterSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
+        account_type = validated_data.get("account_type")
+        validated_data["role"] = account_type
         user = User.objects.create_user(password=password, **validated_data)
         UserProfile.objects.get_or_create(user=user)
+        if account_type == User.AccountType.BUYER:
+            BuyerProfile.objects.get_or_create(user=user)
+        elif account_type == User.AccountType.SELLER:
+            SellerProfile.objects.get_or_create(user=user)
         return user
 
 
