@@ -8,6 +8,7 @@ import {
   forwardRef,
   useMemo,
 } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "motion/react";
 import { toast } from "sonner";
 import {
@@ -169,6 +170,7 @@ type Props = {
 export function ScrollingForm({
   data, updateData, completedSections, onSectionComplete, onSectionEdit, applicableSections,
 }: Props) {
+  const router = useRouter();
   const scrollRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [interactionCount, setInteractionCount] = useState(0);
@@ -317,6 +319,12 @@ export function ScrollingForm({
         body: JSON.stringify({ identifier: email || phone, password }),
       });
 
+      if (!loginRes.ok) {
+        toast.success("Account created.");
+        handleDone("password");
+        return;
+      }
+
       if (loginRes.ok) {
         const tokens = await loginRes.json();
         try {
@@ -327,14 +335,14 @@ export function ScrollingForm({
       }
 
       toast.success("Account created.");
-      handleDone("password");
+      router.replace("/");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error.";
       toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);
     } finally {
       setCreatingAccount(false);
     }
-  }, [creatingAccount, data, handleDone]);
+  }, [creatingAccount, data, handleDone, router]);
 
   // Auto-complete verification section when all documents are uploaded
   useEffect(() => {

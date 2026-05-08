@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState } from "react";
 
 interface RoleContextValue {
   isSeller: boolean;
@@ -14,6 +14,16 @@ const RoleContext = createContext<RoleContextValue>({
 
 export function RoleProvider({ children }: { children: React.ReactNode }) {
   const [isSeller, setIsSeller] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("vehsl.user");
+      if (!raw) return;
+      const user = JSON.parse(raw) as { account_type?: string } | null;
+      if (user?.account_type) setIsSeller(user.account_type === "seller");
+    } catch {}
+  }, []);
+
   return (
     <RoleContext.Provider value={{ isSeller, setIsSeller }}>
       {children}
