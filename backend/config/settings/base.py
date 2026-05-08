@@ -1,12 +1,25 @@
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-SECRET_KEY = "dev-insecure-secret-key"
+def _env_bool(key: str, default: bool = False) -> bool:
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
 
-DEBUG = False
+def _env_list(key: str, default: list[str]) -> list[str]:
+    val = os.environ.get(key)
+    if not val:
+        return default
+    return [item.strip() for item in val.split(",") if item.strip()]
 
-ALLOWED_HOSTS: list[str] = ["*"]
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-secret-key")
+
+DEBUG = _env_bool("DJANGO_DEBUG", False)
+
+ALLOWED_HOSTS: list[str] = _env_list("DJANGO_ALLOWED_HOSTS", ["*"] if DEBUG else ["localhost", "127.0.0.1"])
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -17,11 +30,12 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
-    "apps.accounts",
-    "apps.catalog",
-    "apps.orders",
-    "apps.payments",
-    "apps.inventory",
+    "rest_framework_simplejwt.token_blacklist",
+    "apps.accounts.apps.AccountsConfig",
+    "apps.catalog.apps.CatalogConfig",
+    "apps.orders.apps.OrdersConfig",
+    "apps.payments.apps.PaymentsConfig",
+    "apps.inventory.apps.InventoryConfig",
 ]
 
 MIDDLEWARE = [
@@ -55,18 +69,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
+AUTH_USER_MODEL = "accounts.User"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": "vehsl",
-        "USER": "vehsl",
-        "PASSWORD": "vehsl",
-        "HOST": "db",
-        "PORT": 5432,
+        "NAME": os.environ.get("POSTGRES_DB", "vehsl"),
+        "USER": os.environ.get("POSTGRES_USER", "vehsl"),
+        "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "vehsl"),
+        "HOST": os.environ.get("POSTGRES_HOST", "db"),
+        "PORT": int(os.environ.get("POSTGRES_PORT", "5432")),
     }
 }
 
-AUTH_PASSWORD_VALIDATORS: list[dict] = []
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 10}},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
@@ -79,6 +100,20 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_ALL_ORIGINS = _env_bool("CORS_ALLOW_ALL_ORIGINS", False) or DEBUG
+
+CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS", [])
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.AllowAny",),
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
+}

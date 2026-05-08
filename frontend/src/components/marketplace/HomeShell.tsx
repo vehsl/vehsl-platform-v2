@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Eye } from "lucide-react";
+import { toast } from "sonner";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
@@ -14,6 +16,7 @@ import { TopNav } from "@/components/marketplace/TopNav";
 import { useLanguage } from "@/context/language";
 
 export function HomeShell() {
+  const router = useRouter();
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
 
@@ -48,6 +51,7 @@ export function HomeShell() {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
 
   const signInAnchor = useMemo(
     () => (
@@ -63,6 +67,56 @@ export function HomeShell() {
     ),
     [t],
   );
+
+  const handleSignIn = useCallback(async () => {
+    if (signingIn) return;
+    const id = identifier.trim();
+    const pw = password;
+    if (!id || !pw) {
+      toast.error("Enter email/phone and password.");
+      return;
+    }
+
+    const base = (() => {
+      const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+      const normalize = (u: string) => u.replace(/\/$/, "");
+      if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+        return normalize(fromEnv);
+      }
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    })();
+
+    try {
+      setSigningIn(true);
+      const res = await fetch(`${base}/api/v1/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: id, password: pw }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        const msg = (err && (err.detail || err.non_field_errors)) || "Login failed.";
+        toast.error(typeof msg === "string" ? msg : "Login failed.");
+        return;
+      }
+
+      const tokens = await res.json();
+      try {
+        window.localStorage.setItem("vehsl.access", tokens.access);
+        window.localStorage.setItem("vehsl.refresh", tokens.refresh);
+        window.localStorage.setItem("vehsl.user", JSON.stringify(tokens.user));
+      } catch {}
+
+      setSignInOpen(false);
+      toast.success("Signed in.");
+      router.push("/orders/1");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Network error.";
+      toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);
+    } finally {
+      setSigningIn(false);
+    }
+  }, [identifier, password, router, signingIn]);
 
   return (
     <div className="bg-vehsl-watercolor font-inter min-h-screen w-full overflow-hidden">
@@ -104,6 +158,9 @@ export function HomeShell() {
                     placeholder={t("password")}
                     type={showPassword ? "text" : "password"}
                     className="h-11 rounded-full bg-white/85 pr-12"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSignIn();
+                    }}
                   />
                   <button
                     type="button"
@@ -123,6 +180,16 @@ export function HomeShell() {
               </div>
 
               <div className="mt-5 flex justify-center">
+                <Button
+                  type="button"
+                  onClick={handleSignIn}
+                  disabled={signingIn}
+                  className={cn(
+                    "h-11 rounded-full bg-blue-600 px-6 text-white shadow-soft hover:bg-blue-600/90",
+                  )}
+                >
+                  {signingIn ? "Signing in..." : t("signIn")}
+                </Button>
                 <Button
                   asChild
                   className={cn(

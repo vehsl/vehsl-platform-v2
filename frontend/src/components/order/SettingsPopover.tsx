@@ -53,6 +53,29 @@ const T = { primary: 'E8', secondary: '99', tertiary: '66', ghost: '1A' };
 const O = { max: T.primary, high: T.primary, solid: 'CC', body: T.secondary, mid: T.tertiary, soft: T.tertiary, faint: '55', ghost: T.ghost, bg3: '0A', bg2: '07', bg1: '04' };
 const FONT = "'Urbanist', sans-serif";
 
+function readVehslUser() {
+    try {
+        const raw = window.localStorage.getItem('vehsl.user');
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function getUserDisplay(user: any) {
+    const first = (user?.first_name || '').toString().trim();
+    const last = (user?.last_name || '').toString().trim();
+    const full = `${first} ${last}`.trim();
+    const secondary = ((user?.email || user?.phone) || '').toString().trim();
+    const name = full || secondary || 'Account';
+    const shownSecondary = full ? secondary : '';
+    const initialFrom = (full || secondary || 'A').trim();
+    const initial = (initialFrom[0] || 'A').toUpperCase();
+    const accountType = (user?.account_type || '').toString().trim().toLowerCase();
+    return { name, secondary: shownSecondary, initial, accountType };
+}
+
 /* ── Figma SVG icons ── */
 function IconOrders({ color = '#494B4D', size = 18 }: { color?: string; size?: number }) {
     return (<svg width={size} height={size} viewBox="0 0 18.9 17.4" fill="none" className="flex-shrink-0"><path d={svgPaths.p36665644} stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2" /><path d={svgPaths.p38e07a60} stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.58" /><path d={svgPaths.p2a9763d8} stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.58" /><path d={svgPaths.p3d94c100} stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.58" /></svg>);
@@ -372,6 +395,18 @@ function ProfilePopover({
     const [expandedNotif, setExpandedNotif] = useState<string | null>(null);
     const [showHistory, setShowHistory] = useState(false);
     const { isSeller, setIsSeller } = useRole();
+    const [authUser, setAuthUser] = useState<any | null>(null);
+
+    useEffect(() => {
+        setAuthUser(readVehslUser());
+    }, []);
+
+    const userDisplay = useMemo(() => getUserDisplay(authUser), [authUser]);
+    const lockedRole = userDisplay.accountType === 'buyer' || userDisplay.accountType === 'seller' ? userDisplay.accountType : null;
+
+    useEffect(() => {
+        if (lockedRole) setIsSeller(lockedRole === 'seller');
+    }, [lockedRole, setIsSeller]);
 
     const handleNotifPress = (notif: typeof NOTIFICATIONS[number], index: number) => {
         momentumRef.current.value = Math.min(1, momentumRef.current.value + 0.12);
@@ -401,8 +436,15 @@ function ProfilePopover({
     };
     const handleLogout = () => {
         momentumRef.current.value = Math.min(1, momentumRef.current.value + 0.25);
+        try {
+            window.localStorage.removeItem('vehsl.access');
+            window.localStorage.removeItem('vehsl.refresh');
+            window.localStorage.removeItem('vehsl.user');
+        } catch { }
+        setIsSeller(false);
         toast('Signed out successfully');
         onClose();
+        window.location.href = '/';
     };
 
     return createPortal(
@@ -446,12 +488,12 @@ function ProfilePopover({
                                     style={{
                                         background: 'linear-gradient(135deg, #E8ECF4 0%, #D5DCE8 100%)',
                                         color: B[800], fontFamily: FONT,
-                                    }}>N</div>
+                                    }}>{userDisplay.initial}</div>
                             </div>
                             <p className="text-[16px] font-semibold leading-tight"
-                                style={{ color: C.text, fontFamily: FONT, letterSpacing: '-0.01em' }}>Noah</p>
+                                style={{ color: C.text, fontFamily: FONT, letterSpacing: '-0.01em' }}>{userDisplay.name}</p>
                             <p className="text-[11px] font-normal leading-tight mt-1"
-                                style={{ color: B[600], fontFamily: FONT }}>noah@acme.store</p>
+                                style={{ color: B[600], fontFamily: FONT }}>{userDisplay.secondary || ' '}</p>
 
                             {/* ── Buyer / Seller toggle — identity level ── */}
                             <motion.div
@@ -470,6 +512,11 @@ function ProfilePopover({
                                             <button key={tab.id}
                                                 onClick={(e) => {
                                                     if (active) return;
+                                                    if (lockedRole) {
+                                                        e.stopPropagation();
+                                                        toast('Role is fixed for this account');
+                                                        return;
+                                                    }
                                                     e.stopPropagation();
                                                     setIsSeller(tab.id === 'seller');
                                                     setExpandedNotif(null);
@@ -1542,6 +1589,13 @@ function ProfileTab({ display, setDisplay }: { display: any; setDisplay: any }) 
     const [activeBizId, setActiveBizId] = useState('acme');
     const [langOpen, setLangOpen] = useState(false);
     const [currOpen, setCurrOpen] = useState(false);
+    const [authUser, setAuthUser] = useState<any | null>(null);
+
+    useEffect(() => {
+        setAuthUser(readVehslUser());
+    }, []);
+
+    const userDisplay = useMemo(() => getUserDisplay(authUser), [authUser]);
 
     /* ── Individual mode state ── */
     const [personalAddress, setPersonalAddress] = useState('15 Maple Avenue, Apt 4B, Brooklyn, NY 11201');
@@ -1657,18 +1711,18 @@ function ProfileTab({ display, setDisplay }: { display: any; setDisplay: any }) 
             <div className="flex items-center gap-5 mb-10">
                 <div className="w-[64px] h-[64px] rounded-full flex items-center justify-center text-[24px] font-semibold flex-shrink-0"
                     style={{ backgroundColor: B[50], color: C.text }}>
-                    N
+                    {userDisplay.initial}
                 </div>
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2.5">
-                        <p className="text-[20px] font-semibold tracking-[-0.01em]" style={{ color: C.text }}>Noah Wilson</p>
+                        <p className="text-[20px] font-semibold tracking-[-0.01em]" style={{ color: C.text }}>{userDisplay.name}</p>
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
                             style={{ backgroundColor: 'rgba(52,199,89,0.1)', color: C.success }}>
                             <UserCheck size={10} strokeWidth={2} />
                             Verified
                         </span>
                     </div>
-                    <p className="text-[14px] mt-1" style={{ color: B[600] }}>noah@acme.store</p>
+                    <p className="text-[14px] mt-1" style={{ color: B[600] }}>{userDisplay.secondary || ' '}</p>
                 </div>
             </div>
 
@@ -5579,6 +5633,13 @@ export function SettingsPopover() {
     const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
     const [hovered, setHovered] = useState(false);
     const momentumRef = useRef({ value: 0 });
+    const [authUser, setAuthUser] = useState<any | null>(null);
+
+    useEffect(() => {
+        setAuthUser(readVehslUser());
+    }, []);
+
+    const userDisplay = useMemo(() => getUserDisplay(authUser), [authUser]);
 
     useEffect(() => {
         const interval = setInterval(() => {
@@ -5624,7 +5685,7 @@ export function SettingsPopover() {
                     color: C.text,
                     backdropFilter: 'blur(20px)',
                 }}>
-                N
+                {userDisplay.initial}
             </button>
             <AnimatePresence>
                 {popoverOpen && <ProfilePopover anchorRect={anchorRect} onClose={closePopover} onOpenSettings={openSettings} momentumRef={momentumRef} />}
