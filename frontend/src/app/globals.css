@@ -6,6 +6,27 @@
 
 @source '../**/*.{js,ts,jsx,tsx}';
 
+@layer base {
+  html {
+    max-width: 100%;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  img,
+  video,
+  canvas,
+  svg {
+    max-width: 100%;
+  }
+}
+
 @layer utilities {
   .shadow-soft {
     box-shadow: 0 8px 30px rgba(15, 17, 21, 0.06), 0 2px 6px rgba(15, 17, 21, 0.04);

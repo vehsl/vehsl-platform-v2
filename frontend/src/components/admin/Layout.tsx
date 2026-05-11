@@ -303,7 +303,7 @@ export function Layout() {
   const unreadCount = currentNotifs.filter(n => n.unread).length;
 
   return (
-    <div className="flex h-screen bg-background overflow-x-hidden">
+    <div className="flex min-h-dvh h-dvh bg-background overflow-x-hidden">
       {/* Desktop Sidebar */}
       <motion.aside
         className="hidden lg:flex flex-col bg-card border-r border-black/[0.03] p-6 gap-1 overflow-hidden"
@@ -717,7 +717,7 @@ export function Layout() {
                       onClick={() => setProfileOpen(false)}
                     />
                     <motion.div
-                      className="absolute right-0 top-[calc(100%+10px)] w-[320px] bg-card rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.10),0_0_0_1px_rgba(0,0,0,0.04)] z-50 overflow-hidden"
+                      className="absolute right-0 top-[calc(100%+10px)] w-[92vw] max-w-[320px] bg-card rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.10),0_0_0_1px_rgba(0,0,0,0.04)] z-50 overflow-hidden"
                       initial={{ opacity: 0, y: -6, scale: 0.97 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -6, scale: 0.97 }}

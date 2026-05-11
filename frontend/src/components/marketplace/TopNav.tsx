@@ -24,9 +24,9 @@ export function TopNav({
     .filter(Boolean);
 
   return (
-    <div className="pointer-events-auto fixed left-6 right-6 top-5 z-50 mx-auto max-w-6xl">
-      <div className="flex items-center justify-between rounded-full border border-white/60 bg-white/55 px-6 py-3 backdrop-blur-xl shadow-soft">
-        <div className="text-xl font-semibold tracking-tight text-[#0f1115]">Vehsl</div>
+    <div className="pointer-events-auto fixed left-3 right-3 top-3 z-50 mx-auto max-w-6xl sm:left-6 sm:right-6 sm:top-5">
+      <div className="flex items-center justify-between rounded-full border border-white/60 bg-white/55 px-4 py-2.5 backdrop-blur-xl shadow-soft sm:px-6 sm:py-3">
+        <div className="text-lg font-semibold tracking-tight text-[#0f1115] sm:text-xl">Vehsl</div>
 
         <div className="hidden items-center gap-2 md:flex" onMouseLeave={onCategoryLeave}>
           {navCategories.map((c) => {

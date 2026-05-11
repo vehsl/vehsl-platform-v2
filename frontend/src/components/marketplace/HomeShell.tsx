@@ -131,8 +131,8 @@ export function HomeShell() {
   }, [identifier, password, router, signingIn]);
 
   return (
-    <div className="bg-vehsl-watercolor font-inter min-h-screen w-full overflow-hidden">
-      <div className="relative min-h-screen">
+    <div className="bg-vehsl-watercolor font-inter min-h-dvh w-full overflow-x-hidden">
+      <div className="relative min-h-dvh">
         <Popover open={signInOpen} onOpenChange={setSignInOpen}>
           <TopNav
             activeCategoryId={menuOpen ? activeCategoryId : null}
@@ -146,10 +146,10 @@ export function HomeShell() {
           />
 
           <PopoverContent
-            align="end"
+            align="center"
             sideOffset={14}
             className={cn(
-              "w-[360px] rounded-[28px] border border-white/60 bg-white/55 p-4 backdrop-blur-2xl shadow-soft",
+              "w-[92vw] max-w-[360px] max-h-[80dvh] overflow-y-auto rounded-[28px] border border-white/60 bg-white/55 p-4 backdrop-blur-2xl shadow-soft",
             )}
           >
             <div className="rounded-3xl bg-white/65 p-4">
@@ -227,11 +227,11 @@ export function HomeShell() {
           />
         </div>
 
-        <div className="relative mx-auto flex min-h-screen max-w-6xl flex-col items-center justify-center px-6 pb-24 pt-28">
+        <div className="relative mx-auto flex min-h-dvh max-w-6xl flex-col items-center justify-center px-4 pb-24 pt-28 sm:px-6">
           <div className="pointer-events-none absolute inset-0 -z-10" />
 
           <div className="flex w-full flex-col items-center">
-            <div className="select-none text-center text-[84px] font-extrabold tracking-[-0.04em] text-gradient-brand md:text-[160px]">
+            <div className="select-none text-center text-[56px] font-extrabold leading-[0.95] tracking-[-0.04em] text-gradient-brand sm:text-[84px] md:text-[160px]">
               Vehsl
             </div>
 

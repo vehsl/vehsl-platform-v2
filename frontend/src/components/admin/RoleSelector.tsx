@@ -173,9 +173,9 @@ export function RoleSelector() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-8">
+    <div className="min-h-dvh bg-background flex items-center justify-center p-4 sm:p-8">
       {user && allowedRoleIds.length > 0 && (
-        <div className="fixed top-6 right-6 z-50">
+        <div className="fixed top-4 right-4 z-50 sm:top-6 sm:right-6">
           <motion.button
             type="button"
             onClick={logout}
