@@ -139,6 +139,40 @@ class AdminProfileSerializer(serializers.ModelSerializer):
         fields = ["admin_role", "department"]
 
 
+class AdminProfileUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdminProfile
+        fields = ["department"]
+
+
+class MeUpdateSerializer(serializers.Serializer):
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+    country = serializers.CharField(required=False, allow_blank=True)
+    province = serializers.CharField(required=False, allow_blank=True)
+    city = serializers.CharField(required=False, allow_blank=True)
+    street = serializers.CharField(required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    nationality = serializers.CharField(required=False, allow_blank=True)
+    gender = serializers.CharField(required=False, allow_blank=True)
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+
+    def validate_phone(self, value):
+        value = (value or "").strip()
+        if value == "":
+            return ""
+        value = re.sub(r"\s+", "", value)
+        if not re.match(r"^\+?[1-9]\d{7,14}$", value):
+            raise serializers.ValidationError("Phone must be a valid E.164 number.")
+
+        user = self.context.get("user")
+        if user and User.objects.exclude(id=user.id).filter(phone=value).exists():
+            raise serializers.ValidationError("Phone is already in use.")
+        return value
+
+
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subscription
