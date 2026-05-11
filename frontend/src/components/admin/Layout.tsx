@@ -459,22 +459,6 @@ export function Layout() {
 
         {/* Bottom Actions */}
         <div className="mt-auto space-y-2 pt-5 border-t border-black/[0.03]">
-          <motion.button
-            onClick={() => navigate("/")}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-[14px] text-[0.8125rem] text-muted-foreground/55 hover:text-foreground hover:bg-black/[0.02] transition-all duration-300 cursor-pointer"
-            whileHover={{ x: 2 }}
-            whileTap={{ scale: 0.97 }}
-            transition={{ type: "spring", stiffness: 400, damping: 22 }}
-          >
-            <LogOut size={19} className="flex-shrink-0" />
-            <motion.span
-              animate={{ opacity: sidebarHovered ? 1 : 0 }}
-              transition={{ duration: 0.3, ease: [0.22, 0.68, 0.36, 1] }}
-              className="whitespace-nowrap overflow-hidden"
-            >
-              Switch Portal
-            </motion.span>
-          </motion.button>
         </div>
       </motion.aside>
 
@@ -751,17 +735,6 @@ export function Layout() {
                             Profile Settings
                           </button>
                         )}
-                        <button
-                          type="button"
-                          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[0.8125rem] text-foreground/80 hover:bg-black/[0.02] transition-colors cursor-pointer"
-                          onClick={() => {
-                            navigate("/");
-                            setProfileOpen(false);
-                          }}
-                        >
-                          <Home size={18} className="text-muted-foreground/55" />
-                          Switch Portal
-                        </button>
                         <button
                           type="button"
                           className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[0.8125rem] text-foreground/80 hover:bg-black/[0.02] transition-colors cursor-pointer"

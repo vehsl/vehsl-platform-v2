@@ -121,7 +121,7 @@ export function HomeShell() {
       setSignInOpen(false);
       toast.success("Signed in.");
       const role = (tokens?.user?.role || "").toString().toLowerCase();
-      router.push(role === "admin" ? "/admin" : "/orders/1");
+      router.push(role === "admin" ? "/admin/admin" : "/orders/1");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error.";
       toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);
