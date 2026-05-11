@@ -80,6 +80,8 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-vehsl}
     ports:
       - "8000:8000"
+    volumes:
+      - backend-media:/app/media
     depends_on:
       db:
         condition: service_healthy
@@ -112,3 +114,4 @@ networks:
 
 volumes:
   postgres-data:
+  backend-media:

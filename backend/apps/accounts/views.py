@@ -1,5 +1,6 @@
 from rest_framework import generics, mixins, permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -22,6 +23,7 @@ from .serializers import (
 
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

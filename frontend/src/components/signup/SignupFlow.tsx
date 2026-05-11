@@ -11,10 +11,6 @@ export type SignupData = {
   emailCode?: string;
   emailVerified?: boolean;
   phone: string;
-  phoneCode?: string;
-  phoneVerified?: boolean;
-  countryCode?: string;
-  countryFlag?: string;
   day: string;
   month: string;
   year: string;
@@ -23,6 +19,7 @@ export type SignupData = {
   nationalityFlag?: string;
   gender: string;
   country?: string;
+  countryFlag?: string;
   province?: string;
   city?: string;
   street?: string;
@@ -53,15 +50,20 @@ export type SignupData = {
   // Verification (with upload tracking)
   verificationType: string;
   doc1Uploaded?: boolean;
+  doc1File?: File | null;
   verificationType2: string;
   doc2Uploaded?: boolean;
+  doc2File?: File | null;
   proofOfAddress?: string;
   proofUploaded?: boolean;
+  proofFile?: File | null;
   // Seller business docs (with upload tracking)
   businessDoc1?: string;
   bizDoc1Uploaded?: boolean;
+  bizDoc1File?: File | null;
   businessDoc2?: string;
   bizDoc2Uploaded?: boolean;
+  bizDoc2File?: File | null;
   // Liveness
   livenessComplete?: boolean;
   // Password

@@ -12,7 +12,7 @@ from apps.inventory.models import Sample, SampleRequest
 from apps.orders.models import Cart, CartItem, Dispute, Document, Order, OrderItem, Review, Shipment, ShipmentEvent
 from apps.payments.models import Payment
 
-from .models import AdminProfile, BuyerProfile, ChatMessage, ChatThread, Notification, SellerProfile, Subscription, User, UserProfile
+from .models import AdminProfile, BuyerProfile, ChatMessage, ChatThread, KycDocument, Notification, SellerProfile, Subscription, User, UserProfile
 
 
 class VehslAdminSite(AdminSite):
@@ -157,6 +157,13 @@ class UserAdmin(admin.ModelAdmin):
 class UserProfileAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "country", "city")
     search_fields = ("user__email", "user__phone", "country", "city")
+
+
+@admin.register(KycDocument, site=admin_site)
+class KycDocumentAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "kind", "doc_type", "original_name", "size_bytes", "uploaded_at")
+    list_filter = ("kind",)
+    search_fields = ("user__email", "user__phone", "original_name", "doc_type")
 
 
 @admin.register(BuyerProfile, site=admin_site)
