@@ -25,6 +25,7 @@ services:
       - sh
       - -c
       - |
+          set -e
           python - <<'PY'
           import os
           import time
@@ -80,6 +81,8 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-vehsl}
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend/media:/app/media
     depends_on:
       db:
         condition: service_healthy

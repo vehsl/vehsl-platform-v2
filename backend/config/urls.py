@@ -1,5 +1,7 @@
 from django.http import JsonResponse
 from django.urls import include, path
+from django.conf import settings
+from django.conf.urls.static import static
 
 from apps.accounts.admin import admin_site
 
@@ -17,3 +19,5 @@ urlpatterns = [
     path("api/v1/", include("apps.payments.urls")),
     path("api/v1/", include("apps.inventory.urls")),
 ]
+
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

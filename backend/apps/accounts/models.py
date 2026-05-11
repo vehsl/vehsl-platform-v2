@@ -5,6 +5,7 @@ from django.contrib.auth.models import PermissionsMixin
 from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
+from uuid import uuid4
 
 
 class UserManager(BaseUserManager):
@@ -109,8 +110,67 @@ class UserProfile(models.Model):
     gender = models.CharField(max_length=32, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
 
+    employment_statuses = models.JSONField(default=list, blank=True)
+    work_details = models.JSONField(default=dict, blank=True)
+    bank_details = models.JSONField(default=dict, blank=True)
+    pep_status = models.BooleanField(null=True, blank=True)
+    kyc_folder_uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
+
     def __str__(self):
         return f"profile:{self.user_id}"
+
+
+def _safe_user_segment(user: User) -> str:
+    email = (user.email or "").strip()
+    if email and "@" in email:
+        local = email.split("@", 1)[0]
+        parts = re.findall(r"[A-Za-z0-9]+", local)
+        initials = "".join((p[0] for p in parts[:3] if p)).lower()
+        if len(initials) < 2 and parts and len(parts[0]) >= 2:
+            initials = parts[0][:2].lower()
+        return initials or "u"
+
+    phone = re.sub(r"\D+", "", user.phone or "")
+    if phone:
+        return f"p{phone[-4:]}" if len(phone) >= 4 else f"p{phone}"
+
+    return f"u{user.pk or 0}"
+
+
+def _kyc_upload_to(instance: "KycDocument", filename: str) -> str:
+    base_name = re.sub(r"[\\/]+", "_", filename).strip()
+    base_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", base_name).strip("_") or "document"
+    profile = getattr(instance.user, "profile", None)
+    bucket = getattr(profile, "kyc_folder_uuid", None) or instance.id
+    folder = f"{_safe_user_segment(instance.user)}_{bucket}"
+    return f"kyc/{folder}/{base_name}"
+
+
+class KycDocument(models.Model):
+    class Kind(models.TextChoices):
+        ID_DOC_1 = "id_doc_1", "ID Document 1"
+        ID_DOC_2 = "id_doc_2", "ID Document 2"
+        PROOF_OF_ADDRESS = "proof_of_address", "Proof of Address"
+        BUSINESS_DOC_1 = "business_doc_1", "Business Document 1"
+        BUSINESS_DOC_2 = "business_doc_2", "Business Document 2"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="kyc_documents")
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    doc_type = models.CharField(max_length=64, blank=True)
+    file = models.FileField(upload_to=_kyc_upload_to)
+    original_name = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=128, blank=True)
+    size_bytes = models.PositiveIntegerField(default=0)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "kind", "uploaded_at"]),
+        ]
+
+    def __str__(self):
+        return f"kyc:{self.user_id}:{self.kind}:{self.id}"
 
 
 class BuyerProfile(models.Model):

@@ -130,7 +130,7 @@ const PROOF_OF_ADDRESS_TYPES = [
 
 const ALL_SECTIONS: SectionId[] = [
   "accountType","name","email","phone","birthday","nationality","gender","address",
-  "employment","workDetails","bank","pep","verification","businessDocs","liveness","password",
+  "employment","workDetails","bank","pep","verification","businessDocs","password",
 ];
 
 /* ═══════════════════════════════════════
@@ -176,8 +176,7 @@ export function ScrollingForm({
   const [interactionCount, setInteractionCount] = useState(0);
   const bounceIntensity = Math.min(1 + interactionCount * 0.04, 1.6);
   const [emailCodeSent, setEmailCodeSent] = useState(false);
-  const [phoneCodeSent, setPhoneCodeSent] = useState(false);
-  const [showLivenessModal, setShowLivenessModal] = useState(false);
+  // const [showLivenessModal, setShowLivenessModal] = useState(false);
   const [creatingAccount, setCreatingAccount] = useState(false);
 
   const scrollTo = useCallback((s: string) => {
@@ -291,17 +290,80 @@ export function ScrollingForm({
     try {
       setCreatingAccount(true);
 
+      const monthIndex = MONTHS.indexOf(data.month) + 1;
+      const dob =
+        data.year && monthIndex > 0 && data.day
+          ? `${data.year}-${String(monthIndex).padStart(2, "0")}-${String(data.day).padStart(2, "0")}`
+          : "";
+
+      const workDetails = {
+        position: (data.position || "").trim(),
+        occupation: (data.occupation || "").trim(),
+        company_name: (data.companyName || "").trim(),
+        company_address: (data.companyAddress || "").trim(),
+        industry: (data.industry || "").trim(),
+        business_name: (data.businessName || "").trim(),
+        business_address: (data.businessAddress || "").trim(),
+        ownership_percent: (data.ownershipPercent || "").trim(),
+        doing_business_as: (data.doingBusinessAs || "").trim(),
+        work_address: (data.workAddress || "").trim(),
+      };
+
+      const bankDetails = {
+        bank_country: (data.bankCountry || "").trim(),
+        bank_name: (data.bankName || "").trim(),
+        iban: (data.iban || "").trim(),
+        swift_bic: (data.swiftBic || "").trim(),
+      };
+
+      const fd = new FormData();
+      if (email) fd.append("email", email);
+      if (phone) fd.append("phone", phone);
+      fd.append("first_name", (data.firstName || "").trim());
+      fd.append("last_name", (data.lastName || "").trim());
+      fd.append("account_type", accountType);
+      fd.append("password", password);
+
+      if (dob) fd.append("date_of_birth", dob);
+      if (data.nationality) fd.append("nationality", data.nationality);
+      if (data.gender) fd.append("gender", data.gender);
+      if (data.country) fd.append("country", data.country);
+      if (data.province) fd.append("province", data.province);
+      if (data.city) fd.append("city", data.city);
+      if (data.street) fd.append("street", data.street);
+      if (data.address) fd.append("address", data.address);
+
+      fd.append("employment_statuses", JSON.stringify(data.employmentStatuses || []));
+      fd.append("work_details", JSON.stringify(workDetails));
+      fd.append("bank_details", JSON.stringify(bankDetails));
+      if (data.pepCheck) fd.append("pep_check", data.pepCheck);
+
+      if (data.doc1File && data.verificationType) {
+        fd.append("id_doc_1", data.doc1File);
+        fd.append("id_doc_1_type", data.verificationType);
+      }
+      if (data.doc2File && data.verificationType2) {
+        fd.append("id_doc_2", data.doc2File);
+        fd.append("id_doc_2_type", data.verificationType2);
+      }
+      if (data.proofFile && data.proofOfAddress) {
+        fd.append("proof_of_address", data.proofFile);
+        fd.append("proof_of_address_type", data.proofOfAddress);
+      }
+      if (data.accountType === "seller") {
+        if (data.bizDoc1File && data.businessDoc1) {
+          fd.append("business_doc_1", data.bizDoc1File);
+          fd.append("business_doc_1_type", data.businessDoc1);
+        }
+        if (data.bizDoc2File && data.businessDoc2) {
+          fd.append("business_doc_2", data.bizDoc2File);
+          fd.append("business_doc_2_type", data.businessDoc2);
+        }
+      }
+
       const registerRes = await fetch(`${base}/api/v1/auth/register`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email || undefined,
-          phone: phone || undefined,
-          first_name: (data.firstName || "").trim(),
-          last_name: (data.lastName || "").trim(),
-          account_type: accountType,
-          password,
-        }),
+        body: fd,
       });
 
       if (!registerRes.ok) {
@@ -467,36 +529,15 @@ export function ScrollingForm({
         <Sec id="phone" refs={sectionRefs} vis={vis} done={done} onEdit={handleEdit}>
           <H b="Phone." m="For account recovery and local data storage" />
           <div className="mt-5 space-y-3">
-            <div className="flex gap-3">
-              <div className="w-[100px] flex-shrink-0">
-                <CodePicker value={data.countryCode || "+1"} flag={data.countryFlag || "🇺🇸"} onChange={(c, f) => updateData({ countryCode: c, countryFlag: f })} />
-              </div>
-              <div className="flex-1">
-                <InpWithAction
-                  label="Phone number"
-                  value={data.phone}
-                  onChange={(v) => { updateData({ phone: v }); setPhoneCodeSent(false); }}
-                  type="tel"
-                  actionLabel="Send"
-                  actionActive={data.phone.replace(/\D/g, "").length >= 7}
-                  actionDone={phoneCodeSent}
-                  onAction={() => setPhoneCodeSent(true)}
-                />
-              </div>
-            </div>
-            <AnimatePresence>
-              {phoneCodeSent && (
-                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-visible">
-                  <AutoCodeInp
-                    label="6-digit verification code"
-                    value={data.phoneCode || ""}
-                    onChange={(v) => updateData({ phoneCode: v })}
-                    onComplete={() => { updateData({ phoneVerified: true }); handleDone("phone"); }}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <Inp
+              label="Phone number (include country code)"
+              value={data.phone}
+              onChange={(v) => updateData({ phone: v })}
+              type="tel"
+              onEnter={() => { if (data.phone.trim()) handleDone("phone"); }}
+            />
           </div>
+          <Btn disabled={!data.phone.trim()} onClick={() => handleDone("phone")} />
         </Sec>
 
         {/* ═══ Birthday ═══ */}
@@ -688,10 +729,10 @@ export function ScrollingForm({
               <DocOption key={t.id} {...t}
                 selected={data.verificationType === t.id}
                 disabled={data.verificationType2 === t.id}
-                onSelect={() => updateData({ verificationType: t.id, doc1Uploaded: false })}
+                onSelect={() => updateData({ verificationType: t.id, doc1Uploaded: false, doc1File: null })}
                 bounce={bounceIntensity}
                 uploaded={data.verificationType === t.id && data.doc1Uploaded}
-                onUpload={data.verificationType === t.id ? () => updateData({ doc1Uploaded: true }) : undefined}
+                onUpload={data.verificationType === t.id ? (file) => updateData({ doc1Uploaded: true, doc1File: file }) : undefined}
               />
             ))}
           </div>
@@ -713,10 +754,10 @@ export function ScrollingForm({
                     <DocOption key={t.id} {...t}
                       selected={data.verificationType2 === t.id}
                       disabled={false}
-                      onSelect={() => updateData({ verificationType2: t.id, doc2Uploaded: false })}
+                      onSelect={() => updateData({ verificationType2: t.id, doc2Uploaded: false, doc2File: null })}
                       bounce={bounceIntensity}
                       uploaded={data.verificationType2 === t.id && data.doc2Uploaded}
-                      onUpload={data.verificationType2 === t.id ? () => updateData({ doc2Uploaded: true }) : undefined}
+                      onUpload={data.verificationType2 === t.id ? (file) => updateData({ doc2Uploaded: true, doc2File: file }) : undefined}
                     />
                   ))}
                 </div>
@@ -746,10 +787,10 @@ export function ScrollingForm({
                     <DocOption key={t.id} {...t}
                       selected={data.proofOfAddress === t.id}
                       disabled={false}
-                      onSelect={() => updateData({ proofOfAddress: t.id, proofUploaded: false })}
+                    onSelect={() => updateData({ proofOfAddress: t.id, proofUploaded: false, proofFile: null })}
                       bounce={bounceIntensity}
                       uploaded={data.proofOfAddress === t.id && data.proofUploaded}
-                      onUpload={data.proofOfAddress === t.id ? () => updateData({ proofUploaded: true }) : undefined}
+                    onUpload={data.proofOfAddress === t.id ? (file) => updateData({ proofUploaded: true, proofFile: file }) : undefined}
                     />
                   ))}
                 </div>
@@ -780,10 +821,10 @@ export function ScrollingForm({
                 <DocOption key={t.id} {...t}
                   selected={data.businessDoc1 === t.id}
                   disabled={data.businessDoc2 === t.id}
-                  onSelect={() => updateData({ businessDoc1: t.id, bizDoc1Uploaded: false })}
+                  onSelect={() => updateData({ businessDoc1: t.id, bizDoc1Uploaded: false, bizDoc1File: null })}
                   bounce={bounceIntensity}
                   uploaded={data.businessDoc1 === t.id && data.bizDoc1Uploaded}
-                  onUpload={data.businessDoc1 === t.id ? () => updateData({ bizDoc1Uploaded: true }) : undefined}
+                  onUpload={data.businessDoc1 === t.id ? (file) => updateData({ bizDoc1Uploaded: true, bizDoc1File: file }) : undefined}
                 />
               ))}
             </div>
@@ -804,10 +845,10 @@ export function ScrollingForm({
                       <DocOption key={t.id} {...t}
                         selected={data.businessDoc2 === t.id}
                         disabled={false}
-                        onSelect={() => updateData({ businessDoc2: t.id, bizDoc2Uploaded: false })}
+                        onSelect={() => updateData({ businessDoc2: t.id, bizDoc2Uploaded: false, bizDoc2File: null })}
                         bounce={bounceIntensity}
                         uploaded={data.businessDoc2 === t.id && data.bizDoc2Uploaded}
-                        onUpload={data.businessDoc2 === t.id ? () => updateData({ bizDoc2Uploaded: true }) : undefined}
+                        onUpload={data.businessDoc2 === t.id ? (file) => updateData({ bizDoc2Uploaded: true, bizDoc2File: file }) : undefined}
                       />
                     ))}
                   </div>
@@ -819,7 +860,8 @@ export function ScrollingForm({
           </Sec>
         )}
 
-        {/* ═══ Liveness ═══ */}
+        {/*
+        ═══ Liveness (disabled for now) ═══
         <Sec id="liveness" refs={sectionRefs} vis={vis} done={done} onEdit={handleEdit}>
           <H b="Liveness check." m="Quick face verification." />
           <div className="mt-5 p-5 rounded-[18px] border border-[rgba(134,134,139,0.1)] bg-[rgba(134,134,139,0.015)]">
@@ -859,6 +901,7 @@ export function ScrollingForm({
             )}
           </AnimatePresence>
         </Sec>
+        */}
 
         {/* ═══ Password ═══ */}
         <Sec id="password" refs={sectionRefs} vis={vis} done={done} onEdit={handleEdit}>
@@ -1367,7 +1410,7 @@ function CountrySelect({ value, flag, onChange, placeholder = "Country" }: { val
 
 /* Document option button with inline upload */
 function DocOption({ id, label, hint, icon: Icon, selected, disabled, onSelect, bounce, uploaded, onUpload }: {
-  id: string; label: string; hint: string; icon: any; selected: boolean; disabled: boolean; onSelect: () => void; bounce: number; uploaded?: boolean; onUpload?: () => void;
+  id: string; label: string; hint: string; icon: any; selected: boolean; disabled: boolean; onSelect: () => void; bounce: number; uploaded?: boolean; onUpload?: (file: File) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1386,8 +1429,9 @@ function DocOption({ id, label, hint, icon: Icon, selected, disabled, onSelect, 
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0 && onUpload) {
-      onUpload();
+    const f = e.target.files && e.target.files.length > 0 ? e.target.files[0] : null;
+    if (f && onUpload) {
+      onUpload(f);
     }
   };
 
