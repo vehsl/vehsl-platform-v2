@@ -44,6 +44,8 @@ class UserSerializer(serializers.ModelSerializer):
     profile = UserProfileSerializer(required=False)
     buyer_profile = serializers.SerializerMethodField()
     seller_profile = serializers.SerializerMethodField()
+    admin_profile = serializers.SerializerMethodField()
+    admin_portals = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -60,6 +62,8 @@ class UserSerializer(serializers.ModelSerializer):
             "profile",
             "buyer_profile",
             "seller_profile",
+            "admin_profile",
+            "admin_portals",
         ]
 
     def get_buyer_profile(self, obj: User):
@@ -73,6 +77,33 @@ class UserSerializer(serializers.ModelSerializer):
             return None
         prof = getattr(obj, "seller_profile", None)
         return SellerProfileSerializer(prof).data if prof else None
+
+    def get_admin_profile(self, obj: User):
+        if getattr(obj, "role", None) != User.Role.ADMIN and not getattr(obj, "is_staff", False) and not getattr(obj, "is_superuser", False):
+            return None
+        prof = getattr(obj, "admin_profile", None)
+        return AdminProfileSerializer(prof).data if prof else None
+
+    def get_admin_portals(self, obj: User):
+        is_admin = bool(
+            getattr(obj, "role", None) == User.Role.ADMIN or getattr(obj, "is_staff", False) or getattr(obj, "is_superuser", False)
+        )
+        if not is_admin:
+            return []
+
+        prof = getattr(obj, "admin_profile", None)
+        admin_role = (getattr(prof, "admin_role", "") or "").lower() if prof else ""
+        if getattr(obj, "is_superuser", False) or admin_role in {"", "super_admin"}:
+            return ["admin", "management", "workers", "legal", "support", "inspector"]
+        if admin_role in {"logistics", "finance"}:
+            return ["management", "workers"]
+        if admin_role in {"compliance"}:
+            return ["legal", "workers"]
+        if admin_role in {"support"}:
+            return ["support", "workers"]
+        if admin_role in {"inspector"}:
+            return ["inspector", "workers"]
+        return ["workers"]
 
 
 class BuyerProfileSerializer(serializers.ModelSerializer):
