@@ -130,7 +130,7 @@ const PROOF_OF_ADDRESS_TYPES = [
 
 const ALL_SECTIONS: SectionId[] = [
   "accountType","name","email","phone","birthday","nationality","gender","address",
-  "employment","workDetails","bank","pep","verification","businessDocs","liveness","password",
+  "employment","workDetails","bank","pep","verification","businessDocs","password",
 ];
 
 /* ═══════════════════════════════════════
@@ -176,7 +176,7 @@ export function ScrollingForm({
   const [interactionCount, setInteractionCount] = useState(0);
   const bounceIntensity = Math.min(1 + interactionCount * 0.04, 1.6);
   const [emailCodeSent, setEmailCodeSent] = useState(false);
-  const [showLivenessModal, setShowLivenessModal] = useState(false);
+  // const [showLivenessModal, setShowLivenessModal] = useState(false);
   const [creatingAccount, setCreatingAccount] = useState(false);
 
   const scrollTo = useCallback((s: string) => {
@@ -860,7 +860,8 @@ export function ScrollingForm({
           </Sec>
         )}
 
-        {/* ═══ Liveness ═══ */}
+        {/*
+        ═══ Liveness (disabled for now) ═══
         <Sec id="liveness" refs={sectionRefs} vis={vis} done={done} onEdit={handleEdit}>
           <H b="Liveness check." m="Quick face verification." />
           <div className="mt-5 p-5 rounded-[18px] border border-[rgba(134,134,139,0.1)] bg-[rgba(134,134,139,0.015)]">
@@ -900,6 +901,7 @@ export function ScrollingForm({
             )}
           </AnimatePresence>
         </Sec>
+        */}
 
         {/* ═══ Password ═══ */}
         <Sec id="password" refs={sectionRefs} vis={vis} done={done} onEdit={handleEdit}>

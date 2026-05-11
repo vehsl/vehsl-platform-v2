@@ -114,21 +114,36 @@ class UserProfile(models.Model):
     work_details = models.JSONField(default=dict, blank=True)
     bank_details = models.JSONField(default=dict, blank=True)
     pep_status = models.BooleanField(null=True, blank=True)
+    kyc_folder_uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
 
     def __str__(self):
         return f"profile:{self.user_id}"
 
 
 def _safe_user_segment(user: User) -> str:
-    raw = user.email or user.phone or f"user-{user.pk}"
-    seg = re.sub(r"[^a-zA-Z0-9._-]+", "_", raw).strip("_")
-    return (seg[:80] or f"user-{user.pk}")
+    email = (user.email or "").strip()
+    if email and "@" in email:
+        local = email.split("@", 1)[0]
+        parts = re.findall(r"[A-Za-z0-9]+", local)
+        initials = "".join((p[0] for p in parts[:3] if p)).lower()
+        if len(initials) < 2 and parts and len(parts[0]) >= 2:
+            initials = parts[0][:2].lower()
+        return initials or "u"
+
+    phone = re.sub(r"\D+", "", user.phone or "")
+    if phone:
+        return f"p{phone[-4:]}" if len(phone) >= 4 else f"p{phone}"
+
+    return f"u{user.pk or 0}"
 
 
 def _kyc_upload_to(instance: "KycDocument", filename: str) -> str:
     base_name = re.sub(r"[\\/]+", "_", filename).strip()
     base_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", base_name).strip("_") or "document"
-    return f"kyc/{_safe_user_segment(instance.user)}/{instance.id}/{base_name}"
+    profile = getattr(instance.user, "profile", None)
+    bucket = getattr(profile, "kyc_folder_uuid", None) or instance.id
+    folder = f"{_safe_user_segment(instance.user)}_{bucket}"
+    return f"kyc/{folder}/{base_name}"
 
 
 class KycDocument(models.Model):

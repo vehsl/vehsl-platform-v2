@@ -25,6 +25,7 @@ services:
       - sh
       - -c
       - |
+          set -e
           python - <<'PY'
           import os
           import time
@@ -81,7 +82,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - backend-media:/app/media
+      - ./backend/media:/app/media
     depends_on:
       db:
         condition: service_healthy
@@ -114,4 +115,3 @@ networks:
 
 volumes:
   postgres-data:
-  backend-media:

@@ -26,7 +26,6 @@ const SECTION_LABELS: Record<string, string> = {
   pep: "PEP status",
   verification: "Identity docs",
   businessDocs: "Business docs",
-  liveness: "Liveness check",
   password: "Create password",
 };
 
@@ -45,7 +44,6 @@ const TIPS: Record<string, string> = {
   pep: "Standard regulatory check. Most people select No.",
   verification: "Encrypted end-to-end. Your personal data is stored locally in your country/region. JPG, PNG or PDF. Max 10MB.",
   businessDocs: "Proof of business ownership for seller verification. JPG, PNG or PDF. Max 10MB.",
-  liveness: "Verified by AI and reviewed by humans. Confirmation typically takes 3-6 hours.",
   password: "Last step! Use a password manager if you can.",
 };
 
@@ -65,7 +63,6 @@ const SECTION_ENCOURAGEMENTS: Record<string, string> = {
   pep: "Most people select No.",
   verification: "Clear photos work best.",
   businessDocs: "Ensure documents are legible.",
-  liveness: "Follow the on-screen prompts.",
   password: "Make it strong and unique.",
 };
 

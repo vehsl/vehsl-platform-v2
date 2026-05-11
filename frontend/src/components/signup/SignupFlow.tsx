@@ -65,7 +65,7 @@ export type SignupData = {
   bizDoc2Uploaded?: boolean;
   bizDoc2File?: File | null;
   // Liveness
-  livenessComplete?: boolean;
+  // livenessComplete?: boolean;
   // Password
   password?: string;
   rePassword?: string;
@@ -86,7 +86,7 @@ export const ALL_SECTIONS = [
   "pep",
   "verification",
   "businessDocs",
-  "liveness",
+  // "liveness",
   "password",
 ] as const;
 
