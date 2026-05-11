@@ -6,6 +6,7 @@ from .views import (
     BuyerProfileMeView,
     ChatThreadViewSet,
     LoginView,
+    LogoutView,
     MeView,
     NotificationViewSet,
     RefreshView,
@@ -23,6 +24,7 @@ router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")
 urlpatterns = [
     path("auth/register", RegisterView.as_view()),
     path("auth/login", LoginView.as_view()),
+    path("auth/logout", LogoutView.as_view()),
     path("auth/refresh", RefreshView.as_view()),
     path("auth/me", MeView.as_view()),
     path("profiles/buyer/me", BuyerProfileMeView.as_view()),

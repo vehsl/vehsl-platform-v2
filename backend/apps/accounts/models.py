@@ -220,6 +220,7 @@ class AdminProfile(models.Model):
         FINANCE = "finance", "Finance"
         SUPPORT = "support", "Support"
         LOGISTICS = "logistics", "Logistics"
+        INSPECTOR = "inspector", "Inspector"
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="admin_profile")
     admin_role = models.CharField(max_length=32, choices=AdminRole.choices)

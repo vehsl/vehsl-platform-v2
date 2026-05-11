@@ -53,6 +53,17 @@ export function HomeShell() {
   const [showPassword, setShowPassword] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
 
+  useEffect(() => {
+    try {
+      const u = new URL(window.location.href);
+      if (u.searchParams.get("signin") === "1") {
+        setSignInOpen(true);
+        u.searchParams.delete("signin");
+        window.history.replaceState({}, "", u.toString());
+      }
+    } catch {}
+  }, []);
+
   const signInAnchor = useMemo(
     () => (
       <button
@@ -109,7 +120,8 @@ export function HomeShell() {
 
       setSignInOpen(false);
       toast.success("Signed in.");
-      router.push("/orders/1");
+      const role = (tokens?.user?.role || "").toString().toLowerCase();
+      router.push(role === "admin" ? "/admin" : "/orders/1");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error.";
       toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);

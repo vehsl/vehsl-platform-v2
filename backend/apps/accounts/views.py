@@ -4,6 +4,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
@@ -38,6 +39,23 @@ class LoginView(TokenObtainPairView):
 
 class RefreshView(TokenRefreshView):
     pass
+
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        refresh = request.data.get("refresh") or request.data.get("refresh_token") or ""
+        refresh = str(refresh or "").strip()
+        if refresh:
+            try:
+                token = RefreshToken(refresh)
+                token.blacklist()
+            except TokenError:
+                pass
+            except Exception:
+                pass
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class MeView(APIView):

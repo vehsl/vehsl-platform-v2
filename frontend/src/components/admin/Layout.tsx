@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import { useBounce } from "./BounceContext";
@@ -113,6 +113,49 @@ export function Layout() {
   const currentRole = location.pathname.split("/")[1] || "admin";
   const nav = roleNavs[currentRole] || roleNavs.admin;
 
+  const [user, setUser] = useState<any>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("vehsl.user");
+      setUser(raw ? JSON.parse(raw) : null);
+    } catch {
+      setUser(null);
+    }
+  }, []);
+
+  const allowedRoleIds = useMemo(() => {
+    const role = (user?.role || "").toString().toLowerCase();
+    if (role !== "admin") return [];
+
+    const explicit = user?.admin_portals;
+    if (Array.isArray(explicit) && explicit.every((x: any) => typeof x === "string")) {
+      return explicit.map((x: string) => x.toLowerCase());
+    }
+
+    const adminRole = (user?.admin_profile?.admin_role || "").toString().toLowerCase();
+    if (!adminRole || adminRole === "super_admin") {
+      return ["admin", "management", "workers", "legal", "support", "inspector"];
+    }
+    if (adminRole === "logistics" || adminRole === "finance") return ["management", "workers"];
+    if (adminRole === "compliance") return ["legal", "workers"];
+    if (adminRole === "support") return ["support", "workers"];
+    if (adminRole === "inspector") return ["inspector", "workers"];
+    return ["workers"];
+  }, [user]);
+
+  const allowedRoleNavKeys = useMemo(() => {
+    const keys = new Set(Object.keys(roleNavs));
+    return allowedRoleIds.filter((k) => keys.has(k));
+  }, [allowedRoleIds]);
+
+  useEffect(() => {
+    if (allowedRoleNavKeys.length === 0) return;
+    if (!allowedRoleNavKeys.includes(currentRole)) {
+      navigate(`/${allowedRoleNavKeys[0]}`, { replace: true });
+    }
+  }, [allowedRoleNavKeys, currentRole, navigate]);
+
   const greeting = React.useMemo(() => {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
@@ -216,7 +259,7 @@ export function Layout() {
           transition={{ duration: 0.3, ease: [0.22, 0.68, 0.36, 1] }}
           style={{ overflow: "hidden" }}
         >
-          {Object.keys(roleNavs).map((role) => (
+          {(allowedRoleNavKeys.length ? allowedRoleNavKeys : Object.keys(roleNavs)).map((role) => (
             <motion.button
               key={role}
               onClick={() => navigate(`/${role}`)}
@@ -374,7 +417,7 @@ export function Layout() {
               </div>
 
               <div className="flex gap-1.5 p-1.5 bg-muted/40 rounded-2xl mb-4">
-                {Object.keys(roleNavs).map((role) => (
+                {(allowedRoleNavKeys.length ? allowedRoleNavKeys : Object.keys(roleNavs)).map((role) => (
                   <button
                     key={role}
                     onClick={() => { navigate(`/${role}`); setMobileOpen(false); }}

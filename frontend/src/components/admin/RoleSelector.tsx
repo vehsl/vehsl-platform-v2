@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
@@ -12,6 +12,7 @@ import {
   Package,
   Headphones,
   Microscope,
+  LogOut,
 } from "lucide-react";
 
 /*
@@ -86,9 +87,108 @@ const roles = [
 
 export function RoleSelector() {
   const navigate = useNavigate();
+  const [user, setUser] = useState<any>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("vehsl.user");
+      setUser(raw ? JSON.parse(raw) : null);
+    } catch {
+      setUser(null);
+    }
+  }, []);
+
+  const allowedRoleIds = useMemo(() => {
+    const role = (user?.role || "").toString().toLowerCase();
+    if (role !== "admin") return [];
+
+    const explicit = user?.admin_portals;
+    if (Array.isArray(explicit) && explicit.every((x: any) => typeof x === "string")) {
+      return explicit.map((x: string) => x.toLowerCase());
+    }
+
+    const adminRole = (user?.admin_profile?.admin_role || "").toString().toLowerCase();
+    if (!adminRole || adminRole === "super_admin") {
+      return ["admin", "management", "workers", "legal", "support", "inspector"];
+    }
+    if (adminRole === "logistics" || adminRole === "finance") return ["management", "workers"];
+    if (adminRole === "compliance") return ["legal", "workers"];
+    if (adminRole === "support") return ["support", "workers"];
+    if (adminRole === "inspector") return ["inspector", "workers"];
+    return ["workers"];
+  }, [user]);
+
+  const visibleRoles = useMemo(() => {
+    if (!user) return [];
+    if (allowedRoleIds.length === 0) return [];
+    const allow = new Set(allowedRoleIds);
+    return roles.filter((r) => allow.has(r.id));
+  }, [allowedRoleIds, user]);
+
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const logout = async () => {
+    const refresh = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.refresh") || "";
+      } catch {
+        return "";
+      }
+    })();
+    const access = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    })();
+
+    try {
+      await fetch(`${apiBase()}/api/v1/auth/logout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(access ? { Authorization: `Bearer ${access}` } : {}),
+        },
+        body: JSON.stringify({ refresh }),
+      });
+    } catch {}
+
+    try {
+      window.localStorage.removeItem("vehsl.access");
+      window.localStorage.removeItem("vehsl.refresh");
+      window.localStorage.removeItem("vehsl.user");
+    } catch {}
+    window.location.assign("/");
+  };
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-8">
+      {user && allowedRoleIds.length > 0 && (
+        <div className="fixed top-6 right-6 z-50">
+          <motion.button
+            type="button"
+            onClick={logout}
+            className="h-10 rounded-full bg-white/70 backdrop-blur-xl border border-black/[0.06] px-4 text-[12px] font-semibold text-foreground flex items-center gap-2 cursor-pointer"
+            whileHover={{ y: -2, scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 500, damping: 28 }}
+          >
+            <LogOut size={16} />
+            Logout
+          </motion.button>
+        </div>
+      )}
       <div className="w-full max-w-3xl">
         {/* Header — warm welcome */}
         <motion.div
@@ -111,17 +211,16 @@ export function RoleSelector() {
             <Package size={26} className="text-primary/70" />
           </motion.div>
           <h1 className="text-foreground mb-3 tracking-tight">
-            Welcome to TradeFlow
+            Welcome to Vehsl
           </h1>
           <p className="text-muted-foreground/60 text-[0.9375rem] max-w-md mx-auto leading-relaxed">
-            Your complete B2B & B2C commerce platform. Choose your portal to get
-            started.
+            Choose your portal to get started.
           </p>
         </motion.div>
 
         {/* Role Cards — clean grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 lg:gap-4">
-          {roles.map((role, index) => (
+          {visibleRoles.map((role, index) => (
             <motion.button
               key={role.id}
               onClick={() => navigate(role.path)}
@@ -130,8 +229,8 @@ export function RoleSelector() {
                 shadow-[0_1px_2px_rgba(0,0,0,0.02),0_4px_12px_rgba(0,0,0,0.02),0_0_0_1px_rgba(0,0,0,0.01)_inset]
                 hover:shadow-[0_4px_16px_rgba(0,0,0,0.06),0_8px_32px_rgba(0,0,0,0.04),0_0_0_1px_rgba(0,0,0,0.03)_inset]
                 transition-all duration-500 cursor-pointer overflow-hidden
-                ${index === 0 ? "lg:col-span-2 lg:row-span-1" : ""}
-                ${index === roles.length - 1 && roles.length % 3 === 2 ? "sm:col-span-2 lg:col-span-1" : ""}`}
+                ${index === 0 && visibleRoles.length >= 5 ? "lg:col-span-2 lg:row-span-1" : ""}
+                ${index === visibleRoles.length - 1 && visibleRoles.length % 3 === 2 ? "sm:col-span-2 lg:col-span-1" : ""}`}
               initial={{ opacity: 0, y: 24, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               transition={{
@@ -239,6 +338,12 @@ export function RoleSelector() {
             </motion.button>
           ))}
         </div>
+
+        {user && allowedRoleIds.length === 0 && (
+          <div className="mt-6 text-center text-sm text-muted-foreground/70">
+            This page is only available for admin and managers.
+          </div>
+        )}
 
         {/* Footer */}
         <motion.p
