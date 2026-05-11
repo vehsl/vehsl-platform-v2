@@ -140,7 +140,7 @@ export function SignupFlow() {
   return (
     <div className="flex w-full h-full">
       {/* Left: assistant panel — narrow */}
-      <div className="hidden lg:flex w-[272px] xl:w-[292px] h-full bg-[#fafafa] border-r border-[rgba(134,134,139,0.06)] flex-shrink-0 relative overflow-hidden">
+      <div className="hidden lg:flex w-[272px] xl:w-[292px] h-full bg-[#fafafa] border-r border-[rgba(134,134,139,0.06)] flex-shrink-0 relative overflow-x-hidden">
         <SummaryPanel
           data={data}
           completedSections={completedSections}
@@ -150,7 +150,7 @@ export function SignupFlow() {
       </div>
 
       {/* Right: scrolling form */}
-      <div className="flex-1 h-full bg-white relative overflow-hidden">
+      <div className="flex-1 h-full bg-white relative overflow-x-hidden">
         <ScrollingForm
           data={data}
           updateData={updateData}

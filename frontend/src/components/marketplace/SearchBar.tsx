@@ -19,7 +19,7 @@ export function SearchBar({
   return (
     <div
       className={cn(
-        "mx-auto flex h-16 w-full max-w-[640px] items-center gap-3 rounded-full border border-white/70 bg-white/85 px-5 backdrop-blur-md shadow-soft",
+        "mx-auto flex h-14 w-full max-w-[640px] items-center gap-3 rounded-full border border-white/70 bg-white/85 px-4 backdrop-blur-md shadow-soft sm:h-16 sm:px-5",
         "focus-within:ring-2 focus-within:ring-blue-200",
         className,
       )}
@@ -33,7 +33,7 @@ export function SearchBar({
       />
       <button
         type="button"
-        className="flex h-10 w-10 items-center justify-center rounded-full bg-white/70 text-[#1f2330] backdrop-blur-md"
+        className="hidden h-10 w-10 items-center justify-center rounded-full bg-white/70 text-[#1f2330] backdrop-blur-md sm:flex"
         aria-label="Image search"
       >
         <Camera className="h-5 w-5" strokeWidth={1.5} />

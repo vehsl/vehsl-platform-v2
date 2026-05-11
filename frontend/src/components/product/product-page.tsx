@@ -55,17 +55,17 @@ export function ProductPage() {
 
   return (
     <div
-      className="min-h-screen bg-white"
+      className="min-h-dvh bg-white"
       style={{ fontFamily: "'Urbanist', system-ui, -apple-system, sans-serif" }}
     >
       <NavBar />
 
-      <main className="max-w-[1280px] mx-auto px-6 lg:px-10">
+      <main className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10">
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.2 }}
-          className="flex items-center gap-2 py-5 text-[#86868b]"
+          className="flex flex-wrap items-center gap-2 py-5 text-[#86868b]"
           style={{ fontSize: 13 }}
         >
           <span className="hover:text-[#1d1d1f] cursor-pointer transition-colors">Electronics</span>

@@ -1,7 +1,7 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
@@ -493,58 +493,306 @@ const settingsSections = [
 ];
 
 export function AdminSettings() {
-  const [toggleStates, setToggleStates] = useState<Record<string, boolean>>({
-    "Email Notifications": true, "Push Notifications": true, "SMS Alerts": false,
-    "Daily Digest": true, "Two-Factor Auth": true, "IP Whitelisting": false,
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const [me, setMe] = useState<any>(null);
+  const [form, setForm] = useState<any>({
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    department: "",
+    country: "",
+    province: "",
+    city: "",
+    street: "",
+    address: "",
+    nationality: "",
+    gender: "",
+    date_of_birth: "",
   });
+
+  const apiBase = useMemo(() => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  }, []);
+
+  const access = useMemo(() => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  }, []);
+
+  const isAdmin = useMemo(() => (me?.role || "").toString().toLowerCase() === "admin", [me]);
+
+  useEffect(() => {
+    if (!access) {
+      setLoading(false);
+      setError("Not signed in.");
+      return;
+    }
+
+    (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await fetch(`${apiBase}/api/v1/auth/me`, {
+          headers: { Authorization: `Bearer ${access}` },
+        });
+        if (!res.ok) {
+          setError("Failed to load profile.");
+          return;
+        }
+        const data = await res.json();
+        setMe(data);
+        setForm({
+          first_name: data?.first_name || "",
+          last_name: data?.last_name || "",
+          email: data?.email || "",
+          phone: data?.phone || "",
+          department: data?.admin_profile?.department || "",
+          country: data?.profile?.country || "",
+          province: data?.profile?.province || "",
+          city: data?.profile?.city || "",
+          street: data?.profile?.street || "",
+          address: data?.profile?.address || "",
+          nationality: data?.profile?.nationality || "",
+          gender: data?.profile?.gender || "",
+          date_of_birth: data?.profile?.date_of_birth || "",
+        });
+        try {
+          window.localStorage.setItem("vehsl.user", JSON.stringify(data));
+        } catch {}
+      } catch {
+        setError("Network error.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [access, apiBase]);
+
+  const onSave = async () => {
+    if (!access || saving) return;
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const meRes = await fetch(`${apiBase}/api/v1/auth/me`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${access}`,
+        },
+        body: JSON.stringify({
+          first_name: form.first_name,
+          last_name: form.last_name,
+          phone: form.phone,
+          country: form.country,
+          province: form.province,
+          city: form.city,
+          street: form.street,
+          address: form.address,
+          nationality: form.nationality,
+          gender: form.gender,
+          date_of_birth: form.date_of_birth || null,
+        }),
+      });
+
+      if (!meRes.ok) {
+        const err = await meRes.json().catch(() => null);
+        const msg = (err && (err.detail || err.phone || err.non_field_errors)) || "Failed to save.";
+        setError(typeof msg === "string" ? msg : "Failed to save.");
+        return;
+      }
+
+      if (isAdmin) {
+        await fetch(`${apiBase}/api/v1/profiles/admin/me`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${access}`,
+          },
+          body: JSON.stringify({ department: form.department }),
+        });
+      }
+
+      const refreshed = await fetch(`${apiBase}/api/v1/auth/me`, {
+        headers: { Authorization: `Bearer ${access}` },
+      });
+      if (refreshed.ok) {
+        const data = await refreshed.json();
+        setMe(data);
+        try {
+          window.localStorage.setItem("vehsl.user", JSON.stringify(data));
+        } catch {}
+      }
+
+      setSaved(true);
+    } catch {
+      setError("Network error.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[900px]">
       <motion.div variants={stagger.item}>
         <h1 className="text-foreground tracking-tight mb-1.5">Settings</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Configure TradeFlow to work the way you need.</p>
+        <p className="text-muted-foreground text-[0.875rem]">Manage your profile and account details.</p>
       </motion.div>
 
-      {settingsSections.map((section, si) => (
-        <motion.div key={section.title} variants={stagger.item}>
-          <SectionCard>
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${section.color}10` }}>
-                {section.icon}
-              </div>
-              <h2 className="text-foreground text-[0.9375rem]">{section.title}</h2>
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-primary/10">
+              <Settings size={20} className="text-primary/70" />
             </div>
-            <div className="space-y-1">
-              {section.items.map((item, ii) => (
-                <div key={item.label} className="flex items-center justify-between px-4 py-4 rounded-2xl hover:bg-muted/20 transition-colors">
-                  <span className="text-[0.8125rem] text-foreground/70">{item.label}</span>
-                  {item.type === "toggle" ? (
-                    <button
-                      onClick={() => setToggleStates(prev => ({ ...prev, [item.label]: !prev[item.label] }))}
-                      className={`w-11 h-6 rounded-full transition-all duration-300 cursor-pointer relative ${
-                        toggleStates[item.label] ? "bg-primary" : "bg-muted/40"
-                      }`}
-                    >
-                      <motion.div
-                        className="w-5 h-5 bg-white rounded-full shadow-sm absolute top-0.5"
-                        animate={{ left: toggleStates[item.label] ? 22 : 2 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                      />
-                    </button>
-                  ) : item.type === "status" ? (
-                    <StatusPill status={item.value === "Connected" ? "success" : "neutral"} label={item.value} />
-                  ) : (
-                    <span className="text-[0.8125rem] text-muted-foreground/60">{item.value}</span>
-                  )}
+            <h2 className="text-foreground text-[0.9375rem]">Profile</h2>
+          </div>
+
+          {loading ? (
+            <div className="text-[0.8125rem] text-muted-foreground/60">Loading…</div>
+          ) : (
+            <div className="space-y-6">
+              {error && (
+                <div className="px-4 py-3 rounded-2xl bg-[#E5484D]/8 text-[#E5484D] text-[0.8125rem]">
+                  {error}
                 </div>
-              ))}
+              )}
+              {saved && (
+                <div className="px-4 py-3 rounded-2xl bg-[#30A46C]/8 text-[#30A46C] text-[0.8125rem]">
+                  Saved.
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">First name</label>
+                  <input
+                    value={form.first_name}
+                    onChange={(e) => setForm((p: any) => ({ ...p, first_name: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Last name</label>
+                  <input
+                    value={form.last_name}
+                    onChange={(e) => setForm((p: any) => ({ ...p, last_name: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Email</label>
+                  <input
+                    value={form.email}
+                    disabled
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-muted-foreground/60"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Phone</label>
+                  <input
+                    value={form.phone}
+                    onChange={(e) => setForm((p: any) => ({ ...p, phone: e.target.value }))}
+                    placeholder="+12345678900"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+              </div>
+
+              {isAdmin && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Admin role</label>
+                    <input
+                      value={me?.admin_profile?.admin_role || "super_admin"}
+                      disabled
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-muted-foreground/60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Department</label>
+                    <input
+                      value={form.department}
+                      onChange={(e) => setForm((p: any) => ({ ...p, department: e.target.value }))}
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Country</label>
+                  <input
+                    value={form.country}
+                    onChange={(e) => setForm((p: any) => ({ ...p, country: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Province</label>
+                  <input
+                    value={form.province}
+                    onChange={(e) => setForm((p: any) => ({ ...p, province: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">City</label>
+                  <input
+                    value={form.city}
+                    onChange={(e) => setForm((p: any) => ({ ...p, city: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Street</label>
+                  <input
+                    value={form.street}
+                    onChange={(e) => setForm((p: any) => ({ ...p, street: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Address</label>
+                <input
+                  value={form.address}
+                  onChange={(e) => setForm((p: any) => ({ ...p, address: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
             </div>
-          </SectionCard>
-        </motion.div>
-      ))}
+          )}
+        </SectionCard>
+      </motion.div>
 
       <motion.div variants={stagger.item} className="flex justify-end">
-        <BounceButton variant="primary" size="md" icon={<CheckCircle2 size={16} />}>Save Changes</BounceButton>
+        <BounceButton
+          variant="primary"
+          size="md"
+          icon={<CheckCircle2 size={16} />}
+          disabled={loading || saving || !access}
+          onClick={onSave}
+        >
+          {saving ? "Saving..." : "Save Changes"}
+        </BounceButton>
       </motion.div>
     </motion.div>
   );

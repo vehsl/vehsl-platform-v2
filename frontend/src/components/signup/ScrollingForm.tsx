@@ -463,7 +463,7 @@ export function ScrollingForm({
         </div>
       </div>
 
-      <div className="max-w-[520px] mx-auto px-6" style={{ paddingTop: "40vh", paddingBottom: "40vh" }}>
+      <div className="max-w-[520px] mx-auto px-4 sm:px-6" style={{ paddingTop: "40vh", paddingBottom: "40vh" }}>
 
         {/* ═══ Account Type ═══ */}
         <Sec id="accountType" refs={sectionRefs} vis={vis} done={done} onEdit={handleEdit}>

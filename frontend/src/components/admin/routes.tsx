@@ -1,8 +1,7 @@
 "use client";
 
-import { createBrowserRouter } from "react-router";
+import { createBrowserRouter, redirect } from "react-router";
 import { Layout } from "./Layout";
-import { RoleSelector } from "./RoleSelector";
 import { AdminDashboard } from "./AdminDashboard";
 import { ManagementDashboard } from "./ManagementDashboard";
 import { WorkersPortal } from "./WorkersPortal";
@@ -36,7 +35,7 @@ import { WorkersTasks, WorkersRoutes, WorkersInspections, WorkersPackaging } fro
 export const router = createBrowserRouter([
   {
     path: "/",
-    Component: RoleSelector,
+    loader: () => redirect("/admin"),
   },
   {
     path: "/admin",
@@ -109,6 +108,6 @@ export const router = createBrowserRouter([
   },
   {
     path: "*",
-    Component: RoleSelector,
+    loader: () => redirect("/admin"),
   },
 ], { basename: "/admin" });

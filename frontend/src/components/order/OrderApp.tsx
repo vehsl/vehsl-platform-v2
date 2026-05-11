@@ -45,7 +45,7 @@ function AppInner() {
   };
 
   return (
-    <div className="min-h-screen font-urbanist selection:bg-blue-500/15 selection:text-blue-600 relative overflow-x-hidden">
+    <div className="min-h-dvh font-urbanist selection:bg-blue-500/15 selection:text-blue-600 relative overflow-x-hidden">
       <div className="fixed inset-0 -z-10 bg-gradient-to-br from-[#F2EDE7] via-[#EAECF2] to-[#E3E8F0]" />
       <div className="fixed top-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-blue-200/20 blur-[120px] -z-10" />
       <div className="fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-orange-200/15 blur-[100px] -z-10" />
@@ -65,8 +65,8 @@ function AppInner() {
       />
 
       <nav className="sticky top-0 z-50 bg-white/50 backdrop-blur-2xl border-b border-white/50">
-        <div className="max-w-[1120px] mx-auto flex items-center justify-between px-6 py-3.5">
-          <span className="text-[17px] font-black tracking-tight text-[#1A1A1A]">Store</span>
+        <div className="max-w-[1120px] mx-auto flex items-center justify-between px-4 py-3.5 sm:px-6">
+          <span className="hidden sm:block text-[17px] font-black tracking-tight text-[#1A1A1A]">Store</span>
           <div className="flex items-center gap-1 bg-[#1A1A1A]/[0.03] rounded-full p-[3px]">
             <button
               onClick={() => setActiveTab("orders")}
@@ -77,7 +77,7 @@ function AppInner() {
               }`}
             >
               <Package size={11} strokeWidth={2.5} />
-              {isSeller ? "Dashboard" : "Orders"}
+              <span className="hidden sm:inline">{isSeller ? "Dashboard" : "Orders"}</span>
             </button>
             <button
               onClick={() => setActiveTab("warehouse")}
@@ -88,20 +88,20 @@ function AppInner() {
               }`}
             >
               <Warehouse size={11} strokeWidth={2.5} />
-              Storage
+              <span className="hidden sm:inline">Storage</span>
             </button>
           </div>
           <SettingsPopover />
         </div>
       </nav>
 
-      <div className="px-5 md:px-10">
+      <div className="px-4 sm:px-5 md:px-10">
         {isSeller && activeTab === "orders" ? (
           <SellerDashboard />
         ) : (
           <>
             <header className="max-w-[1120px] mx-auto pt-10 pb-8 md:pt-12 md:pb-10">
-              <h1 className="text-[38px] md:text-[46px] font-black tracking-tight text-[#1A1A1A] leading-[1.05]">
+              <h1 className="text-[32px] sm:text-[38px] md:text-[46px] font-black tracking-tight text-[#1A1A1A] leading-[1.05]">
                 {activeTab === "orders" ? "Orders" : "Storage"}
               </h1>
               {activeTab === "orders" && !isSeller && (

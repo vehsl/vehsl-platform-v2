@@ -8,12 +8,14 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
-from .models import ChatMessage, ChatThread, Notification, Subscription, User
+from .models import AdminProfile, ChatMessage, ChatThread, Notification, Subscription, User, UserProfile
 from .serializers import (
+    AdminProfileUpdateSerializer,
     BuyerProfileSerializer,
     ChatMessageSerializer,
     ChatThreadSerializer,
     NotificationSerializer,
+    MeUpdateSerializer,
     RegisterSerializer,
     SellerProfileSerializer,
     SubscriptionSerializer,
@@ -64,6 +66,33 @@ class MeView(APIView):
     def get(self, request):
         return Response(UserSerializer(request.user).data)
 
+    def patch(self, request):
+        ser = MeUpdateSerializer(data=request.data, partial=True, context={"user": request.user})
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        user = request.user
+        for f in ["first_name", "last_name"]:
+            if f in data:
+                setattr(user, f, data.get(f) or "")
+
+        if "phone" in data:
+            phone_val = data.get("phone")
+            user.phone = phone_val or None
+
+        user.full_clean(exclude=["email"])
+        user.save()
+
+        profile = getattr(user, "profile", None)
+        if profile is None:
+            profile = UserProfile.objects.create(user=user)
+        for f in ["country", "province", "city", "street", "address", "nationality", "gender", "date_of_birth"]:
+            if f in data:
+                setattr(profile, f, data.get(f) or (None if f == "date_of_birth" else ""))
+        profile.save()
+
+        return Response(UserSerializer(user).data)
+
 
 class BuyerProfileMeView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsBuyer]
@@ -79,6 +108,17 @@ class SellerProfileMeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user.seller_profile
+
+
+class AdminProfileMeView(generics.RetrieveUpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = AdminProfileUpdateSerializer
+
+    def get_object(self):
+        prof = getattr(self.request.user, "admin_profile", None)
+        if prof is None:
+            prof = AdminProfile.objects.create(user=self.request.user, admin_role=AdminProfile.AdminRole.SUPER_ADMIN)
+        return prof
 
 
 class SubscriptionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):

@@ -124,7 +124,7 @@ function CategorySection({
           <Icon className="h-7 w-7" strokeWidth={1.5} />
         </div>
         <div>
-          <div className="text-5xl font-bold text-gray-900">{category.name}</div>
+          <div className="text-3xl font-bold text-gray-900 sm:text-4xl lg:text-5xl">{category.name}</div>
           <div className="mt-2 text-sm text-gray-500">
             {category.subcategories.length} subcategories · {category.count} products
           </div>
@@ -159,7 +159,7 @@ function StickyNav({
         !visible && "pointer-events-none",
       )}
     >
-      <div className="mx-auto flex max-w-6xl items-center gap-4 px-6 py-3">
+      <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3 sm:px-6">
         <div className="text-sm font-semibold tracking-tight text-[#0f1115]">Vehsl</div>
         <div className="h-5 w-px bg-black/10" />
 
@@ -246,10 +246,10 @@ export function ExploreShell() {
   };
 
   return (
-    <div className="bg-vehsl-watercolor-explore font-inter min-h-screen w-full">
+    <div className="bg-vehsl-watercolor-explore font-inter min-h-dvh w-full overflow-x-hidden">
       <StickyNav visible={stickyVisible} activeId={activeId} onJump={jumpTo} />
 
-      <div className="mx-auto max-w-6xl px-6 pt-6">
+      <div className="mx-auto max-w-6xl px-4 pt-6 sm:px-6">
         <div className="flex items-center justify-between">
           <Link
             href="/"
@@ -262,7 +262,7 @@ export function ExploreShell() {
         </div>
 
         <div className="mt-14">
-          <div className="text-7xl font-extrabold tracking-tight">
+          <div className="text-4xl font-extrabold tracking-tight sm:text-6xl lg:text-7xl">
             <span className="text-[#0f1115]">Explore </span>
             <span className="text-gradient-brand">everything</span>
           </div>

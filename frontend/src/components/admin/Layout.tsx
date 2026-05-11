@@ -108,6 +108,7 @@ export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifications] = useState(7);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(true);
 
   const currentRole = location.pathname.split("/")[1] || "admin";
@@ -123,6 +124,97 @@ export function Layout() {
       setUser(null);
     }
   }, []);
+
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  useEffect(() => {
+    const access = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    })();
+    if (!access) return;
+
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase()}/api/v1/auth/me`, {
+          headers: { Authorization: `Bearer ${access}` },
+        });
+        if (!res.ok) return;
+        const me = await res.json();
+        try {
+          window.localStorage.setItem("vehsl.user", JSON.stringify(me));
+        } catch {}
+        setUser(me);
+      } catch {}
+    })();
+  }, []);
+
+  const initials = useMemo(() => {
+    const first = (user?.first_name || "").toString().trim();
+    const last = (user?.last_name || "").toString().trim();
+    const email = (user?.email || "").toString().trim();
+    const base = `${first} ${last}`.trim();
+    const letters =
+      base
+        ? base
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((p: string) => p[0]?.toUpperCase())
+            .join("")
+        : email && email.includes("@")
+          ? email[0]?.toUpperCase() || "U"
+          : "U";
+    return letters || "U";
+  }, [user]);
+
+  const logout = async () => {
+    const refresh = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.refresh") || "";
+      } catch {
+        return "";
+      }
+    })();
+    const access = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    })();
+
+    try {
+      await fetch(`${apiBase()}/api/v1/auth/logout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(access ? { Authorization: `Bearer ${access}` } : {}),
+        },
+        body: JSON.stringify({ refresh }),
+      });
+    } catch {}
+
+    try {
+      window.localStorage.removeItem("vehsl.access");
+      window.localStorage.removeItem("vehsl.refresh");
+      window.localStorage.removeItem("vehsl.user");
+    } catch {}
+    window.location.assign("/");
+  };
 
   const allowedRoleIds = useMemo(() => {
     const role = (user?.role || "").toString().toLowerCase();
@@ -211,7 +303,7 @@ export function Layout() {
   const unreadCount = currentNotifs.filter(n => n.unread).length;
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
+    <div className="flex min-h-dvh h-dvh bg-background overflow-x-hidden">
       {/* Desktop Sidebar */}
       <motion.aside
         className="hidden lg:flex flex-col bg-card border-r border-black/[0.03] p-6 gap-1 overflow-hidden"
@@ -367,22 +459,6 @@ export function Layout() {
 
         {/* Bottom Actions */}
         <div className="mt-auto space-y-2 pt-5 border-t border-black/[0.03]">
-          <motion.button
-            onClick={() => navigate("/")}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-[14px] text-[0.8125rem] text-muted-foreground/55 hover:text-foreground hover:bg-black/[0.02] transition-all duration-300 cursor-pointer"
-            whileHover={{ x: 2 }}
-            whileTap={{ scale: 0.97 }}
-            transition={{ type: "spring", stiffness: 400, damping: 22 }}
-          >
-            <LogOut size={19} className="flex-shrink-0" />
-            <motion.span
-              animate={{ opacity: sidebarHovered ? 1 : 0 }}
-              transition={{ duration: 0.3, ease: [0.22, 0.68, 0.36, 1] }}
-              className="whitespace-nowrap overflow-hidden"
-            >
-              Switch Portal
-            </motion.span>
-          </motion.button>
         </div>
       </motion.aside>
 
@@ -604,8 +680,77 @@ export function Layout() {
             </div>
 
             {/* Avatar */}
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary/60 to-primary flex items-center justify-center text-primary-foreground text-[0.6875rem]">
-              TF
+            <div className="relative">
+              <motion.button
+                type="button"
+                onClick={() => setProfileOpen((s) => !s)}
+                className="w-8 h-8 rounded-full bg-gradient-to-br from-primary/60 to-primary flex items-center justify-center text-primary-foreground text-[0.6875rem] cursor-pointer"
+                whileTap={{ scale: 0.95 }}
+              >
+                {initials}
+              </motion.button>
+
+              <AnimatePresence>
+                {profileOpen && (
+                  <>
+                    <motion.div
+                      className="fixed inset-0 z-40"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setProfileOpen(false)}
+                    />
+                    <motion.div
+                      className="absolute right-0 top-[calc(100%+10px)] w-[92vw] max-w-[320px] bg-card rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.10),0_0_0_1px_rgba(0,0,0,0.04)] z-50 overflow-hidden"
+                      initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                      transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                    >
+                      <div className="px-5 pt-5 pb-4 border-b border-black/[0.03]">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center text-primary text-[0.875rem]">
+                            {initials}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[0.875rem] text-foreground truncate">
+                              {((user?.first_name || "") + " " + (user?.last_name || "")).trim() || "Account"}
+                            </p>
+                            <p className="text-[0.75rem] text-muted-foreground/60 truncate">{user?.email || user?.phone || ""}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-2">
+                        {currentRole === "admin" && (
+                          <button
+                            type="button"
+                            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[0.8125rem] text-foreground/80 hover:bg-black/[0.02] transition-colors cursor-pointer"
+                            onClick={() => {
+                              navigate("/admin/settings");
+                              setProfileOpen(false);
+                            }}
+                          >
+                            <Settings size={18} className="text-muted-foreground/55" />
+                            Profile Settings
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[0.8125rem] text-foreground/80 hover:bg-black/[0.02] transition-colors cursor-pointer"
+                          onClick={() => {
+                            setProfileOpen(false);
+                            logout();
+                          }}
+                        >
+                          <LogOut size={18} className="text-muted-foreground/55" />
+                          Logout
+                        </button>
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         </motion.header>
