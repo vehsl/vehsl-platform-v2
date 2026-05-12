@@ -1400,20 +1400,114 @@ export function AdminLogistics() {
 //  ADMIN → QUALITY
 // ════════════════════════════════════════════════════════════
 
-const qualityInspections = [
-  { id: "QI-482", product: "Herbal Tea Batch #284", seller: "GreenLeaf Organics", inspector: "Dr. Amara Johnson", status: "in-progress" as const, score: 82, date: "Mar 18, 2026" },
-  { id: "QI-481", product: "LED Panel Light 60W", seller: "BrightStar Electronics", inspector: "Marcus Lee", status: "passed" as const, score: 96, date: "Mar 17, 2026" },
-  { id: "QI-480", product: "Protein Energy Bar", seller: "FreshPack Foods", inspector: "Dr. Amara Johnson", status: "passed" as const, score: 91, date: "Mar 16, 2026" },
-  { id: "QI-479", product: "Carbon Fiber Sheet", seller: "Atlas Materials", inspector: "Marcus Lee", status: "failed" as const, score: 54, date: "Mar 15, 2026" },
-  { id: "QI-478", product: "Vitamin D3 Supplements", seller: "FreshPack Foods", inspector: "Dr. Amara Johnson", status: "passed" as const, score: 89, date: "Mar 14, 2026" },
-];
-
-const qualityTrend = [
-  { month: "Oct", score: 86 }, { month: "Nov", score: 88 }, { month: "Dec", score: 87 },
-  { month: "Jan", score: 91 }, { month: "Feb", score: 93 }, { month: "Mar", score: 92 },
-];
-
 export function AdminQuality() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const [stats, setStats] = useState<any>(null);
+  const [trend, setTrend] = useState<any[]>([]);
+  const [dist, setDist] = useState<any>(null);
+  const [recent, setRecent] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const fmtPct = (p: any) => {
+    const n = Number(p);
+    if (!Number.isFinite(n)) return "—";
+    return `${n.toFixed(1)}%`;
+  };
+
+  const fmtScore = (s: any) => {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return "—";
+    return `${Math.round(n)}`;
+  };
+
+  const fmtDeltaScore = (d: any) => {
+    const n = Number(d);
+    if (!Number.isFinite(n) || n === 0) return undefined;
+    const sign = n < 0 ? "" : "+";
+    return `${sign}${Math.round(n)}`;
+  };
+
+  const formatDate = (iso: any) => {
+    if (!iso) return "—";
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return "—";
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const [s, t, d, r] = await Promise.all([
+          fetchJson("/api/v1/admin/quality/stats"),
+          fetchJson("/api/v1/admin/quality/trend?months=6"),
+          fetchJson("/api/v1/admin/quality/distribution?days=30"),
+          fetchJson("/api/v1/admin/quality/recent?limit=10"),
+        ]);
+        if (cancelled) return;
+        setStats(s);
+        setTrend(Array.isArray(t) ? t : []);
+        setDist(d);
+        setRecent(Array.isArray(r) ? r : []);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load quality data.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item}>
@@ -1421,27 +1515,66 @@ export function AdminQuality() {
         <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
       </motion.div>
 
+      {error && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+          {error}
+        </motion.div>
+      )}
+
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Avg Quality Score" value="92" icon={<Star size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={0} accentColor="#FFB224" subtitle="out of 100" change="+3" changeType="positive" />
-        <StatCard label="Pass Rate" value="94.2%" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
-        <StatCard label="Pending" value="7" icon={<Clock size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={2} accentColor="#0171E3" subtitle="Awaiting inspection" />
-        <StatCard label="Failed" value="3" icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" subtitle="This month" />
+        <StatCard
+          label="Avg Quality Score"
+          value={fmtScore(stats?.avg_quality_score)}
+          icon={<Star size={20} className="text-[#FFB224]" />}
+          iconBg="bg-[#FFB224]/8"
+          index={0}
+          accentColor="#FFB224"
+          subtitle="out of 100"
+          change={fmtDeltaScore(stats?.avg_quality_score_delta)}
+          changeType={(Number(stats?.avg_quality_score_delta) || 0) >= 0 ? "positive" : "negative"}
+        />
+        <StatCard
+          label="Pass Rate"
+          value={fmtPct(stats?.pass_rate)}
+          icon={<CheckCircle2 size={20} className="text-[#30A46C]" />}
+          iconBg="bg-[#30A46C]/8"
+          index={1}
+          accentColor="#30A46C"
+        />
+        <StatCard
+          label="Pending"
+          value={typeof stats?.pending === "number" ? stats.pending : "—"}
+          icon={<Clock size={20} className="text-[#0171E3]" />}
+          iconBg="bg-[#0171E3]/8"
+          index={2}
+          accentColor="#0171E3"
+          subtitle="Awaiting inspection"
+        />
+        <StatCard
+          label="Failed"
+          value={typeof stats?.failed === "number" ? stats.failed : "—"}
+          icon={<XCircle size={20} className="text-[#E5484D]" />}
+          iconBg="bg-[#E5484D]/8"
+          index={3}
+          accentColor="#E5484D"
+          subtitle="This month"
+        />
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-5 gap-5">
         <SectionCard className="lg:col-span-3">
           <h2 className="text-foreground text-[0.9375rem] mb-1">Quality Score Trend</h2>
           <p className="text-muted-foreground/50 text-[0.75rem] mb-4">Average inspection score over time</p>
-          <CustomAreaChart data={qualityTrend} xKey="month" series={[{ dataKey: "score", color: "#0171E3" }]} height={180} yDomain={[70, 100]} />
+          <CustomAreaChart data={trend} xKey="month" series={[{ dataKey: "score", color: "#0171E3" }]} height={180} yDomain={[70, 100]} />
         </SectionCard>
         <SectionCard className="lg:col-span-2">
           <h2 className="text-foreground text-[0.9375rem] mb-4">Score Distribution</h2>
           <HorizontalBarList
             data={[
-              { label: "Excellent (90+)", value: 64, color: "#30A46C" },
-              { label: "Good (80-89)", value: 22, color: "#3B82F6" },
-              { label: "Fair (70-79)", value: 8, color: "#FFB224" },
-              { label: "Poor (<70)", value: 6, color: "#E5484D" },
+              { label: "Excellent (90+)", value: Number(dist?.excellent) || 0, color: "#30A46C" },
+              { label: "Good (80-89)", value: Number(dist?.good) || 0, color: "#3B82F6" },
+              { label: "Fair (70-79)", value: Number(dist?.fair) || 0, color: "#FFB224" },
+              { label: "Poor (<70)", value: Number(dist?.poor) || 0, color: "#E5484D" },
             ]}
             maxValue={100}
             valueFormatter={v => `${v}%`}
@@ -1453,7 +1586,17 @@ export function AdminQuality() {
         <SectionCard>
           <h2 className="text-foreground text-[0.9375rem] mb-6">Recent Inspections</h2>
           <div className="space-y-2">
-            {qualityInspections.map((qi, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading inspections…
+              </div>
+            )}
+            {!loading && recent.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No inspections yet.
+              </div>
+            )}
+            {recent.map((qi, i) => (
               <motion.div key={qi.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
               >
@@ -1461,14 +1604,14 @@ export function AdminQuality() {
                   <span className="text-[0.875rem]" style={{ color: qi.score >= 90 ? "#30A46C" : qi.score >= 70 ? "#D97706" : "#E5484D" }}>{qi.score}</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[0.875rem] text-foreground block truncate">{qi.product}</span>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{qi.seller} · {qi.inspector}</span>
+                  <span className="text-[0.875rem] text-foreground block truncate">{qi.product_name || "—"}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{qi.seller_name || "—"} · {qi.inspector_display || "—"}</span>
                 </div>
-                <span className="text-[0.75rem] text-muted-foreground/40 hidden sm:block">{qi.date}</span>
+                <span className="text-[0.75rem] text-muted-foreground/40 hidden sm:block">{formatDate(qi.inspected_at || qi.created_at)}</span>
                 <StatusPill
                   status={qi.status === "passed" ? "success" : qi.status === "failed" ? "error" : "pending"}
-                  label={qi.status}
-                  pulse={qi.status === "in-progress"}
+                  label={qi.status?.replace?.("_", " ") || qi.status}
+                  pulse={qi.status === "in_progress"}
                 />
               </motion.div>
             ))}
