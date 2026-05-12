@@ -6,14 +6,14 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.conf import settings as django_settings
-from django.db.models import Count, Q
+from django.db.models import CharField, Count, DecimalField, Q, Sum
 from django.utils import timezone
 from datetime import timedelta
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
 from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Value, When
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncDay, TruncHour, TruncMonth, TruncWeek
 
 from .models import (
     AdminProfile,
@@ -338,6 +338,529 @@ class AdminPlatformSettingsView(APIView):
                 "updated_at": obj.updated_at,
             }
         )
+
+
+class AdminPlatformOverviewView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def _delta(self, period: str) -> timedelta:
+        p = (period or "").strip().lower()
+        if p == "24h":
+            return timedelta(hours=24)
+        if p == "30d":
+            return timedelta(days=30)
+        if p == "90d":
+            return timedelta(days=90)
+        return timedelta(days=7)
+
+    def _pct_change(self, curr: float, prev: float) -> float:
+        try:
+            c = float(curr)
+            p = float(prev)
+        except Exception:
+            return 0.0
+        if p == 0:
+            return 0.0 if c == 0 else 100.0
+        return ((c - p) / p) * 100.0
+
+    def _avatar(self, user: User | None) -> str:
+        if not user:
+            return "U"
+        first = (getattr(user, "first_name", "") or "").strip()
+        last = (getattr(user, "last_name", "") or "").strip()
+        if first or last:
+            return (f"{first[:1]}{last[:1]}").strip().upper() or "U"
+        email = (getattr(user, "email", "") or "").strip()
+        if email and "@" in email:
+            return email[0].upper()
+        phone = (getattr(user, "phone", "") or "").strip()
+        return phone[-1:].upper() or "U"
+
+    def _bucket_trunc(self, period: str):
+        p = (period or "").strip().lower()
+        if p == "24h":
+            return TruncHour("created_at"), "hour"
+        if p in {"7d", "30d"}:
+            return TruncDay("created_at"), "day"
+        return TruncWeek("created_at"), "week"
+
+    def _label_bucket(self, dt, kind: str) -> str:
+        if not dt:
+            return ""
+        if kind == "hour":
+            return dt.strftime("%H:%M")
+        if kind == "week":
+            return f"Wk {dt.strftime('%W')}"
+        return dt.strftime("%b %d")
+
+    def _downsample(self, items: list[dict], max_points: int = 7) -> list[dict]:
+        if len(items) <= max_points:
+            return items
+        n = len(items)
+        if max_points <= 1:
+            return [items[-1]]
+        idxs = []
+        for i in range(max_points):
+            idx = round(i * (n - 1) / (max_points - 1))
+            if idxs and idx == idxs[-1]:
+                continue
+            idxs.append(idx)
+        return [items[i] for i in idxs]
+
+    def get(self, request):
+        now = timezone.now()
+        period = (request.query_params.get("period") or "7d").strip().lower()
+        delta = self._delta(period)
+        start = now - delta
+        prev_start = start - delta
+        prev_end = start
+
+        try:
+            from apps.payments.models import Payment
+        except Exception:
+            Payment = None
+        try:
+            from apps.orders.models import Order, Shipment
+        except Exception:
+            Order = None
+            Shipment = None
+        try:
+            from apps.inventory.models import QualityInspection
+        except Exception:
+            QualityInspection = None
+
+        b2b_when = When(order__buyer__buyer_profile__business_type__gt="", then=F("amount"))
+        b2c_when = When(Q(order__buyer__buyer_profile__business_type="") | Q(order__buyer__buyer_profile__business_type__isnull=True), then=F("amount"))
+        dec0 = Value(0, output_field=DecimalField(max_digits=14, decimal_places=2))
+
+        revenue_total = 0.0
+        revenue_b2b = 0.0
+        revenue_b2c = 0.0
+        revenue_change_pct = 0.0
+        revenue_points: list[dict] = []
+
+        if Payment is not None:
+            payments_base = Payment.objects.filter(deleted_at__isnull=True).select_related("order", "order__buyer")
+            payments_curr = payments_base.filter(
+                created_at__gte=start,
+                created_at__lt=now,
+                status__in=[Payment.Status.HELD, Payment.Status.RELEASED],
+            )
+            payments_prev = payments_base.filter(
+                created_at__gte=prev_start,
+                created_at__lt=prev_end,
+                status__in=[Payment.Status.HELD, Payment.Status.RELEASED],
+            )
+
+            curr_agg = payments_curr.aggregate(
+                total=Coalesce(Sum("amount"), dec0),
+                b2b=Coalesce(Sum(Case(b2b_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))), dec0),
+                b2c=Coalesce(Sum(Case(b2c_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))), dec0),
+            )
+            prev_agg = payments_prev.aggregate(
+                total=Coalesce(Sum("amount"), dec0),
+            )
+
+            revenue_total = float(curr_agg["total"] or 0)
+            revenue_b2b = float(curr_agg["b2b"] or 0)
+            revenue_b2c = float(curr_agg["b2c"] or 0)
+            revenue_change_pct = self._pct_change(float(curr_agg["total"] or 0), float(prev_agg["total"] or 0))
+
+            trunc, kind = self._bucket_trunc(period)
+            series = (
+                payments_curr.annotate(bucket=trunc)
+                .values("bucket")
+                .annotate(
+                    b2b=Coalesce(
+                        Sum(Case(b2b_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))),
+                        dec0,
+                    ),
+                    b2c=Coalesce(
+                        Sum(Case(b2c_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))),
+                        dec0,
+                    ),
+                )
+                .order_by("bucket")
+            )
+            revenue_points = [
+                {
+                    "label": self._label_bucket(row.get("bucket"), kind),
+                    "b2b": float(row.get("b2b") or 0),
+                    "b2c": float(row.get("b2c") or 0),
+                }
+                for row in series
+            ]
+            revenue_points = self._downsample(revenue_points, max_points=7) or [{"label": "", "b2b": 0.0, "b2c": 0.0}]
+
+        active_orders_total = 0
+        active_orders_b2b = 0
+        active_orders_b2c = 0
+        active_orders_change_pct = 0.0
+        orders_sparkline: list[float] = []
+
+        if Order is not None:
+            active_status_exclude = [
+                Order.Status.DELIVERED,
+                Order.Status.COMPLETED,
+                Order.Status.CANCELLED,
+                Order.Status.REJECTED,
+            ]
+            orders_active_now = Order.objects.filter(deleted_at__isnull=True).exclude(status__in=active_status_exclude)
+            orders_active_prev = Order.objects.filter(deleted_at__isnull=True, created_at__lt=start).exclude(status__in=active_status_exclude)
+
+            active_orders_total = orders_active_now.count()
+            active_orders_change_pct = self._pct_change(active_orders_total, orders_active_prev.count())
+
+            active_orders_b2b = orders_active_now.filter(buyer__buyer_profile__business_type__gt="").count()
+            active_orders_b2c = max(active_orders_total - active_orders_b2b, 0)
+
+            trunc, kind = self._bucket_trunc(period)
+            order_series = (
+                Order.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now)
+                .annotate(bucket=trunc)
+                .values("bucket")
+                .annotate(total=Count("id"))
+                .order_by("bucket")
+            )
+            orders_points = [{"label": self._label_bucket(r.get("bucket"), kind), "v": int(r.get("total") or 0)} for r in order_series]
+            orders_points = self._downsample(orders_points, max_points=7)
+            orders_sparkline = [float(p["v"]) for p in orders_points] or [0.0]
+
+        users_online_total = 0
+        users_online_buyers = 0
+        users_online_sellers = 0
+        users_online_workers = 0
+        users_online_change_abs = 0
+        users_sparkline: list[float] = []
+
+        online_window = now - timedelta(minutes=15)
+        prev_online_window_end = prev_end
+        prev_online_window_start = prev_end - timedelta(minutes=15)
+        online_qs = User.objects.filter(last_login__gte=online_window)
+        prev_online_qs = User.objects.filter(last_login__gte=prev_online_window_start, last_login__lt=prev_online_window_end)
+
+        users_online_total = online_qs.count()
+        users_online_change_abs = users_online_total - prev_online_qs.count()
+        users_online_buyers = online_qs.filter(role=User.Role.BUYER).count()
+        users_online_sellers = online_qs.filter(role=User.Role.SELLER).count()
+        users_online_workers = online_qs.filter(role=User.Role.ADMIN, admin_profile__admin_role__in=[AdminProfile.AdminRole.LOGISTICS, AdminProfile.AdminRole.INSPECTOR]).count()
+
+        try:
+            trunc, kind = self._bucket_trunc(period)
+            login_series = (
+                User.objects.filter(last_login__isnull=False, last_login__gte=start, last_login__lt=now)
+                .annotate(bucket=TruncHour("last_login") if kind == "hour" else TruncDay("last_login") if kind == "day" else TruncWeek("last_login"))
+                .values("bucket")
+                .annotate(total=Count("id"))
+                .order_by("bucket")
+            )
+            login_points = [{"label": self._label_bucket(r.get("bucket"), kind), "v": int(r.get("total") or 0)} for r in login_series]
+            login_points = self._downsample(login_points, max_points=7)
+            users_sparkline = [float(p["v"]) for p in login_points] or [0.0]
+        except Exception:
+            users_sparkline = [float(users_online_total)]
+
+        quality_score = 0.0
+        quality_inspections = 0
+        quality_change_pct = 0.0
+        quality_sparkline: list[float] = []
+
+        if QualityInspection is not None:
+            base = QualityInspection.objects.filter(deleted_at__isnull=True, status__in=[QualityInspection.Status.PASSED, QualityInspection.Status.FAILED])
+            curr = base.filter(created_at__gte=start, created_at__lt=now)
+            prev = base.filter(created_at__gte=prev_start, created_at__lt=prev_end)
+            curr_avg = curr.aggregate(avg=Coalesce(Avg("score"), Value(0.0)))["avg"] or 0.0
+            prev_avg = prev.aggregate(avg=Coalesce(Avg("score"), Value(0.0)))["avg"] or 0.0
+            quality_score = float(curr_avg)
+            quality_change_pct = self._pct_change(float(curr_avg), float(prev_avg))
+            quality_inspections = curr.count()
+
+            trunc, kind = self._bucket_trunc(period)
+            q_series = (
+                curr.annotate(bucket=trunc)
+                .values("bucket")
+                .annotate(avg=Coalesce(Avg("score"), Value(0.0)))
+                .order_by("bucket")
+            )
+            q_points = [{"label": self._label_bucket(r.get("bucket"), kind), "v": float(r.get("avg") or 0)} for r in q_series]
+            q_points = self._downsample(q_points, max_points=7)
+            quality_sparkline = [float(p["v"]) for p in q_points] or [0.0]
+
+        health_systems: list[dict] = []
+        health_score = 100.0
+
+        if Order is not None and Shipment is not None and Payment is not None:
+            recent_orders = Order.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now)
+            recent_count = recent_orders.count()
+            disputed = recent_orders.filter(status=Order.Status.DISPUTED).count()
+            overdue = recent_orders.filter(deadline_at__isnull=False, deadline_at__lt=now).exclude(
+                status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED]
+            ).count()
+            order_issue_rate = 0.0 if recent_count == 0 else float(disputed + overdue) / float(recent_count)
+            order_uptime = max(90.0, 100.0 - (order_issue_rate * 50.0))
+
+            ins_base = QualityInspection.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now) if QualityInspection is not None else None
+            ins_total = ins_base.count() if ins_base is not None else 0
+            ins_failed = ins_base.filter(status=QualityInspection.Status.FAILED).count() if ins_base is not None else 0
+            fail_rate = 0.0 if ins_total == 0 else float(ins_failed) / float(ins_total)
+            quality_uptime = max(90.0, 100.0 - (fail_rate * 40.0))
+
+            shipments = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now)
+            ship_total = shipments.count()
+            delayed = shipments.filter(estimated_delivery_at__isnull=False, estimated_delivery_at__lt=now).exclude(status=Shipment.Status.DELIVERED).count()
+            delay_rate = 0.0 if ship_total == 0 else float(delayed) / float(ship_total)
+            delivery_uptime = max(85.0, 100.0 - (delay_rate * 60.0))
+
+            p_curr = Payment.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now)
+            p_total = p_curr.count()
+            p_failed = p_curr.filter(status=Payment.Status.FAILED).count()
+            p_fail_rate = 0.0 if p_total == 0 else float(p_failed) / float(p_total)
+            payment_uptime = max(90.0, 100.0 - (p_fail_rate * 80.0))
+
+            health_systems = [
+                {"label": "Order Processing", "status": "success" if order_uptime >= 98 else "warning", "uptime": order_uptime},
+                {"label": "Quality Pipeline", "status": "success" if quality_uptime >= 98 else "warning", "uptime": quality_uptime},
+                {"label": "Delivery Network", "status": "success" if delivery_uptime >= 98 else "warning", "uptime": delivery_uptime},
+                {"label": "Payment Gateway", "status": "success" if payment_uptime >= 98 else "warning", "uptime": payment_uptime},
+            ]
+            health_score = sum(float(s["uptime"]) for s in health_systems) / float(len(health_systems))
+
+        health_label = "Healthy" if health_score >= 97 else "Degraded"
+        health_sublabel = "All core systems running" if health_score >= 97 else "Some systems need attention"
+
+        region_points: list[dict] = []
+        channel_points: list[dict] = []
+
+        if Payment is not None:
+            window_30 = now - timedelta(days=30)
+            payments_30 = Payment.objects.filter(
+                deleted_at__isnull=True,
+                created_at__gte=window_30,
+                created_at__lt=now,
+                status__in=[Payment.Status.HELD, Payment.Status.RELEASED],
+            )
+            region_series = (
+                payments_30.annotate(country=Coalesce(F("order__buyer__profile__country"), Value("Unknown"), output_field=CharField()))
+                .values("country")
+                .annotate(total=Coalesce(Sum("amount"), dec0))
+                .order_by("-total")[:5]
+            )
+            region_points = [{"label": (r.get("country") or "Unknown").strip() or "Unknown", "value": float(r.get("total") or 0)} for r in region_series]
+
+            total_30 = payments_30.aggregate(total=Coalesce(Sum("amount"), dec0))["total"] or 0
+            total_30_f = float(total_30 or 0)
+            b2b_30 = payments_30.aggregate(
+                b2b=Coalesce(Sum(Case(b2b_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))), dec0)
+            )["b2b"] or 0
+            b2b_30_f = float(b2b_30 or 0)
+            b2c_30_f = max(total_30_f - b2b_30_f, 0.0)
+            wholesale_30 = payments_30.filter(order__total_amount__gte=5000).aggregate(total=Coalesce(Sum("amount"), dec0))["total"] or 0
+            wholesale_30_f = float(wholesale_30 or 0)
+
+            base = max(total_30_f, 1.0)
+            b2b_pct = (b2b_30_f / base) * 100.0
+            b2c_pct = (b2c_30_f / base) * 100.0
+            wholesale_pct = (wholesale_30_f / base) * 100.0
+            referral_pct = max(0.0, 100.0 - (b2b_pct + b2c_pct + wholesale_pct))
+
+            channel_points = [
+                {"name": "B2B Direct", "value": round(b2b_pct)},
+                {"name": "B2C Marketplace", "value": round(b2c_pct)},
+                {"name": "Wholesale", "value": round(wholesale_pct)},
+                {"name": "Referral", "value": round(referral_pct)},
+            ]
+            total_pct = sum(int(c["value"]) for c in channel_points) or 100
+            if total_pct != 100:
+                channel_points[0]["value"] = int(channel_points[0]["value"]) + (100 - total_pct)
+
+        alerts: list[dict] = []
+        if QualityInspection is not None:
+            backlog = QualityInspection.objects.filter(deleted_at__isnull=True, status=QualityInspection.Status.IN_PROGRESS).count()
+            if backlog >= 25:
+                alerts.append(
+                    {
+                        "type": "warning",
+                        "message": f"Quality inspection backlog at {backlog} items",
+                        "action": "Review Queue",
+                        "path": "/admin/quality",
+                        "occurred_at": now,
+                    }
+                )
+        pending_sellers = SellerProfile.objects.filter(verification_status=SellerProfile.VerificationStatus.PENDING).count()
+        if pending_sellers:
+            alerts.append(
+                {
+                    "type": "info",
+                    "message": f"{pending_sellers} seller verifications pending",
+                    "action": "Review",
+                    "path": "/admin/verification",
+                    "occurred_at": now,
+                }
+            )
+        expiring = KycDocument.objects.filter(kind=KycDocument.Kind.DRIVING_LICENSE, expires_at__isnull=False, expires_at__lte=(now + timedelta(days=30)).date()).count()
+        if expiring:
+            alerts.append(
+                {
+                    "type": "warning",
+                    "message": f"{expiring} driving licenses expiring within 30 days",
+                    "action": "Manage",
+                    "path": "/admin/verification",
+                    "occurred_at": now,
+                }
+            )
+        pending_docs = KycDocument.objects.filter(review_status__in=[KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW]).count()
+        if pending_docs:
+            alerts.append(
+                {
+                    "type": "warning",
+                    "message": f"{pending_docs} KYC documents waiting for review",
+                    "action": "Review",
+                    "path": "/admin/verification",
+                    "occurred_at": now,
+                }
+            )
+        alerts = alerts[:6]
+
+        activities: list[dict] = []
+        try:
+            newest_orders = []
+            newest_payments = []
+            newest_inspections = []
+            newest_docs = []
+            newest_users = []
+
+            if Order is not None:
+                newest_orders = list(Order.objects.filter(deleted_at__isnull=True).select_related("buyer").order_by("-created_at")[:6])
+                for o in newest_orders:
+                    activities.append(
+                        {
+                            "occurred_at": o.created_at,
+                            "user": o.buyer,
+                            "action": "placed order",
+                            "target": f"Order #{o.id}",
+                            "path": "/admin/logistics",
+                        }
+                    )
+            if Payment is not None:
+                newest_payments = list(
+                    Payment.objects.filter(deleted_at__isnull=True, status__in=[Payment.Status.HELD, Payment.Status.RELEASED])
+                    .select_related("order", "order__buyer")
+                    .order_by("-created_at")[:6]
+                )
+                for p in newest_payments:
+                    activities.append(
+                        {
+                            "occurred_at": p.created_at,
+                            "user": getattr(p.order, "buyer", None),
+                            "action": "payment processed",
+                            "target": f"Order #{p.order_id}",
+                            "path": "/admin/logistics",
+                        }
+                    )
+            if QualityInspection is not None:
+                newest_inspections = list(
+                    QualityInspection.objects.filter(deleted_at__isnull=True)
+                    .select_related("inspector", "product")
+                    .order_by("-created_at")[:6]
+                )
+                for qi in newest_inspections:
+                    activities.append(
+                        {
+                            "occurred_at": qi.created_at,
+                            "user": qi.inspector,
+                            "action": "updated inspection",
+                            "target": f"Inspection #{qi.id}",
+                            "path": "/admin/quality",
+                        }
+                    )
+            newest_docs = list(KycDocument.objects.select_related("user").order_by("-uploaded_at")[:6])
+            for d in newest_docs:
+                activities.append(
+                    {
+                        "occurred_at": d.uploaded_at,
+                        "user": d.user,
+                        "action": "uploaded document",
+                        "target": d.get_kind_display(),
+                        "path": "/admin/verification",
+                    }
+                )
+            newest_users = list(User.objects.order_by("-date_joined")[:6])
+            for u in newest_users:
+                activities.append(
+                    {
+                        "occurred_at": u.date_joined,
+                        "user": u,
+                        "action": "joined platform",
+                        "target": (u.email or u.phone or f"User #{u.id}"),
+                        "path": "/admin/users",
+                    }
+                )
+        except Exception:
+            activities = []
+
+        activities.sort(key=lambda x: x.get("occurred_at") or now, reverse=True)
+        activities = activities[:8]
+        activities_out = [
+            {
+                "user": (f"{(a.get('user').first_name or '').strip()} {(a.get('user').last_name or '').strip()}".strip() if a.get("user") else "System") or "System",
+                "action": a.get("action") or "",
+                "target": a.get("target") or "",
+                "avatar": self._avatar(a.get("user")),
+                "occurred_at": a.get("occurred_at"),
+                "path": a.get("path") or "/admin",
+            }
+            for a in activities
+        ]
+
+        payload = {
+            "period": period,
+            "hero": {
+                "total_revenue": {
+                    "total": revenue_total,
+                    "b2b": revenue_b2b,
+                    "b2c": revenue_b2c,
+                    "change_pct": revenue_change_pct,
+                    "sparkline": [float(p.get("b2b", 0) + p.get("b2c", 0)) for p in revenue_points] if revenue_points else [0.0],
+                },
+                "active_orders": {
+                    "total": active_orders_total,
+                    "b2b": active_orders_b2b,
+                    "b2c": active_orders_b2c,
+                    "change_pct": active_orders_change_pct,
+                    "sparkline": orders_sparkline,
+                },
+                "users_online": {
+                    "total": users_online_total,
+                    "buyers": users_online_buyers,
+                    "sellers": users_online_sellers,
+                    "workers": users_online_workers,
+                    "change_abs": users_online_change_abs,
+                    "sparkline": users_sparkline,
+                },
+                "quality_score": {
+                    "value": quality_score,
+                    "inspections": quality_inspections,
+                    "change_pct": quality_change_pct,
+                    "sparkline": quality_sparkline,
+                },
+            },
+            "revenue_flow": {
+                "total": revenue_total,
+                "change_pct": revenue_change_pct,
+                "points": revenue_points,
+            },
+            "health": {
+                "score": float(health_score),
+                "label": health_label,
+                "sublabel": health_sublabel,
+                "systems": health_systems,
+            },
+            "regions": region_points,
+            "channels": channel_points,
+            "alerts": alerts,
+            "activity": activities_out,
+        }
+        return Response(payload)
 
 
 class RegisterView(generics.CreateAPIView):

@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
+import { useNavigate } from "react-router";
 import {
   Users,
   Package,
@@ -42,97 +43,6 @@ import {
  * ════════════════════════════════════════════════════════════
  */
 
-const revenueData = [
-  { month: "Jan", b2b: 42000, b2c: 28000 },
-  { month: "Feb", b2b: 48000, b2c: 31000 },
-  { month: "Mar", b2b: 45000, b2c: 35000 },
-  { month: "Apr", b2b: 56000, b2c: 38000 },
-  { month: "May", b2b: 62000, b2c: 42000 },
-  { month: "Jun", b2b: 68000, b2c: 45000 },
-  { month: "Jul", b2b: 72000, b2c: 48000 },
-];
-
-const recentAlerts = [
-  {
-    id: 1,
-    type: "warning" as const,
-    message: "Quality inspection backlog reaching 85% capacity",
-    time: "12 min ago",
-    action: "Review Queue",
-  },
-  {
-    id: 2,
-    type: "info" as const,
-    message: "New B2B partner 'Meridian Corp' registration pending",
-    time: "34 min ago",
-    action: "Review",
-  },
-  {
-    id: 3,
-    type: "success" as const,
-    message: "Monthly compliance audit completed successfully",
-    time: "1 hr ago",
-    action: "View Report",
-  },
-  {
-    id: 4,
-    type: "warning" as const,
-    message: "3 driver licenses expiring within 30 days",
-    time: "2 hrs ago",
-    action: "Manage",
-  },
-];
-
-const recentActivities = [
-  {
-    id: 1,
-    user: "Sarah K.",
-    action: "approved quality report",
-    target: "Batch #2847",
-    time: "5 min ago",
-    avatar: "SK",
-  },
-  {
-    id: 2,
-    user: "James L.",
-    action: "completed delivery",
-    target: "Order #1293",
-    time: "18 min ago",
-    avatar: "JL",
-  },
-  {
-    id: 3,
-    user: "Priya M.",
-    action: "flagged sample",
-    target: "SKU-4821",
-    time: "32 min ago",
-    avatar: "PM",
-  },
-  {
-    id: 4,
-    user: "Carlos R.",
-    action: "onboarded seller",
-    target: "GreenLeaf Ltd.",
-    time: "1 hr ago",
-    avatar: "CR",
-  },
-];
-
-const topRegions = [
-  { label: "United States", value: 124500, color: "#0171E3" },
-  { label: "United Kingdom", value: 89200, color: "#3B82F6" },
-  { label: "UAE", value: 67800, color: "#30A46C" },
-  { label: "Saudi Arabia", value: 45600, color: "#D97706" },
-  { label: "Pakistan", value: 34200, color: "#EC4899" },
-];
-
-const channelData = [
-  { name: "B2B Direct", value: 45, color: "#0171E3" },
-  { name: "B2C Marketplace", value: 30, color: "#30A46C" },
-  { name: "Wholesale", value: 15, color: "#FFB224" },
-  { name: "Referral", value: 10, color: "#3B82F6" },
-];
-
 // ─── Card wrapper — consistent, breathing container ─────
 function Section({
   children,
@@ -153,7 +63,128 @@ function Section({
 }
 
 export function AdminDashboard() {
+  const navigate = useNavigate();
   const [selectedPeriod, setSelectedPeriod] = useState("7d");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+  const [overview, setOverview] = useState<any>(null);
+
+  const apiBase = useMemo(() => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  }, []);
+
+  const access = useMemo(() => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  }, []);
+
+  const formatCompact = (n: any) => {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return "—";
+    const abs = Math.abs(v);
+    if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)}B`;
+    if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+    if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+    return v.toFixed(0);
+  };
+
+  const fmtPct = (v: any, digits = 1) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "0.0%";
+    return `${n.toFixed(digits)}%`;
+  };
+
+  const relativeTime = (iso: any) => {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return "—";
+    const diff = Date.now() - d.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} hr ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days} days ago`;
+  };
+
+  useEffect(() => {
+    if (!access) {
+      setError("Not signed in.");
+      setOverview(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        setLoading(true);
+        setError("");
+        const res = await fetch(`${apiBase}/api/v1/admin/overview?period=${encodeURIComponent(selectedPeriod)}`, {
+          headers: { Authorization: `Bearer ${access}` },
+          signal: ctrl.signal,
+        });
+        if (!res.ok) {
+          setError("Failed to load overview.");
+          setOverview(null);
+          return;
+        }
+        const data = await res.json();
+        setOverview(data);
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;
+        setError("Network error.");
+        setOverview(null);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => ctrl.abort();
+  }, [access, apiBase, selectedPeriod]);
+
+  const hero = overview?.hero || {};
+  const totalRevenue = hero?.total_revenue || {};
+  const activeOrders = hero?.active_orders || {};
+  const usersOnline = hero?.users_online || {};
+  const qualityScore = hero?.quality_score || {};
+
+  const revenueFlow = overview?.revenue_flow || {};
+  const revenuePoints = revenueFlow?.points?.length ? revenueFlow.points : [{ label: "", b2b: 0, b2c: 0 }];
+
+  const health = overview?.health || {};
+  const healthScore = Number(health?.score);
+  const healthColor = Number.isFinite(healthScore) && healthScore >= 97 ? "#30A46C" : "#FFB224";
+
+  const regionPalette = ["#0171E3", "#3B82F6", "#30A46C", "#D97706", "#EC4899"];
+  const regions = (overview?.regions || []).map((r: any, i: number) => ({
+    label: r?.label || "Unknown",
+    value: Number(r?.value) || 0,
+    color: regionPalette[i % regionPalette.length],
+  }));
+
+  const channelColors: Record<string, string> = {
+    "B2B Direct": "#0171E3",
+    "B2C Marketplace": "#30A46C",
+    Wholesale: "#FFB224",
+    Referral: "#3B82F6",
+  };
+  const channels = (overview?.channels || []).map((c: any) => ({
+    name: c?.name || "Unknown",
+    value: Number(c?.value) || 0,
+    color: channelColors[c?.name] || "#A0A0A8",
+  }));
+
+  const alerts = overview?.alerts || [];
+  const activities = overview?.activity || [];
 
   return (
     <div className="space-y-7">
@@ -194,57 +225,63 @@ export function AdminDashboard() {
         </div>
       </div>
 
+      {(loading || error) && (
+        <div className="px-4 py-3 rounded-2xl bg-black/[0.012] border border-black/[0.03] text-[0.8125rem]">
+          <span className={error ? "text-[#E5484D]" : "text-muted-foreground/70"}>{error || "Loading…"}</span>
+        </div>
+      )}
+
       {/* ─── Hero Stats — THE most important numbers ──── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         <StatCard
           label="Total Revenue"
-          value="$347.2K"
-          change="+12.5%"
-          changeType="positive"
+          value={`$${formatCompact(totalRevenue?.total)}`}
+          change={`${Number(totalRevenue?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(totalRevenue?.change_pct)}`}
+          changeType={Number(totalRevenue?.change_pct || 0) > 0 ? "positive" : Number(totalRevenue?.change_pct || 0) < 0 ? "negative" : "neutral"}
           icon={<TrendingUp size={20} className="text-primary" />}
           iconBg="bg-primary/8"
           index={0}
-          subtitle="B2B $225K · B2C $122K"
-          sparklineData={[280, 295, 310, 305, 325, 338, 347]}
+          subtitle={`B2B $${formatCompact(totalRevenue?.b2b)} · B2C $${formatCompact(totalRevenue?.b2c)}`}
+          sparklineData={totalRevenue?.sparkline || []}
           sparklineColor="#0171E3"
           accentColor="#0171E3"
         />
         <StatCard
           label="Active Orders"
-          value="1,284"
-          change="+8.2%"
-          changeType="positive"
+          value={(Number(activeOrders?.total) || 0).toLocaleString()}
+          change={`${Number(activeOrders?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(activeOrders?.change_pct)}`}
+          changeType={Number(activeOrders?.change_pct || 0) > 0 ? "positive" : Number(activeOrders?.change_pct || 0) < 0 ? "negative" : "neutral"}
           icon={<Package size={20} className="text-[#3B82F6]" />}
           iconBg="bg-[#3B82F6]/8"
           index={1}
-          subtitle="342 B2B · 942 B2C"
-          sparklineData={[980, 1020, 1050, 1120, 1180, 1240, 1284]}
+          subtitle={`${Number(activeOrders?.b2b || 0).toLocaleString()} B2B · ${Number(activeOrders?.b2c || 0).toLocaleString()} B2C`}
+          sparklineData={activeOrders?.sparkline || []}
           sparklineColor="#3B82F6"
           accentColor="#3B82F6"
         />
         <StatCard
           label="Users Online"
-          value="89"
-          change="+3"
-          changeType="positive"
+          value={(Number(usersOnline?.total) || 0).toLocaleString()}
+          change={`${Number(usersOnline?.change_abs || 0) >= 0 ? "+" : ""}${Number(usersOnline?.change_abs || 0).toLocaleString()}`}
+          changeType={Number(usersOnline?.change_abs || 0) > 0 ? "positive" : Number(usersOnline?.change_abs || 0) < 0 ? "negative" : "neutral"}
           icon={<Users size={20} className="text-[#30A46C]" />}
           iconBg="bg-[#30A46C]/8"
           index={2}
-          subtitle="14 sellers · 12 workers · 63 buyers"
-          sparklineData={[62, 68, 72, 75, 80, 84, 89]}
+          subtitle={`${Number(usersOnline?.sellers || 0)} sellers · ${Number(usersOnline?.workers || 0)} workers · ${Number(usersOnline?.buyers || 0)} buyers`}
+          sparklineData={usersOnline?.sparkline || []}
           sparklineColor="#30A46C"
           accentColor="#30A46C"
         />
         <StatCard
           label="Quality Score"
-          value="96.4%"
-          change="+0.8%"
-          changeType="positive"
+          value={`${(Number(qualityScore?.value) || 0).toFixed(1)}%`}
+          change={`${Number(qualityScore?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(qualityScore?.change_pct)}`}
+          changeType={Number(qualityScore?.change_pct || 0) > 0 ? "positive" : Number(qualityScore?.change_pct || 0) < 0 ? "negative" : "neutral"}
           icon={<ShieldCheck size={20} className="text-[#D97706]" />}
           iconBg="bg-[#D97706]/8"
           index={3}
-          subtitle="Based on 847 inspections"
-          sparklineData={[93.2, 94.1, 94.8, 95.2, 95.8, 96.1, 96.4]}
+          subtitle={`Based on ${(Number(qualityScore?.inspections) || 0).toLocaleString()} inspections`}
+          sparklineData={qualityScore?.sparkline || []}
           sparklineColor="#D97706"
           accentColor="#D97706"
         />
@@ -278,17 +315,21 @@ export function AdminDashboard() {
           {/* THE ANSWER — biggest element */}
           <div className="flex items-baseline gap-3 mb-6 mt-3">
             <span className="text-[2.75rem] text-foreground tracking-[-0.03em] leading-none tabular-nums">
-              $120K
+              ${formatCompact(revenueFlow?.total)}
             </span>
-            <span className="flex items-center gap-1 text-[0.75rem] text-[#30A46C] mb-1">
+            <span
+              className={`flex items-center gap-1 text-[0.75rem] mb-1 ${
+                Number(revenueFlow?.change_pct || 0) >= 0 ? "text-[#30A46C]" : "text-[#E5484D]"
+              }`}
+            >
               <ArrowUp size={12} />
-              +15.2% vs last period
+              {`${Number(revenueFlow?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(revenueFlow?.change_pct)} vs last period`}
             </span>
           </div>
 
           <CustomAreaChart
-            data={revenueData}
-            xKey="month"
+            data={revenuePoints}
+            xKey="label"
             series={[
               { dataKey: "b2b", color: "#0171E3", label: "B2B" },
               { dataKey: "b2c", color: "#30A46C", label: "B2C" },
@@ -309,36 +350,15 @@ export function AdminDashboard() {
 
           <div className="flex justify-center mb-6">
             <GaugeChart
-              value={96}
-              color="#30A46C"
-              label="Healthy"
-              sublabel="All core systems running"
+              value={Number.isFinite(healthScore) ? Math.round(healthScore) : 0}
+              color={healthColor}
+              label={health?.label || "Healthy"}
+              sublabel={health?.sublabel || ""}
             />
           </div>
 
           <div className="space-y-1.5 mt-4">
-            {[
-              {
-                label: "Order Processing",
-                status: "success" as const,
-                uptime: "99.9%",
-              },
-              {
-                label: "Quality Pipeline",
-                status: "success" as const,
-                uptime: "99.7%",
-              },
-              {
-                label: "Delivery Network",
-                status: "warning" as const,
-                uptime: "97.2%",
-              },
-              {
-                label: "Payment Gateway",
-                status: "success" as const,
-                uptime: "99.9%",
-              },
-            ].map((item) => (
+            {(health?.systems || []).map((item: any) => (
               <div
                 key={item.label}
                 className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-black/[0.015] transition-colors duration-300"
@@ -356,7 +376,7 @@ export function AdminDashboard() {
                   </span>
                 </div>
                 <span className="text-[0.6875rem] text-muted-foreground/60 tabular-nums">
-                  {item.uptime}
+                  {(Number(item.uptime) || 0).toFixed(1)}%
                 </span>
               </div>
             ))}
@@ -381,7 +401,7 @@ export function AdminDashboard() {
             </span>
           </div>
           <HorizontalBarList
-            data={topRegions}
+            data={regions}
             valueFormatter={(v) => `$${(v / 1000).toFixed(1)}K`}
           />
         </Section>
@@ -397,14 +417,14 @@ export function AdminDashboard() {
           </div>
           <div className="flex items-center gap-10">
             <CustomDonutChart
-              data={channelData}
+              data={channels}
               size={150}
-              centerValue="$347K"
+              centerValue={`$${formatCompact(totalRevenue?.total)}`}
               centerLabel="Total"
               thickness={24}
             />
             <div className="flex-1 space-y-3.5">
-              {channelData.map((item) => (
+              {channels.map((item: any) => (
                 <div
                   key={item.name}
                   className="flex items-center justify-between"
@@ -441,26 +461,25 @@ export function AdminDashboard() {
                 Attention Needed
               </p>
               <p className="text-[0.6875rem] text-muted-foreground/50">
-                {recentAlerts.length} items require action
+                {alerts.length} items require action
               </p>
             </div>
           </div>
 
           <div className="space-y-2">
-            {recentAlerts.map((alert, i) => (
+            {alerts.map((alert: any, i: number) => (
               <motion.div
-                key={alert.id}
+                key={`${alert.type}-${alert.message}-${i}`}
                 className="flex items-start gap-3.5 p-4 rounded-2xl bg-black/[0.012] hover:bg-black/[0.025] transition-all duration-400 cursor-pointer group"
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
+                onClick={() => navigate(alert.path || "/admin")}
               >
                 <div
                   className={`w-[6px] h-[6px] rounded-full mt-2 flex-shrink-0 ${
                     alert.type === "warning"
                       ? "bg-[#FFB224]"
-                      : alert.type === "success"
-                      ? "bg-[#30A46C]"
                       : "bg-[#3B82F6]"
                   }`}
                 />
@@ -469,10 +488,16 @@ export function AdminDashboard() {
                     {alert.message}
                   </p>
                   <p className="text-[0.625rem] text-muted-foreground/40 mt-1.5">
-                    {alert.time}
+                    {relativeTime(alert.occurred_at)}
                   </p>
                 </div>
-                <button className="text-[0.75rem] text-primary/60 hover:text-primary whitespace-nowrap cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300">
+                <button
+                  className="text-[0.75rem] text-primary/60 hover:text-primary whitespace-nowrap cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(alert.path || "/admin");
+                  }}
+                >
                   {alert.action}
                 </button>
               </motion.div>
@@ -500,13 +525,14 @@ export function AdminDashboard() {
           </div>
 
           <div className="space-y-1">
-            {recentActivities.map((activity, i) => (
+            {activities.map((activity: any, i: number) => (
               <motion.div
-                key={activity.id}
+                key={`${activity.user}-${activity.action}-${activity.target}-${i}`}
                 className="flex items-center gap-4 p-3.5 rounded-2xl hover:bg-black/[0.015] transition-all duration-400 cursor-pointer"
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.05 }}
+                onClick={() => navigate(activity.path || "/admin")}
               >
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center text-white text-[0.625rem] flex-shrink-0">
                   {activity.avatar}
@@ -520,7 +546,7 @@ export function AdminDashboard() {
                     <span className="text-primary/70">{activity.target}</span>
                   </p>
                   <p className="text-[0.625rem] text-muted-foreground/40 mt-0.5">
-                    {activity.time}
+                    {relativeTime(activity.occurred_at)}
                   </p>
                 </div>
                 <ArrowUpRight
@@ -545,24 +571,28 @@ export function AdminDashboard() {
               label: "Add User",
               color: "#0171E3",
               desc: "Invite team member",
+              path: "/admin/users",
             },
             {
               icon: <Package size={20} />,
               label: "New Product",
               color: "#3B82F6",
               desc: "Create listing",
+              path: "/admin/products",
             },
             {
               icon: <Truck size={20} />,
               label: "Track Delivery",
               color: "#30A46C",
               desc: "Live tracking",
+              path: "/admin/logistics",
             },
             {
               icon: <BarChart3 size={20} />,
               label: "View Reports",
               color: "#D97706",
               desc: "Analytics & insights",
+              path: "/admin",
             },
           ].map((action) => (
             <motion.button
@@ -572,6 +602,7 @@ export function AdminDashboard() {
                 transition-all duration-500 cursor-pointer group"
               whileHover={{ y: -2 }}
               whileTap={{ scale: 0.97 }}
+              onClick={() => navigate(action.path)}
             >
               <div
                 className="w-11 h-11 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110"

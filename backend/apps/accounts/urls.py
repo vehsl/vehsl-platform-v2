@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AdminKycDocumentViewSet,
+    AdminPlatformOverviewView,
     AdminPlatformSettingsView,
     AdminUserViewSet,
     AdminVerificationUserViewSet,
@@ -39,6 +40,7 @@ urlpatterns = [
     path("profiles/admin/me", AdminProfileMeView.as_view()),
     path("profiles/buyer/me", BuyerProfileMeView.as_view()),
     path("profiles/seller/me", SellerProfileMeView.as_view()),
+    path("admin/overview", AdminPlatformOverviewView.as_view()),
     path("admin/settings", AdminPlatformSettingsView.as_view()),
     path("admin/ui/notifications", AdminUiNotificationsView.as_view()),
     path("admin/ui/notifications/mark-all-read", AdminUiNotificationsMarkAllReadView.as_view()),
