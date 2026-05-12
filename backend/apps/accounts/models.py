@@ -53,6 +53,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         BUYER = "buyer", "Buyer"
         SELLER = "seller", "Seller"
         ADMIN = "admin", "Admin"
+        PARTNER = "partner", "Partner"
 
     class AccountType(models.TextChoices):
         BUYER = "buyer", "Buyer"

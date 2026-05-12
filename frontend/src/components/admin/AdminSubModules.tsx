@@ -8,7 +8,7 @@ import {
   Package, Eye, Edit3, Trash2, CheckCircle2, XCircle, Clock,
   Truck, MapPin, Fuel, AlertTriangle, ArrowRight, Calendar,
   Settings, Bell, Lock, Palette, Globe, Database, Mail,
-  ChevronRight, ArrowUpRight, TrendingUp, BarChart3, Star,
+  ChevronRight, ArrowUpRight, TrendingUp, BarChart3, Star, X,
   ClipboardCheck, Camera, Download, Upload, FileText, Hash,
 } from "lucide-react";
 import { StatCard } from "./StatCard";
@@ -48,28 +48,288 @@ function SectionCard({ children, className = "" }: { children: React.ReactNode; 
 //  ADMIN → USERS
 // ════════════════════════════════════════════════════════════
 
-const usersData = [
-  { id: 1, name: "James Rodriguez", email: "james@meridian.com", role: "Buyer", status: "active" as const, lastActive: "2 min ago", avatar: "JR", orders: 142 },
-  { id: 2, name: "Priya Sharma", email: "priya@greenleaf.co", role: "Seller", status: "active" as const, lastActive: "15 min ago", avatar: "PS", orders: 87 },
-  { id: 3, name: "David Chen", email: "david@brightstar.io", role: "Seller", status: "active" as const, lastActive: "1 hr ago", avatar: "DC", orders: 234 },
-  { id: 4, name: "Lisa Park", email: "lisa@freshpack.com", role: "Buyer", status: "pending" as const, lastActive: "3 hrs ago", avatar: "LP", orders: 0 },
-  { id: 5, name: "Robert Kim", email: "robert@atlas.co", role: "Seller", status: "active" as const, lastActive: "5 hrs ago", avatar: "RK", orders: 56 },
-  { id: 6, name: "Sarah Wilson", email: "sarah@logiprime.com", role: "Partner", status: "suspended" as const, lastActive: "2 days ago", avatar: "SW", orders: 18 },
-  { id: 7, name: "Marcus Brown", email: "marcus@tradeco.net", role: "Buyer", status: "active" as const, lastActive: "30 min ago", avatar: "MB", orders: 91 },
-  { id: 8, name: "Ana Garcia", email: "ana@novagoods.com", role: "Seller", status: "review" as const, lastActive: "1 day ago", avatar: "AG", orders: 12 },
-];
-
 const roleColors: Record<string, string> = {
-  Buyer: "#3B82F6", Seller: "#30A46C", Partner: "#D97706", Admin: "#0171E3",
+  buyer: "#3B82F6",
+  seller: "#30A46C",
+  partner: "#D97706",
+  admin: "#0171E3",
+  manager: "#8B5CF6",
 };
 
 export function AdminUsers() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
   const [search, setSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState("all");
-  const filtered = usersData.filter(u =>
-    (roleFilter === "all" || u.role === roleFilter) &&
-    (u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()))
-  );
+  const [roleFilter, setRoleFilter] = useState<"all" | "buyer" | "seller" | "partner" | "manager">("all");
+  const [stats, setStats] = useState<any>(null);
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const [menuUserId, setMenuUserId] = useState<number | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string>("");
+  const [form, setForm] = useState<any>({
+    id: null,
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    role: "buyer",
+    admin_role: "logistics",
+    status: "active",
+    password: "",
+  });
+
+  const formatNumber = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return n.toLocaleString();
+  };
+
+  const titleRole = (r: string) => {
+    const x = (r || "").toString().toLowerCase();
+    if (!x) return "—";
+    return x[0].toUpperCase() + x.slice(1);
+  };
+
+  const relativeTime = (iso: any) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "—";
+    const diffMs = Date.now() - d.getTime();
+    const mins = Math.round(diffMs / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs} hr ago`;
+    const days = Math.round(hrs / 24);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
+  };
+
+  const statusToPill = (s: string) => {
+    const x = (s || "").toString().toLowerCase();
+    if (x === "active") return { status: "success", label: "active" };
+    if (x === "pending") return { status: "pending", label: "pending" };
+    if (x === "review") return { status: "warning", label: "review" };
+    if (x === "suspended") return { status: "error", label: "suspended" };
+    return { status: "pending", label: x || "unknown" };
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchJson("/api/v1/admin/users/stats");
+        if (!cancelled) setStats(data);
+      } catch (e: any) {
+        if (!cancelled) setStats(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    setLoading(true);
+    const t = setTimeout(() => {
+      (async () => {
+        try {
+          const params = new URLSearchParams();
+          if (search.trim()) params.set("q", search.trim());
+          if (roleFilter !== "all") {
+            if (roleFilter === "manager") {
+              params.set("role", "admin");
+              params.set("admin_role", "manager");
+            } else {
+              params.set("role", roleFilter);
+            }
+          }
+          const data = await fetchJson(`/api/v1/admin/users?${params.toString()}`);
+          const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+          if (!cancelled) setUsers(rows);
+        } catch (e: any) {
+          if (!cancelled) {
+            setUsers([]);
+            setError(e?.message || "Failed to load users.");
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [search, roleFilter]);
+
+  useEffect(() => {
+    const onDoc = () => setMenuUserId(null);
+    document.addEventListener("click", onDoc);
+    return () => document.removeEventListener("click", onDoc);
+  }, []);
+
+  const openCreate = () => {
+    setFormMode("create");
+    setFormError("");
+    setForm({
+      id: null,
+      first_name: "",
+      last_name: "",
+      email: "",
+      phone: "",
+      role: "buyer",
+      admin_role: "logistics",
+      status: "active",
+      password: "",
+    });
+    setFormOpen(true);
+  };
+
+  const openEdit = (u: any) => {
+    setFormMode("edit");
+    setFormError("");
+    const rawRole = (u?.role || "buyer").toString().toLowerCase();
+    const adminRole = (u?.admin_role || "").toString().toLowerCase();
+    const isManager = rawRole === "admin" && adminRole && adminRole !== "super_admin";
+    setForm({
+      id: u?.id ?? null,
+      first_name: u?.first_name || "",
+      last_name: u?.last_name || "",
+      email: u?.email || "",
+      phone: u?.phone || "",
+      role: isManager ? "manager" : rawRole,
+      admin_role: isManager ? adminRole : "logistics",
+      status: (u?.status || "active").toString().toLowerCase(),
+      password: "",
+    });
+    setFormOpen(true);
+  };
+
+  const upsertUser = (updated: any) => {
+    setUsers(prev => {
+      const id = updated?.id;
+      if (!id) return prev;
+      const idx = prev.findIndex(x => x?.id === id);
+      if (idx === -1) return [updated, ...prev];
+      const copy = prev.slice();
+      copy[idx] = { ...copy[idx], ...updated };
+      return copy;
+    });
+  };
+
+  const saveUser = async () => {
+    setSaving(true);
+    setFormError("");
+    try {
+      const roleRaw = (form.role || "buyer").toString().toLowerCase();
+      const isManager = roleRaw === "manager";
+      const roleToSend = isManager ? "admin" : roleRaw;
+      const payload: any = {
+        first_name: form.first_name || "",
+        last_name: form.last_name || "",
+        email: (form.email || "").trim() || null,
+        phone: (form.phone || "").trim() || null,
+        role: roleToSend,
+        status: (form.status || "active").toString().toLowerCase(),
+      };
+      if ((form.password || "").trim()) payload.password = (form.password || "").trim();
+      if (isManager) payload.admin_role = (form.admin_role || "logistics").toString().toLowerCase();
+
+      const data =
+        formMode === "create"
+          ? await fetchJson("/api/v1/admin/users/", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            })
+          : await fetchJson(`/api/v1/admin/users/${form.id}/`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+
+      upsertUser(data);
+      setFormOpen(false);
+      try {
+        const newStats = await fetchJson("/api/v1/admin/users/stats");
+        setStats(newStats);
+      } catch {}
+    } catch (e: any) {
+      setFormError(e?.message || "Failed to save user.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setUserStatus = async (u: any, status: "active" | "suspended") => {
+    try {
+      const data = await fetchJson(`/api/v1/admin/users/${u.id}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      upsertUser(data);
+      setMenuUserId(null);
+      try {
+        const newStats = await fetchJson("/api/v1/admin/users/stats");
+        setStats(newStats);
+      } catch {}
+    } catch (e: any) {
+      setError(e?.message || "Failed to update user.");
+    }
+  };
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
@@ -78,15 +338,15 @@ export function AdminUsers() {
           <h1 className="text-foreground tracking-tight mb-1.5">Users</h1>
           <p className="text-muted-foreground text-[0.875rem]">Everyone on TradeFlow. Buyers, sellers, and partners.</p>
         </div>
-        <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />}>Add User</BounceButton>
+        <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />} onClick={openCreate}>Add User</BounceButton>
       </motion.div>
 
       {/* Stats */}
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Total Users" value="2,847" icon={<Users size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} change="+12%" changeType="positive" accentColor="#0171E3" />
-        <StatCard label="Active Now" value="184" icon={<Shield size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" subtitle="Online right now" />
-        <StatCard label="Pending Review" value="23" icon={<Clock size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-        <StatCard label="Suspended" value="4" icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+        <StatCard label="Total Users" value={formatNumber(stats?.total_users)} icon={<Users size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
+        <StatCard label="Active Now" value={formatNumber(stats?.active_now)} icon={<Shield size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" subtitle="Online right now" />
+        <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Clock size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        <StatCard label="Suspended" value={formatNumber(stats?.suspended)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
       </motion.div>
 
       {/* Search + Filter */}
@@ -104,23 +364,51 @@ export function AdminUsers() {
               />
             </div>
             <div className="flex gap-2">
-              {["all", "Buyer", "Seller", "Partner"].map(role => (
+              {[
+                { key: "all", label: "All" },
+                { key: "buyer", label: "Buyer" },
+                { key: "seller", label: "Seller" },
+                { key: "partner", label: "Partner" },
+                { key: "manager", label: "Manager" },
+              ].map(role => (
                 <button
-                  key={role}
-                  onClick={() => setRoleFilter(role)}
+                  key={role.key}
+                  onClick={() => setRoleFilter(role.key as any)}
                   className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer ${
-                    roleFilter === role ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                    roleFilter === role.key ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {role === "all" ? "All" : role}
+                  {role.label}
                 </button>
               ))}
             </div>
           </div>
 
           {/* User List */}
+          {error && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+              {error}
+            </div>
+          )}
+
           <div className="space-y-2">
-            {filtered.map((user, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading users…
+              </div>
+            )}
+            {!loading && users.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No users found.
+              </div>
+            )}
+            {users.map((user, i) => {
+              const roleKey = (user?.role || "").toString().toLowerCase();
+              const adminRole = (user?.admin_role || "").toString().toLowerCase();
+              const displayRoleKey = roleKey === "admin" && adminRole && adminRole !== "super_admin" ? "manager" : roleKey;
+              const roleColor = roleColors[displayRoleKey] || "#0171E3";
+              const pill = statusToPill(user?.admin_status || user?.status);
+              return (
               <motion.div
                 key={user.id}
                 initial={{ opacity: 0, y: 8 }}
@@ -130,33 +418,215 @@ export function AdminUsers() {
               >
                 <div
                   className="w-10 h-10 rounded-2xl flex items-center justify-center text-[0.75rem] text-white/90"
-                  style={{ backgroundColor: roleColors[user.role] || "#0171E3" }}
+                  style={{ backgroundColor: roleColor }}
                 >
-                  {user.avatar}
+                  {(user?.avatar || "U").toString().slice(0, 2)}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[0.875rem] text-foreground truncate">{user.name}</span>
-                    <span className="text-[0.6875rem] px-2 py-0.5 rounded-full" style={{ backgroundColor: `${roleColors[user.role]}10`, color: roleColors[user.role] }}>{user.role}</span>
+                    <span className="text-[0.875rem] text-foreground truncate">{user.display_name || "—"}</span>
+                    <span className="text-[0.6875rem] px-2 py-0.5 rounded-full" style={{ backgroundColor: `${roleColor}10`, color: roleColor }}>
+                      {titleRole(displayRoleKey)}
+                    </span>
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{user.email}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{user.email || user.phone || "—"}</span>
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.75rem] text-muted-foreground/50">
-                  <span>{user.orders} orders</span>
-                  <span>{user.lastActive}</span>
+                  <span>{formatNumber(user.orders_count)} orders</span>
+                  <span>{relativeTime(user.last_active_at)}</span>
                 </div>
                 <StatusPill
-                  status={user.status === "active" ? "success" : user.status === "pending" ? "pending" : user.status === "review" ? "warning" : "error"}
-                  label={user.status}
+                  status={pill.status as any}
+                  label={pill.label}
                 />
-                <button className="opacity-0 group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer">
-                  <MoreHorizontal size={16} className="text-muted-foreground/40" />
-                </button>
+                <div className="relative">
+                  <button
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setMenuUserId(prev => (prev === user.id ? null : user.id));
+                    }}
+                  >
+                    <MoreHorizontal size={16} className="text-muted-foreground/40" />
+                  </button>
+                  <AnimatePresence>
+                    {menuUserId === user.id && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute right-0 top-11 z-20 w-44 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            setMenuUserId(null);
+                            openEdit(user);
+                          }}
+                        >
+                          <Edit3 size={14} className="text-muted-foreground/60" />
+                          Edit
+                        </button>
+                        {(user?.status || "").toString().toLowerCase() === "suspended" ? (
+                          <button
+                            className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                            onClick={() => setUserStatus(user, "active")}
+                          >
+                            <CheckCircle2 size={14} className="text-[#30A46C]/80" />
+                            Activate
+                          </button>
+                        ) : (
+                          <button
+                            className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                            onClick={() => setUserStatus(user, "suspended")}
+                          >
+                            <XCircle size={14} className="text-[#E5484D]/80" />
+                            Suspend
+                          </button>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </motion.div>
-            ))}
+            )})}
           </div>
         </SectionCard>
       </motion.div>
+
+      <AnimatePresence>
+        {formOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setFormOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">{formMode === "create" ? "Add User" : "Edit User"}</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">Create accounts for buyers, sellers, partners, admins, or managers.</p>
+                </div>
+                <button
+                  className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60"
+                  onClick={() => setFormOpen(false)}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {formError && (
+                <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+                  {formError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  value={form.first_name}
+                  onChange={e => setForm((p: any) => ({ ...p, first_name: e.target.value }))}
+                  placeholder="First name"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.last_name}
+                  onChange={e => setForm((p: any) => ({ ...p, last_name: e.target.value }))}
+                  placeholder="Last name"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.email}
+                  onChange={e => setForm((p: any) => ({ ...p, email: e.target.value }))}
+                  placeholder="Email (optional if phone)"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.phone}
+                  onChange={e => setForm((p: any) => ({ ...p, phone: e.target.value }))}
+                  placeholder="Phone (optional if email)"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <select
+                  value={form.role}
+                  onChange={e => setForm((p: any) => ({ ...p, role: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="buyer">Buyer</option>
+                  <option value="seller">Seller</option>
+                  <option value="partner">Partner</option>
+                  <option value="admin">Admin</option>
+                  <option value="manager">Manager</option>
+                </select>
+                {(form.role || "").toString().toLowerCase() === "manager" ? (
+                  <select
+                    value={form.admin_role}
+                    onChange={e => setForm((p: any) => ({ ...p, admin_role: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    <option value="logistics">Ops Manager</option>
+                    <option value="compliance">Legal Manager</option>
+                    <option value="support">Support Manager</option>
+                    <option value="inspector">Inspector Manager</option>
+                    <option value="finance">Finance Manager</option>
+                  </select>
+                ) : (
+                <select
+                  value={form.status}
+                  onChange={e => setForm((p: any) => ({ ...p, status: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="active">Active</option>
+                  <option value="suspended">Suspended</option>
+                </select>
+                )}
+                {(form.role || "").toString().toLowerCase() === "manager" && (
+                  <select
+                    value={form.status}
+                    onChange={e => setForm((p: any) => ({ ...p, status: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    <option value="active">Active</option>
+                    <option value="suspended">Suspended</option>
+                  </select>
+                )}
+                <input
+                  value={form.password}
+                  onChange={e => setForm((p: any) => ({ ...p, password: e.target.value }))}
+                  placeholder={formMode === "create" ? "Password (optional)" : "New password (optional)"}
+                  type="password"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setFormOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={saving ? undefined : saveUser}
+                  className={saving ? "opacity-70 pointer-events-none" : ""}
+                  icon={saving ? <Clock size={14} /> : <UserPlus size={14} />}
+                >
+                  {saving ? "Saving…" : formMode === "create" ? "Create" : "Save"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
