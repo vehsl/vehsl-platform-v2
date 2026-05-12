@@ -79,6 +79,7 @@ export function AdminUsers() {
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | "buyer" | "seller" | "partner" | "manager">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending" | "review" | "suspended">("all");
   const [stats, setStats] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -194,6 +195,7 @@ export function AdminUsers() {
               params.set("role", roleFilter);
             }
           }
+          if (statusFilter !== "all") params.set("admin_status", statusFilter);
           const data = await fetchJson(`/api/v1/admin/users?${params.toString()}`);
           const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
           if (!cancelled) setUsers(rows);
@@ -212,7 +214,7 @@ export function AdminUsers() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [search, roleFilter]);
+  }, [search, roleFilter, statusFilter]);
 
   useEffect(() => {
     const onDoc = () => setMenuUserId(null);
@@ -331,6 +333,25 @@ export function AdminUsers() {
     }
   };
 
+  const resetPassword = async (u: any) => {
+    const ok = typeof window !== "undefined" ? window.confirm("Reset password to Test123!@# ?") : false;
+    if (!ok) return;
+    try {
+      const data = await fetchJson(`/api/v1/admin/users/${u.id}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "Test123!@#" }),
+      });
+      upsertUser(data);
+      setMenuUserId(null);
+    } catch (e: any) {
+      setError(e?.message || "Failed to reset password.");
+    }
+  };
+
+  const cardWrap = (active: boolean) =>
+    `rounded-[1.25rem] transition-all focus:outline-none ${active ? "ring-2 ring-primary/30" : "ring-2 ring-transparent"}`;
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -343,10 +364,42 @@ export function AdminUsers() {
 
       {/* Stats */}
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Total Users" value={formatNumber(stats?.total_users)} icon={<Users size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
-        <StatCard label="Active Now" value={formatNumber(stats?.active_now)} icon={<Shield size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" subtitle="Online right now" />
-        <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Clock size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-        <StatCard label="Suspended" value={formatNumber(stats?.suspended)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+        <button
+          type="button"
+          className={cardWrap(statusFilter === "all")}
+          onClick={() => {
+            setStatusFilter("all");
+          }}
+        >
+          <StatCard label="Total Users" value={formatNumber(stats?.total_users)} icon={<Users size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
+        </button>
+        <button
+          type="button"
+          className={cardWrap(statusFilter === "active")}
+          onClick={() => {
+            setStatusFilter(v => (v === "active" ? "all" : "active"));
+          }}
+        >
+          <StatCard label="Active" value={formatNumber(stats?.active)} icon={<Shield size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        </button>
+        <button
+          type="button"
+          className={cardWrap(statusFilter === "pending")}
+          onClick={() => {
+            setStatusFilter(v => (v === "pending" ? "all" : "pending"));
+          }}
+        >
+          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Clock size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        </button>
+        <button
+          type="button"
+          className={cardWrap(statusFilter === "suspended")}
+          onClick={() => {
+            setStatusFilter(v => (v === "suspended" ? "all" : "suspended"));
+          }}
+        >
+          <StatCard label="Suspended" value={formatNumber(stats?.suspended)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+        </button>
       </motion.div>
 
       {/* Search + Filter */}
@@ -441,11 +494,12 @@ export function AdminUsers() {
                 />
                 <div className="relative">
                   <button
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer"
+                    className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer"
                     onClick={e => {
                       e.stopPropagation();
                       setMenuUserId(prev => (prev === user.id ? null : user.id));
                     }}
+                    aria-label="User actions"
                   >
                     <MoreHorizontal size={16} className="text-muted-foreground/40" />
                   </button>
@@ -468,6 +522,13 @@ export function AdminUsers() {
                         >
                           <Edit3 size={14} className="text-muted-foreground/60" />
                           Edit
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => resetPassword(user)}
+                        >
+                          <Lock size={14} className="text-muted-foreground/60" />
+                          Reset Password
                         </button>
                         {(user?.status || "").toString().toLowerCase() === "suspended" ? (
                           <button

@@ -220,6 +220,11 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         if role in {"buyer", "seller", "admin", "partner"}:
             qs = qs.filter(role=role)
 
+        active_now = (self.request.query_params.get("active_now") or "").strip().lower()
+        if active_now in {"1", "true", "yes"}:
+            window = timezone.now() - timedelta(minutes=15)
+            qs = qs.filter(last_login__gte=window)
+
         admin_role = (self.request.query_params.get("admin_role") or "").strip().lower()
         if admin_role:
             if admin_role == "manager":
@@ -337,21 +342,23 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
-        now = timezone.now()
-        window = now - timedelta(minutes=15)
-
         total_users = User.objects.count()
-        active_now = User.objects.filter(last_login__gte=window).count()
-        pending_review = User.objects.filter(
-            status=User.Status.ACTIVE, seller_profile__verification_status="pending"
-        ).count()
         suspended = User.objects.filter(status=User.Status.SUSPENDED).count()
+        pending_review = User.objects.filter(status=User.Status.ACTIVE, seller_profile__verification_status="pending").count()
+        review = User.objects.filter(status=User.Status.ACTIVE, seller_profile__verification_status="rejected").count()
+        active = (
+            User.objects.exclude(status=User.Status.SUSPENDED)
+            .exclude(status=User.Status.DELETED)
+            .filter(Q(seller_profile__isnull=True) | ~Q(seller_profile__verification_status__in=["pending", "rejected"]))
+            .count()
+        )
 
         return Response(
             {
                 "total_users": total_users,
-                "active_now": active_now,
+                "active": active,
                 "pending_review": pending_review,
+                "review": review,
                 "suspended": suspended,
             }
         )
