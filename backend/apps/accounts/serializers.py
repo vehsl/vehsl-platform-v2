@@ -173,6 +173,98 @@ class MeUpdateSerializer(serializers.Serializer):
         return value
 
 
+class AdminUserListSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+    avatar = serializers.SerializerMethodField()
+    last_active_at = serializers.DateTimeField(source="last_login", read_only=True)
+    orders_count = serializers.IntegerField(read_only=True)
+    admin_status = serializers.SerializerMethodField()
+    admin_role = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "phone",
+            "first_name",
+            "last_name",
+            "role",
+            "account_type",
+            "status",
+            "display_name",
+            "avatar",
+            "last_active_at",
+            "orders_count",
+            "admin_status",
+            "admin_role",
+        ]
+
+    def get_display_name(self, obj: User):
+        full = f"{(obj.first_name or '').strip()} {(obj.last_name or '').strip()}".strip()
+        return full or (obj.email or obj.phone or f"user:{obj.pk}")
+
+    def get_avatar(self, obj: User):
+        first = (obj.first_name or "").strip()
+        last = (obj.last_name or "").strip()
+        if first and last:
+            return (first[0] + last[0]).upper()
+        base = ((obj.email or obj.phone) or "U").strip()
+        return (base[0] or "U").upper()
+
+    def get_admin_status(self, obj: User):
+        if (obj.status or "").lower() == "suspended":
+            return "suspended"
+        seller_prof = getattr(obj, "seller_profile", None)
+        ver = getattr(seller_prof, "verification_status", "") if seller_prof else ""
+        if ver == "pending":
+            return "pending"
+        if ver == "rejected":
+            return "review"
+        return "active"
+
+    def get_admin_role(self, obj: User):
+        prof = getattr(obj, "admin_profile", None)
+        return getattr(prof, "admin_role", None) if prof else None
+
+
+class AdminUserWriteSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+    role = serializers.ChoiceField(choices=User.Role.choices, required=True)
+    account_type = serializers.ChoiceField(choices=User.AccountType.choices, required=False, allow_blank=True)
+    status = serializers.ChoiceField(choices=User.Status.choices, required=False)
+    password = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    admin_role = serializers.ChoiceField(choices=AdminProfile.AdminRole.choices, required=False, allow_blank=True)
+    department = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        email = (attrs.get("email") or "").strip()
+        phone = (attrs.get("phone") or "").strip()
+        if not email and not phone:
+            raise serializers.ValidationError({"email": "Email or phone is required."})
+
+        role = attrs.get("role")
+        account_type = (attrs.get("account_type") or "").strip()
+        if role == User.Role.BUYER:
+            attrs["account_type"] = User.AccountType.BUYER
+        elif role == User.Role.SELLER:
+            attrs["account_type"] = User.AccountType.SELLER
+        elif role in {User.Role.ADMIN, User.Role.PARTNER}:
+            attrs["account_type"] = account_type
+
+        admin_role = (attrs.get("admin_role") or "").strip()
+        if role != User.Role.ADMIN:
+            attrs.pop("admin_role", None)
+            attrs.pop("department", None)
+        else:
+            if admin_role == "":
+                attrs.pop("admin_role", None)
+
+        return attrs
+
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subscription
