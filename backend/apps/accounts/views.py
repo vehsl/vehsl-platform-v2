@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from django.conf import settings as django_settings
 from django.db.models import Count, Q
 from django.utils import timezone
 from datetime import timedelta
@@ -16,6 +17,7 @@ from django.db.models.functions import Coalesce
 
 from .models import (
     AdminProfile,
+    AdminPlatformSettings,
     AdminUiNotificationState,
     ChatMessage,
     ChatThread,
@@ -210,6 +212,132 @@ class AdminUiNotificationsMarkReadView(APIView):
         obj, _ = AdminUiNotificationState.objects.get_or_create(user=request.user, key=key)
         AdminUiNotificationState.objects.filter(id=obj.id).update(seen_at=now)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminPlatformSettingsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def _defaults(self):
+        return {
+            "general": {
+                "platform_name": "Vehsl",
+                "default_currency": "USD",
+                "timezone": "UTC",
+                "language": "English",
+            },
+            "notifications": {
+                "email_notifications": True,
+                "push_notifications": True,
+                "sms_alerts": False,
+                "daily_digest": True,
+            },
+            "security": {
+                "two_factor_auth": True,
+                "session_timeout_minutes": 30,
+                "ip_whitelisting": False,
+                "password_policy": "strong_12_chars",
+            },
+        }
+
+    def _integrations(self):
+        stripe = bool(getattr(django_settings, "STRIPE_SECRET_KEY", "") or getattr(django_settings, "STRIPE_API_KEY", ""))
+        sendgrid = bool(getattr(django_settings, "SENDGRID_API_KEY", ""))
+        twilio = bool(getattr(django_settings, "TWILIO_AUTH_TOKEN", "") and getattr(django_settings, "TWILIO_ACCOUNT_SID", ""))
+        google_maps = bool(getattr(django_settings, "GOOGLE_MAPS_API_KEY", ""))
+        return {
+            "stripe_payments": "connected" if stripe else "not_connected",
+            "sendgrid_email": "connected" if sendgrid else "not_connected",
+            "twilio_sms": "connected" if twilio else "not_connected",
+            "google_maps": "connected" if google_maps else "not_connected",
+        }
+
+    def get(self, request):
+        defaults = self._defaults()
+        obj, _ = AdminPlatformSettings.objects.get_or_create(key="global")
+        general = {**defaults["general"], **(obj.general or {})}
+        notifications = {**defaults["notifications"], **(obj.notifications or {})}
+        security = {**defaults["security"], **(obj.security or {})}
+        return Response(
+            {
+                "general": general,
+                "notifications": notifications,
+                "security": security,
+                "integrations": self._integrations(),
+                "updated_at": obj.updated_at,
+            }
+        )
+
+    def patch(self, request):
+        if request.data is None:
+            return Response({"detail": "Invalid payload."}, status=status.HTTP_400_BAD_REQUEST)
+
+        obj, _ = AdminPlatformSettings.objects.get_or_create(key="global")
+        defaults = self._defaults()
+
+        def _ensure_dict(value, name: str):
+            if value is None:
+                return None
+            if not isinstance(value, dict):
+                raise ValueError(f"{name} must be an object.")
+            return value
+
+        try:
+            incoming_general = _ensure_dict(request.data.get("general"), "general")
+            incoming_notifications = _ensure_dict(request.data.get("notifications"), "notifications")
+            incoming_security = _ensure_dict(request.data.get("security"), "security")
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if incoming_general is not None:
+            current = {**defaults["general"], **(obj.general or {})}
+            if "platform_name" in incoming_general:
+                current["platform_name"] = str(incoming_general.get("platform_name") or "").strip() or defaults["general"]["platform_name"]
+            if "default_currency" in incoming_general:
+                current["default_currency"] = str(incoming_general.get("default_currency") or "").strip() or defaults["general"]["default_currency"]
+            if "timezone" in incoming_general:
+                current["timezone"] = str(incoming_general.get("timezone") or "").strip() or defaults["general"]["timezone"]
+            if "language" in incoming_general:
+                current["language"] = str(incoming_general.get("language") or "").strip() or defaults["general"]["language"]
+            obj.general = current
+
+        if incoming_notifications is not None:
+            current = {**defaults["notifications"], **(obj.notifications or {})}
+            for k in ["email_notifications", "push_notifications", "sms_alerts", "daily_digest"]:
+                if k in incoming_notifications:
+                    current[k] = bool(incoming_notifications.get(k))
+            obj.notifications = current
+
+        if incoming_security is not None:
+            current = {**defaults["security"], **(obj.security or {})}
+            if "two_factor_auth" in incoming_security:
+                current["two_factor_auth"] = bool(incoming_security.get("two_factor_auth"))
+            if "session_timeout_minutes" in incoming_security:
+                try:
+                    n = int(incoming_security.get("session_timeout_minutes"))
+                except Exception:
+                    n = defaults["security"]["session_timeout_minutes"]
+                current["session_timeout_minutes"] = max(5, min(24 * 60, n))
+            if "ip_whitelisting" in incoming_security:
+                current["ip_whitelisting"] = bool(incoming_security.get("ip_whitelisting"))
+            if "password_policy" in incoming_security:
+                current["password_policy"] = str(incoming_security.get("password_policy") or "").strip() or defaults["security"]["password_policy"]
+            obj.security = current
+
+        obj.updated_by = request.user
+        obj.save(update_fields=["general", "notifications", "security", "updated_at", "updated_by"])
+
+        general = {**defaults["general"], **(obj.general or {})}
+        notifications = {**defaults["notifications"], **(obj.notifications or {})}
+        security = {**defaults["security"], **(obj.security or {})}
+        return Response(
+            {
+                "general": general,
+                "notifications": notifications,
+                "security": security,
+                "integrations": self._integrations(),
+                "updated_at": obj.updated_at,
+            }
+        )
 
 
 class RegisterView(generics.CreateAPIView):

@@ -142,7 +142,8 @@ class AdminProfileSerializer(serializers.ModelSerializer):
 class AdminProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdminProfile
-        fields = ["department"]
+        fields = ["admin_role", "department"]
+        read_only_fields = ["admin_role"]
 
 
 class MeUpdateSerializer(serializers.Serializer):

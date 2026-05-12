@@ -331,6 +331,24 @@ class AdminUiNotificationState(models.Model):
         return f"admin_ui_notif_state:{self.user_id}:{self.key}"
 
 
+class AdminPlatformSettings(models.Model):
+    key = models.CharField(max_length=32, unique=True, default="global")
+    general = models.JSONField(default=dict, blank=True)
+    notifications = models.JSONField(default=dict, blank=True)
+    security = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="admin_platform_settings_updated",
+    )
+
+    def __str__(self):
+        return f"admin_platform_settings:{self.key}"
+
+
 class AuditLog(models.Model):
     actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_logs")
     actor_role = models.CharField(max_length=32, blank=True)

@@ -1626,53 +1626,6 @@ export function AdminQuality() {
 //  ADMIN → SETTINGS
 // ════════════════════════════════════════════════════════════
 
-const settingsSections = [
-  {
-    title: "General",
-    icon: <Settings size={20} className="text-[#0171E3]" />,
-    color: "#0171E3",
-    items: [
-      { label: "Platform Name", value: "TradeFlow", type: "text" as const },
-      { label: "Default Currency", value: "USD", type: "select" as const },
-      { label: "Timezone", value: "America/Chicago (CST)", type: "select" as const },
-      { label: "Language", value: "English", type: "select" as const },
-    ],
-  },
-  {
-    title: "Notifications",
-    icon: <Bell size={20} className="text-[#FFB224]" />,
-    color: "#FFB224",
-    items: [
-      { label: "Email Notifications", value: "Enabled", type: "toggle" as const },
-      { label: "Push Notifications", value: "Enabled", type: "toggle" as const },
-      { label: "SMS Alerts", value: "Disabled", type: "toggle" as const },
-      { label: "Daily Digest", value: "Enabled", type: "toggle" as const },
-    ],
-  },
-  {
-    title: "Security",
-    icon: <Lock size={20} className="text-[#E5484D]" />,
-    color: "#E5484D",
-    items: [
-      { label: "Two-Factor Auth", value: "Enabled", type: "toggle" as const },
-      { label: "Session Timeout", value: "30 min", type: "select" as const },
-      { label: "IP Whitelisting", value: "Disabled", type: "toggle" as const },
-      { label: "Password Policy", value: "Strong (12+ chars)", type: "select" as const },
-    ],
-  },
-  {
-    title: "Integrations",
-    icon: <Globe size={20} className="text-[#30A46C]" />,
-    color: "#30A46C",
-    items: [
-      { label: "Stripe Payments", value: "Connected", type: "status" as const },
-      { label: "SendGrid Email", value: "Connected", type: "status" as const },
-      { label: "Twilio SMS", value: "Not Connected", type: "status" as const },
-      { label: "Google Maps", value: "Connected", type: "status" as const },
-    ],
-  },
-];
-
 export function AdminSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1680,6 +1633,7 @@ export function AdminSettings() {
   const [saved, setSaved] = useState(false);
 
   const [me, setMe] = useState<any>(null);
+  const [platformSettings, setPlatformSettings] = useState<any>(null);
   const [form, setForm] = useState<any>({
     first_name: "",
     last_name: "",
@@ -1718,6 +1672,56 @@ export function AdminSettings() {
 
   const isAdmin = useMemo(() => (me?.role || "").toString().toLowerCase() === "admin", [me]);
 
+  const platformDefaults = useMemo(
+    () => ({
+      general: { platform_name: "Vehsl", default_currency: "USD", timezone: "UTC", language: "English" },
+      notifications: { email_notifications: true, push_notifications: true, sms_alerts: false, daily_digest: true },
+      security: { two_factor_auth: true, session_timeout_minutes: 30, ip_whitelisting: false, password_policy: "strong_12_chars" },
+      integrations: { stripe_payments: "not_connected", sendgrid_email: "not_connected", twilio_sms: "not_connected", google_maps: "not_connected" },
+    }),
+    []
+  );
+
+  const settingsForm = useMemo(() => {
+    const s = platformSettings || {};
+    return {
+      general: { ...platformDefaults.general, ...(s.general || {}) },
+      notifications: { ...platformDefaults.notifications, ...(s.notifications || {}) },
+      security: { ...platformDefaults.security, ...(s.security || {}) },
+      integrations: { ...platformDefaults.integrations, ...(s.integrations || {}) },
+    };
+  }, [platformDefaults, platformSettings]);
+
+  const setSettingsForm = (updater: (prev: any) => any) => {
+    setPlatformSettings((prev: any) => {
+      const merged = {
+        general: { ...platformDefaults.general, ...((prev && prev.general) || {}) },
+        notifications: { ...platformDefaults.notifications, ...((prev && prev.notifications) || {}) },
+        security: { ...platformDefaults.security, ...((prev && prev.security) || {}) },
+        integrations: { ...platformDefaults.integrations, ...((prev && prev.integrations) || {}) },
+        ...(prev || {}),
+      };
+      const next = updater(merged);
+      return next;
+    });
+  };
+
+  const toForm = (data: any) => ({
+    first_name: data?.first_name || "",
+    last_name: data?.last_name || "",
+    email: data?.email || "",
+    phone: data?.phone || "",
+    department: data?.admin_profile?.department || "",
+    country: data?.profile?.country || "",
+    province: data?.profile?.province || "",
+    city: data?.profile?.city || "",
+    street: data?.profile?.street || "",
+    address: data?.profile?.address || "",
+    nationality: data?.profile?.nationality || "",
+    gender: data?.profile?.gender || "",
+    date_of_birth: data?.profile?.date_of_birth || "",
+  });
+
   useEffect(() => {
     if (!access) {
       setLoading(false);
@@ -1736,23 +1740,33 @@ export function AdminSettings() {
           setError("Failed to load profile.");
           return;
         }
-        const data = await res.json();
+        let data = await res.json();
+
+        const role = (data?.role || "").toString().toLowerCase();
+        if (role === "admin") {
+          try {
+            const profRes = await fetch(`${apiBase}/api/v1/profiles/admin/me`, {
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (profRes.ok) {
+              const prof = await profRes.json();
+              data = { ...data, admin_profile: { ...(data?.admin_profile || {}), ...(prof || {}) } };
+            }
+          } catch {}
+
+          try {
+            const sRes = await fetch(`${apiBase}/api/v1/admin/settings`, {
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (sRes.ok) {
+              const s = await sRes.json();
+              setPlatformSettings(s);
+            }
+          } catch {}
+        }
+
         setMe(data);
-        setForm({
-          first_name: data?.first_name || "",
-          last_name: data?.last_name || "",
-          email: data?.email || "",
-          phone: data?.phone || "",
-          department: data?.admin_profile?.department || "",
-          country: data?.profile?.country || "",
-          province: data?.profile?.province || "",
-          city: data?.profile?.city || "",
-          street: data?.profile?.street || "",
-          address: data?.profile?.address || "",
-          nationality: data?.profile?.nationality || "",
-          gender: data?.profile?.gender || "",
-          date_of_birth: data?.profile?.date_of_birth || "",
-        });
+        setForm(toForm(data));
         try {
           window.localStorage.setItem("vehsl.user", JSON.stringify(data));
         } catch {}
@@ -1807,16 +1821,52 @@ export function AdminSettings() {
           },
           body: JSON.stringify({ department: form.department }),
         });
+
+        if (platformSettings) {
+          const sRes = await fetch(`${apiBase}/api/v1/admin/settings`, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${access}`,
+            },
+            body: JSON.stringify({
+              general: settingsForm.general,
+              notifications: settingsForm.notifications,
+              security: settingsForm.security,
+            }),
+          });
+          if (!sRes.ok) {
+            const err = await sRes.json().catch(() => null);
+            const msg = (err && (err.detail || err.non_field_errors)) || "Failed to save settings.";
+            setError(typeof msg === "string" ? msg : "Failed to save settings.");
+            return;
+          }
+          const updated = await sRes.json().catch(() => null);
+          if (updated) setPlatformSettings(updated);
+        }
       }
 
+      let refreshedData: any = null;
       const refreshed = await fetch(`${apiBase}/api/v1/auth/me`, {
         headers: { Authorization: `Bearer ${access}` },
       });
       if (refreshed.ok) {
-        const data = await refreshed.json();
-        setMe(data);
+        refreshedData = await refreshed.json();
+        if ((refreshedData?.role || "").toString().toLowerCase() === "admin") {
+          try {
+            const profRes = await fetch(`${apiBase}/api/v1/profiles/admin/me`, {
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (profRes.ok) {
+              const prof = await profRes.json();
+              refreshedData = { ...refreshedData, admin_profile: { ...(refreshedData?.admin_profile || {}), ...(prof || {}) } };
+            }
+          } catch {}
+        }
+        setMe(refreshedData);
+        setForm(toForm(refreshedData));
         try {
-          window.localStorage.setItem("vehsl.user", JSON.stringify(data));
+          window.localStorage.setItem("vehsl.user", JSON.stringify(refreshedData));
         } catch {}
       }
 
@@ -1828,11 +1878,36 @@ export function AdminSettings() {
     }
   };
 
+  const Toggle = ({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) => (
+    <button
+      type="button"
+      onClick={() => onChange(!value)}
+      className={`relative w-11 h-6 rounded-full transition-colors ${value ? "bg-primary/70" : "bg-muted/60"} border border-border/40`}
+      aria-pressed={value}
+    >
+      <span
+        className={`absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-background shadow transition-transform ${value ? "translate-x-5" : "translate-x-1"}`}
+      />
+    </button>
+  );
+
+  const statusPill = (status: string) => {
+    const s = (status || "").toLowerCase();
+    const ok = s === "connected";
+    return (
+      <span
+        className={`px-2.5 py-1 rounded-full text-[0.75rem] border ${ok ? "bg-[#30A46C]/10 text-[#30A46C] border-[#30A46C]/20" : "bg-[#E5484D]/8 text-[#E5484D] border-[#E5484D]/20"}`}
+      >
+        {ok ? "Connected" : "Not Connected"}
+      </span>
+    );
+  };
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[900px]">
       <motion.div variants={stagger.item}>
         <h1 className="text-foreground tracking-tight mb-1.5">Settings</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Manage your profile and account details.</p>
+        <p className="text-muted-foreground text-[0.875rem]">Manage your profile and system configuration.</p>
       </motion.div>
 
       <motion.div variants={stagger.item}>
@@ -1963,6 +2038,207 @@ export function AdminSettings() {
           )}
         </SectionCard>
       </motion.div>
+
+      {isAdmin && (
+        <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#0171E3]/10">
+                <Settings size={20} className="text-[#0171E3]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">General</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Platform-wide defaults</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Platform name</label>
+                <input
+                  value={settingsForm.general.platform_name}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), platform_name: e.target.value } }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Default currency</label>
+                  <select
+                    value={settingsForm.general.default_currency}
+                    onChange={(e) =>
+                      setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), default_currency: e.target.value } }))
+                    }
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    {["USD", "EUR", "GBP", "CAD", "AUD"].map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Language</label>
+                  <select
+                    value={settingsForm.general.language}
+                    onChange={(e) =>
+                      setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), language: e.target.value } }))
+                    }
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    {["English", "Spanish", "French"].map((l) => (
+                      <option key={l} value={l}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Timezone</label>
+                <select
+                  value={settingsForm.general.timezone}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), timezone: e.target.value } }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  {["UTC", "America/Chicago", "America/New_York", "Europe/London"].map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#FFB224]/10">
+                <Bell size={20} className="text-[#D97706]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Notifications</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Delivery preferences</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {[
+                { key: "email_notifications", label: "Email notifications" },
+                { key: "push_notifications", label: "Push notifications" },
+                { key: "sms_alerts", label: "SMS alerts" },
+                { key: "daily_digest", label: "Daily digest" },
+              ].map((it) => (
+                <div key={it.key} className="flex items-center justify-between gap-4">
+                  <span className="text-[0.8125rem] text-foreground">{it.label}</span>
+                  <Toggle
+                    value={!!settingsForm.notifications[it.key]}
+                    onChange={(v) => setSettingsForm((p: any) => ({ ...p, notifications: { ...(p.notifications || {}), [it.key]: v } }))}
+                  />
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#E5484D]/10">
+                <Lock size={20} className="text-[#E5484D]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Security</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Platform security posture</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-[0.8125rem] text-foreground">Two-factor auth</span>
+                <Toggle
+                  value={!!settingsForm.security.two_factor_auth}
+                  onChange={(v) => setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), two_factor_auth: v } }))}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-[0.8125rem] text-foreground">IP whitelisting</span>
+                <Toggle
+                  value={!!settingsForm.security.ip_whitelisting}
+                  onChange={(v) => setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), ip_whitelisting: v } }))}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Session timeout</label>
+                <select
+                  value={String(settingsForm.security.session_timeout_minutes)}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({
+                      ...p,
+                      security: { ...(p.security || {}), session_timeout_minutes: Number(e.target.value) },
+                    }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  {[15, 30, 60, 120, 240].map((m) => (
+                    <option key={m} value={String(m)}>
+                      {m} min
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Password policy</label>
+                <select
+                  value={settingsForm.security.password_policy}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), password_policy: e.target.value } }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="strong_12_chars">Strong (12+ chars)</option>
+                  <option value="strong_10_chars">Strong (10+ chars)</option>
+                  <option value="standard_8_chars">Standard (8+ chars)</option>
+                </select>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#30A46C]/10">
+                <Globe size={20} className="text-[#30A46C]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Integrations</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Detected provider configuration</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {[
+                { key: "stripe_payments", label: "Stripe payments" },
+                { key: "sendgrid_email", label: "SendGrid email" },
+                { key: "twilio_sms", label: "Twilio SMS" },
+                { key: "google_maps", label: "Google Maps" },
+              ].map((it) => (
+                <div key={it.key} className="flex items-center justify-between gap-4">
+                  <span className="text-[0.8125rem] text-foreground">{it.label}</span>
+                  {statusPill(settingsForm.integrations[it.key])}
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        </motion.div>
+      )}
 
       <motion.div variants={stagger.item} className="flex justify-end">
         <BounceButton
