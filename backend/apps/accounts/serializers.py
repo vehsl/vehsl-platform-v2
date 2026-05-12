@@ -265,6 +265,191 @@ class AdminUserWriteSerializer(serializers.Serializer):
 
         return attrs
 
+
+class AdminKycDocumentSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    uploaded_at = serializers.DateTimeField(read_only=True)
+    reviewed_at = serializers.DateTimeField(read_only=True)
+    expires_at = serializers.DateField(allow_null=True, read_only=True)
+    reviewed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = KycDocument
+        fields = [
+            "id",
+            "kind",
+            "doc_type",
+            "original_name",
+            "size_bytes",
+            "uploaded_at",
+            "review_status",
+            "reviewed_at",
+            "reviewed_by_name",
+            "rejection_reason",
+            "expires_at",
+            "file_url",
+        ]
+
+    def get_file_url(self, obj: KycDocument):
+        try:
+            url = obj.file.url
+        except Exception:
+            return ""
+        req = self.context.get("request")
+        return req.build_absolute_uri(url) if req else url
+
+    def get_reviewed_by_name(self, obj: KycDocument):
+        u = getattr(obj, "reviewed_by", None)
+        if not u:
+            return ""
+        full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+        return full or u.email or u.phone or ""
+
+
+class AdminVerificationUserSerializer(serializers.ModelSerializer):
+    type = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+    avatar = serializers.SerializerMethodField()
+    companyName = serializers.SerializerMethodField()
+    location = serializers.SerializerMethodField()
+    overallStatus = serializers.SerializerMethodField()
+    kycLevel = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
+    biometrics = serializers.SerializerMethodField()
+    joinedAt = serializers.DateTimeField(source="date_joined", read_only=True)
+    lastActiveAt = serializers.DateTimeField(source="last_login", allow_null=True, read_only=True)
+    trustScore = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "type",
+            "name",
+            "avatar",
+            "companyName",
+            "location",
+            "email",
+            "phone",
+            "overallStatus",
+            "kycLevel",
+            "documents",
+            "biometrics",
+            "joinedAt",
+            "lastActiveAt",
+            "trustScore",
+        ]
+
+    def _full_name(self, u: User):
+        return f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+
+    def get_type(self, obj: User):
+        role = (getattr(obj, "account_type", "") or getattr(obj, "role", "") or "").lower()
+        return "seller" if role == "seller" else "buyer"
+
+    def get_name(self, obj: User):
+        return self._full_name(obj) or obj.email or obj.phone or f"user:{obj.pk}"
+
+    def get_avatar(self, obj: User):
+        full = self._full_name(obj)
+        if full:
+            parts = [p for p in full.split() if p]
+            letters = "".join(p[0] for p in parts[:2]).upper()
+            return letters or "U"
+        base = (obj.email or obj.phone or "U").strip()
+        return (base[:2] or "U").upper()
+
+    def get_companyName(self, obj: User):
+        seller = getattr(obj, "seller_profile", None)
+        return getattr(seller, "business_name", "") if seller else ""
+
+    def get_location(self, obj: User):
+        prof = getattr(obj, "profile", None)
+        parts = []
+        for f in ["city", "province", "country"]:
+            v = (getattr(prof, f, "") or "").strip()
+            if v:
+                parts.append(v)
+        return ", ".join(parts) if parts else "—"
+
+    def get_documents(self, obj: User):
+        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        out = []
+        for d in docs:
+            kind = (d.kind or "").lower()
+            if kind == "id_doc_1":
+                dtype = "passport"
+                label = "ID Document 1"
+            elif kind == "id_doc_2":
+                dtype = "driving_license"
+                label = "ID Document 2"
+            elif kind == "business_doc_1":
+                dtype = "business_registration"
+                label = "Business Document 1"
+            elif kind == "business_doc_2":
+                dtype = "factory_ownership"
+                label = "Business Document 2"
+            else:
+                dtype = "id_card"
+                label = "Proof Document"
+
+            out.append(
+                {
+                    "id": str(d.id),
+                    "type": dtype,
+                    "label": label,
+                    "status": d.review_status,
+                    "uploadedAt": d.uploaded_at,
+                    "verifiedAt": d.reviewed_at,
+                    "expiresAt": d.expires_at,
+                    "verifiedBy": self.context.get("request") and AdminKycDocumentSerializer(d, context=self.context).data.get("reviewed_by_name") or "",
+                    "rejectionReason": d.rejection_reason,
+                    "imageUrl": AdminKycDocumentSerializer(d, context=self.context).data.get("file_url") or "",
+                }
+            )
+        return out
+
+    def get_overallStatus(self, obj: User):
+        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in docs):
+            return "rejected"
+        if any(d.review_status == KycDocument.ReviewStatus.UNDER_REVIEW for d in docs):
+            return "under_review"
+        if any(d.review_status == KycDocument.ReviewStatus.PENDING for d in docs):
+            return "pending"
+        if docs and all(d.review_status == KycDocument.ReviewStatus.VERIFIED for d in docs):
+            return "verified"
+        return "pending"
+
+    def get_kycLevel(self, obj: User):
+        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        verified = sum(1 for d in docs if d.review_status == KycDocument.ReviewStatus.VERIFIED)
+        if verified >= 3:
+            return 3
+        if verified >= 2:
+            return 2
+        if verified >= 1:
+            return 1
+        return 1 if docs else 0
+
+    def get_biometrics(self, obj: User):
+        enabled = bool(getattr(obj, "two_factor_enabled", False))
+        status = "verified" if enabled else "pending"
+        return [{"type": "fingerprint", "status": status}, {"type": "face_id", "status": "pending"}]
+
+    def get_trustScore(self, obj: User):
+        base = 50
+        level = self.get_kycLevel(obj)
+        base += level * 10
+        status = self.get_overallStatus(obj)
+        if status == "verified":
+            base += 20
+        elif status == "under_review":
+            base -= 5
+        elif status == "rejected":
+            base -= 20
+        return max(0, min(100, int(base)))
+
 class SubscriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subscription

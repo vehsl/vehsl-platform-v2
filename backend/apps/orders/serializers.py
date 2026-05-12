@@ -11,6 +11,8 @@ from .models import (
     Document,
     Order,
     OrderItem,
+    ReleaseCondition,
+    ReleaseConditionProof,
     Review,
     Shipment,
     ShipmentEvent,
@@ -184,3 +186,167 @@ class ReviewSerializer(serializers.ModelSerializer):
             "text",
             "created_at",
         ]
+
+
+class ReleaseConditionProofSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="original_name", read_only=True)
+    size = serializers.SerializerMethodField()
+    uploadedAt = serializers.DateTimeField(source="uploaded_at", read_only=True)
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ReleaseConditionProof
+        fields = ["id", "name", "size", "uploadedAt", "url"]
+
+    def get_size(self, obj: ReleaseConditionProof):
+        size = int(getattr(obj, "size_bytes", 0) or 0)
+        if size < 1024 * 1024:
+            return f"{size / 1024.0:.1f} KB"
+        return f"{size / (1024.0 * 1024.0):.1f} MB"
+
+    def get_url(self, obj: ReleaseConditionProof):
+        try:
+            url = obj.file.url
+        except Exception:
+            return ""
+        req = self.context.get("request")
+        return req.build_absolute_uri(url) if req else url
+
+
+class ReleaseConditionSerializer(serializers.ModelSerializer):
+    requiredBy = serializers.SerializerMethodField()
+    orderRef = serializers.SerializerMethodField()
+    dueDate = serializers.DateField(source="due_at", allow_null=True, read_only=True)
+    satisfiedAt = serializers.DateTimeField(source="satisfied_at", allow_null=True, read_only=True)
+    satisfiedBy = serializers.SerializerMethodField()
+    proofDocs = ReleaseConditionProofSerializer(source="proofs", many=True, read_only=True)
+
+    class Meta:
+        model = ReleaseCondition
+        fields = [
+            "id",
+            "type",
+            "title",
+            "description",
+            "status",
+            "requiredBy",
+            "orderRef",
+            "dueDate",
+            "satisfiedAt",
+            "satisfiedBy",
+            "proofDocs",
+            "notes",
+            "priority",
+        ]
+
+    def get_requiredBy(self, obj: ReleaseCondition):
+        buyer = getattr(getattr(obj, "order", None), "buyer", None)
+        if not buyer:
+            return ""
+        full = f"{(buyer.first_name or '').strip()} {(buyer.last_name or '').strip()}".strip()
+        return full or buyer.email or buyer.phone or ""
+
+    def get_orderRef(self, obj: ReleaseCondition):
+        return f"ORD-{obj.order_id}" if obj.order_id else ""
+
+    def get_satisfiedBy(self, obj: ReleaseCondition):
+        u = getattr(obj, "satisfied_by", None)
+        if not u:
+            return ""
+        full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+        return full or u.email or u.phone or ""
+
+
+class ReleaseOrderSerializer(serializers.ModelSerializer):
+    orderRef = serializers.SerializerMethodField()
+    buyerName = serializers.SerializerMethodField()
+    buyerAvatar = serializers.SerializerMethodField()
+    buyerCountry = serializers.SerializerMethodField()
+    buyerCountryCode = serializers.SerializerMethodField()
+    productName = serializers.SerializerMethodField()
+    hsCode = serializers.SerializerMethodField()
+    quantity = serializers.SerializerMethodField()
+    conditions = ReleaseConditionSerializer(source="release_conditions", many=True, read_only=True)
+    overallStatus = serializers.SerializerMethodField()
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "orderRef",
+            "buyerName",
+            "buyerAvatar",
+            "buyerCountry",
+            "buyerCountryCode",
+            "productName",
+            "hsCode",
+            "quantity",
+            "conditions",
+            "overallStatus",
+            "createdAt",
+        ]
+
+    def get_orderRef(self, obj: Order):
+        return f"ORD-{obj.id}"
+
+    def get_buyerName(self, obj: Order):
+        b = getattr(obj, "buyer", None)
+        if not b:
+            return ""
+        full = f"{(b.first_name or '').strip()} {(b.last_name or '').strip()}".strip()
+        return full or b.email or b.phone or ""
+
+    def get_buyerAvatar(self, obj: Order):
+        b = getattr(obj, "buyer", None)
+        if not b:
+            return "U"
+        first = (b.first_name or "").strip()
+        last = (b.last_name or "").strip()
+        if first and last:
+            return (first[0] + last[0]).upper()
+        base = (b.email or b.phone or "U").strip()
+        return (base[:2] or "U").upper()
+
+    def get_buyerCountry(self, obj: Order):
+        prof = getattr(getattr(obj, "buyer", None), "profile", None)
+        return (getattr(prof, "country", "") or "").strip()
+
+    def get_buyerCountryCode(self, obj: Order):
+        prof = getattr(getattr(obj, "buyer", None), "profile", None)
+        raw = (getattr(prof, "country", "") or "").strip().lower()
+        if len(raw) == 2 and raw.isalpha():
+            return raw
+        return "us"
+
+    def get_productName(self, obj: Order):
+        items = list(getattr(obj, "items", []).all()) if hasattr(obj, "items") else []
+        if not items:
+            return ""
+        p = getattr(items[0], "product", None)
+        return getattr(p, "name", "") if p else ""
+
+    def get_hsCode(self, obj: Order):
+        items = list(getattr(obj, "items", []).all()) if hasattr(obj, "items") else []
+        if not items:
+            return ""
+        p = getattr(items[0], "product", None)
+        return getattr(p, "hs_code", "") if p else ""
+
+    def get_quantity(self, obj: Order):
+        items = list(getattr(obj, "items", []).all()) if hasattr(obj, "items") else []
+        return sum(int(getattr(i, "quantity", 0) or 0) for i in items)
+
+    def get_overallStatus(self, obj: Order):
+        conditions = list(getattr(obj, "release_conditions", []).all()) if hasattr(obj, "release_conditions") else []
+        if not conditions:
+            return "blocked"
+        all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conditions)
+        any_ok = any(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.WAIVED} for c in conditions)
+        if all_ok and getattr(obj, "release_authorized_at", None):
+            return "released"
+        if all_ok:
+            return "cleared"
+        if any_ok:
+            return "partial"
+        return "blocked"

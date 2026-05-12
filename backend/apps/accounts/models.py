@@ -155,6 +155,13 @@ class KycDocument(models.Model):
         BUSINESS_DOC_1 = "business_doc_1", "Business Document 1"
         BUSINESS_DOC_2 = "business_doc_2", "Business Document 2"
 
+    class ReviewStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        UNDER_REVIEW = "under_review", "Under Review"
+        VERIFIED = "verified", "Verified"
+        REJECTED = "rejected", "Rejected"
+        EXPIRED = "expired", "Expired"
+
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="kyc_documents")
     kind = models.CharField(max_length=32, choices=Kind.choices)
@@ -164,6 +171,13 @@ class KycDocument(models.Model):
     content_type = models.CharField(max_length=128, blank=True)
     size_bytes = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
+    review_status = models.CharField(max_length=24, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="kyc_documents_reviewed"
+    )
+    rejection_reason = models.CharField(max_length=255, blank=True)
+    expires_at = models.DateField(null=True, blank=True)
 
     class Meta:
         indexes = [

@@ -2,7 +2,9 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AdminKycDocumentViewSet,
     AdminUserViewSet,
+    AdminVerificationUserViewSet,
     BuyerProfileMeView,
     ChatThreadViewSet,
     LoginView,
@@ -18,6 +20,8 @@ from .views import (
 
 router = DefaultRouter()
 router.register(r"admin/users", AdminUserViewSet, basename="admin-user")
+router.register(r"admin/verification/users", AdminVerificationUserViewSet, basename="admin-verification-user")
+router.register(r"admin/verification/kyc-documents", AdminKycDocumentViewSet, basename="admin-kyc-document")
 router.register(r"chat/threads", ChatThreadViewSet, basename="chat-thread")
 router.register(r"notifications", NotificationViewSet, basename="notification")
 router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")

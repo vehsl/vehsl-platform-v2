@@ -11,11 +11,25 @@ from datetime import timedelta
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
-from .models import AdminProfile, ChatMessage, ChatThread, Notification, Subscription, User, UserProfile
+from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Value, When
+
+from .models import (
+    AdminProfile,
+    ChatMessage,
+    ChatThread,
+    KycDocument,
+    Notification,
+    SellerProfile,
+    Subscription,
+    User,
+    UserProfile,
+)
 from .serializers import (
     AdminProfileUpdateSerializer,
+    AdminKycDocumentSerializer,
     AdminUserListSerializer,
     AdminUserWriteSerializer,
+    AdminVerificationUserSerializer,
     BuyerProfileSerializer,
     ChatMessageSerializer,
     ChatThreadSerializer,
@@ -362,3 +376,171 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
                 "suspended": suspended,
             }
         )
+
+
+class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = AdminVerificationUserSerializer
+
+    def _base_users_queryset(self):
+        qs = User.objects.select_related("profile", "seller_profile")
+
+        utype = (self.request.query_params.get("type") or "").strip().lower()
+        is_seller = Q(account_type="seller") | Q(role="seller")
+        if utype == "seller":
+            qs = qs.filter(is_seller)
+        elif utype == "buyer":
+            qs = qs.exclude(is_seller)
+
+        status_q = (self.request.query_params.get("status") or "").strip().lower()
+        if status_q in {"pending", "under_review", "verified", "rejected"}:
+            if status_q == "verified":
+                qs = qs.exclude(kyc_documents__review_status__in=["pending", "under_review", "rejected"]).filter(
+                    kyc_documents__review_status="verified"
+                )
+            else:
+                qs = qs.filter(kyc_documents__review_status=status_q)
+
+        return qs.distinct()
+
+    def get_queryset(self):
+        docs_qs = KycDocument.objects.select_related("reviewed_by").order_by("-uploaded_at")
+        return (
+            self._base_users_queryset()
+            .prefetch_related(Prefetch("kyc_documents", queryset=docs_qs))
+            .order_by("-date_joined")
+        )
+
+    def list(self, request, *args, **kwargs):
+        page = self.paginate_queryset(self.get_queryset())
+        if page is not None:
+            ser = AdminVerificationUserSerializer(page, many=True, context={"request": request})
+            return self.get_paginated_response(ser.data)
+        ser = AdminVerificationUserSerializer(self.get_queryset(), many=True, context={"request": request})
+        return Response(ser.data)
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        qs = self._base_users_queryset()
+
+        total_users = qs.count()
+        is_seller = Q(account_type="seller") | Q(role="seller")
+        sellers = qs.filter(is_seller).count()
+        buyers = qs.exclude(is_seller).count()
+
+        pending_review = qs.filter(kyc_documents__review_status__in=["pending", "under_review"]).distinct().count()
+        fully_verified = (
+            qs.exclude(kyc_documents__review_status__in=["pending", "under_review", "rejected"])
+            .filter(kyc_documents__review_status="verified")
+            .distinct()
+            .count()
+        )
+
+        qs_annotated = qs.annotate(
+            verified_docs=Count("kyc_documents", filter=Q(kyc_documents__review_status="verified"), distinct=True),
+            pending_docs=Count("kyc_documents", filter=Q(kyc_documents__review_status="pending"), distinct=True),
+            under_review_docs=Count("kyc_documents", filter=Q(kyc_documents__review_status="under_review"), distinct=True),
+            rejected_docs=Count("kyc_documents", filter=Q(kyc_documents__review_status="rejected"), distinct=True),
+        ).annotate(
+            kyc_level=Case(
+                When(verified_docs__gte=3, then=Value(3)),
+                When(verified_docs__gte=2, then=Value(2)),
+                When(verified_docs__gte=1, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        ).annotate(
+            trust_score=Case(
+                When(rejected_docs__gt=0, then=Value(30) + F("kyc_level") * Value(10)),
+                When(under_review_docs__gt=0, then=Value(45) + F("kyc_level") * Value(10)),
+                When(pending_docs__gt=0, then=Value(50) + F("kyc_level") * Value(10)),
+                When(verified_docs__gt=0, then=Value(70) + F("kyc_level") * Value(10)),
+                default=Value(50),
+                output_field=IntegerField(),
+            )
+        )
+
+        avg_trust = qs_annotated.aggregate(v=Avg("trust_score"))["v"] or 0
+        kyc_level_3 = qs_annotated.filter(verified_docs__gte=3).count()
+        fingerprint_enrolled = qs.filter(two_factor_enabled=True).count()
+        face_id_enrolled = 0
+
+        return Response(
+            {
+                "total_users": total_users,
+                "buyers": buyers,
+                "sellers": sellers,
+                "fully_verified": fully_verified,
+                "pending_review": pending_review,
+                "avg_trust_score": round(float(avg_trust), 0),
+                "fingerprint_enrolled": fingerprint_enrolled,
+                "face_id_enrolled": face_id_enrolled,
+                "kyc_level_3": kyc_level_3,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="approve-all")
+    def approve_all(self, request, pk=None):
+        user = self.get_object()
+        now = timezone.now()
+        KycDocument.objects.filter(user=user, review_status__in=["pending", "under_review"]).update(
+            review_status=KycDocument.ReviewStatus.VERIFIED,
+            reviewed_at=now,
+            reviewed_by=request.user,
+            rejection_reason="",
+        )
+        if (user.account_type or user.role) == User.AccountType.SELLER or user.role == User.Role.SELLER:
+            prof = getattr(user, "seller_profile", None)
+            if prof:
+                SellerProfile.objects.filter(id=prof.id).update(verification_status=SellerProfile.VerificationStatus.APPROVED)
+        user = User.objects.select_related("profile", "seller_profile").prefetch_related(
+            Prefetch("kyc_documents", queryset=KycDocument.objects.select_related("reviewed_by").order_by("-uploaded_at"))
+        ).get(id=user.id)
+        return Response(AdminVerificationUserSerializer(user, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="request-reverification")
+    def request_reverification(self, request, pk=None):
+        user = self.get_object()
+        KycDocument.objects.filter(user=user).update(
+            review_status=KycDocument.ReviewStatus.PENDING,
+            reviewed_at=None,
+            reviewed_by=None,
+            rejection_reason="",
+        )
+        user = User.objects.select_related("profile", "seller_profile").prefetch_related(
+            Prefetch("kyc_documents", queryset=KycDocument.objects.select_related("reviewed_by").order_by("-uploaded_at"))
+        ).get(id=user.id)
+        return Response(AdminVerificationUserSerializer(user, context={"request": request}).data)
+
+
+class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = AdminKycDocumentSerializer
+    queryset = KycDocument.objects.select_related("user", "reviewed_by").order_by("-uploaded_at")
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        doc = self.get_object()
+        now = timezone.now()
+        KycDocument.objects.filter(id=doc.id).update(
+            review_status=KycDocument.ReviewStatus.VERIFIED,
+            reviewed_at=now,
+            reviewed_by=request.user,
+            rejection_reason="",
+        )
+        doc.refresh_from_db()
+        return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, pk=None):
+        doc = self.get_object()
+        reason = (request.data.get("reason") or "").strip()
+        now = timezone.now()
+        KycDocument.objects.filter(id=doc.id).update(
+            review_status=KycDocument.ReviewStatus.REJECTED,
+            reviewed_at=now,
+            reviewed_by=request.user,
+            rejection_reason=reason,
+        )
+        doc.refresh_from_db()
+        return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)

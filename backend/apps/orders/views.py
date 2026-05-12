@@ -5,13 +5,24 @@ from django.db.models.functions import TruncDate
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 from apps.catalog.models import Product
 
-from .models import Cart, CartItem, Dispute, Document, Order, Review, Shipment
+from .models import (
+    Cart,
+    CartItem,
+    Dispute,
+    Document,
+    Order,
+    ReleaseCondition,
+    ReleaseConditionProof,
+    Review,
+    Shipment,
+)
 from .serializers import (
     CartSerializer,
     CartUpsertSerializer,
@@ -19,6 +30,7 @@ from .serializers import (
     DocumentSerializer,
     OrderCreateSerializer,
     OrderSerializer,
+    ReleaseOrderSerializer,
     ReviewSerializer,
     ShipmentSerializer,
 )
@@ -369,3 +381,153 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             )
 
         return Response(items)
+
+
+class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = ReleaseOrderSerializer
+
+    def get_queryset(self):
+        qs = (
+            Order.objects.filter(deleted_at__isnull=True)
+            .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
+            .select_related("buyer", "buyer__profile", "seller")
+            .prefetch_related(
+                "items",
+                "items__product",
+                "release_conditions",
+                "release_conditions__proofs",
+                "release_conditions__satisfied_by",
+            )
+            .order_by("-created_at")
+        )
+
+        q = (self.request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(id__icontains=q)
+                | Q(buyer__email__icontains=q)
+                | Q(buyer__phone__icontains=q)
+                | Q(buyer__first_name__icontains=q)
+                | Q(buyer__last_name__icontains=q)
+                | Q(items__product__name__icontains=q)
+                | Q(items__product__hs_code__icontains=q)
+            ).distinct()
+
+        return qs
+
+    def list(self, request):
+        page = self.paginate_queryset(self.get_queryset())
+        if page is not None:
+            return self.get_paginated_response(ReleaseOrderSerializer(page, many=True, context={"request": request}).data)
+        return Response(ReleaseOrderSerializer(self.get_queryset(), many=True, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        orders_qs = (
+            Order.objects.filter(deleted_at__isnull=True)
+            .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
+            .prefetch_related("release_conditions")
+        )
+
+        active_orders = orders_qs.count()
+
+        total_conditions = ReleaseCondition.objects.filter(order__in=orders_qs).count()
+        satisfied_conditions = ReleaseCondition.objects.filter(
+            order__in=orders_qs, status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED]
+        ).count()
+
+        cleared = 0
+        blocked = 0
+        ready_to_ship = 0
+        for o in orders_qs.iterator():
+            conds = list(o.release_conditions.all())
+            if not conds:
+                blocked += 1
+                continue
+            all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
+            any_ok = any(
+                c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.WAIVED}
+                for c in conds
+            )
+            if all_ok:
+                cleared += 1
+                if not o.release_authorized_at:
+                    ready_to_ship += 1
+            elif any_ok:
+                blocked += 1
+            else:
+                blocked += 1
+
+        return Response(
+            {
+                "active_orders": active_orders,
+                "blocked_orders": blocked,
+                "ready_to_ship": ready_to_ship,
+                "total_conditions": total_conditions,
+                "satisfied_conditions": satisfied_conditions,
+                "cleared_orders": cleared,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="authorize")
+    def authorize(self, request, pk=None):
+        order = Order.objects.filter(id=pk, deleted_at__isnull=True).prefetch_related("release_conditions").first()
+        if not order:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        conds = list(order.release_conditions.all())
+        if not conds:
+            return Response({"detail": "No release conditions found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
+        if not all_ok:
+            return Response({"detail": "All conditions must be satisfied first."}, status=status.HTTP_400_BAD_REQUEST)
+
+        Order.objects.filter(id=order.id).update(release_authorized_at=timezone.now(), release_authorized_by=request.user)
+        order.refresh_from_db()
+        return Response(ReleaseOrderSerializer(order, context={"request": request}).data)
+
+
+class AdminReleaseConditionViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return ReleaseCondition.objects.select_related("order", "order__buyer", "satisfied_by").prefetch_related("proofs")
+
+    @action(detail=True, methods=["post"], url_path="satisfy")
+    def satisfy(self, request, pk=None):
+        cond = self.get_queryset().filter(id=pk).first()
+        if not cond:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        note = (request.data.get("note") or request.data.get("notes") or "").strip()
+        files = request.FILES.getlist("files") or request.FILES.getlist("proofs") or []
+
+        if cond.status not in {ReleaseCondition.Status.PENDING, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.FAILED}:
+            return Response({"detail": "Condition cannot be satisfied in current state."}, status=status.HTTP_400_BAD_REQUEST)
+
+        for f in files:
+            ReleaseConditionProof.objects.create(
+                condition=cond,
+                file=f,
+                original_name=getattr(f, "name", "") or "",
+                size_bytes=int(getattr(f, "size", 0) or 0),
+            )
+
+        updates = {
+            "status": ReleaseCondition.Status.SATISFIED,
+            "satisfied_at": timezone.now(),
+            "satisfied_by": request.user,
+        }
+        if note:
+            updates["notes"] = note
+        ReleaseCondition.objects.filter(id=cond.id).update(**updates)
+
+        order = (
+            Order.objects.select_related("buyer", "buyer__profile", "seller")
+            .prefetch_related("items", "items__product", "release_conditions", "release_conditions__proofs", "release_conditions__satisfied_by")
+            .get(id=cond.order_id)
+        )
+        return Response(ReleaseOrderSerializer(order, context={"request": request}).data)
