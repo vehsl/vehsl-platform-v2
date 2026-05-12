@@ -696,23 +696,232 @@ export function AdminUsers() {
 //  ADMIN → PRODUCTS
 // ════════════════════════════════════════════════════════════
 
-const productsData = [
-  { id: 1, name: "Organic Herbal Tea Collection", seller: "GreenLeaf Organics", category: "Food & Beverage", price: "$24.99", stock: 1240, status: "active" as const, rating: 4.8, hsCode: "0902.10" },
-  { id: 2, name: "LED Panel Light 60W", seller: "BrightStar Electronics", category: "Electronics", price: "$45.00", stock: 890, status: "active" as const, rating: 4.6, hsCode: "8539.50" },
-  { id: 3, name: "Protein Energy Bar (Box/24)", seller: "FreshPack Foods", category: "Food & Beverage", price: "$36.00", stock: 2100, status: "active" as const, rating: 4.3, hsCode: "1806.90" },
-  { id: 4, name: "Carbon Fiber Composite Sheet", seller: "Atlas Materials", category: "Industrial", price: "$189.00", stock: 45, status: "low-stock" as const, rating: 4.9, hsCode: "6815.10" },
-  { id: 5, name: "Vitamin D3 Supplements", seller: "FreshPack Foods", category: "Health", price: "$18.50", stock: 0, status: "out-of-stock" as const, rating: 4.5, hsCode: "2936.29" },
-  { id: 6, name: "Smart Sensor Module v2", seller: "BrightStar Electronics", category: "Electronics", price: "$72.00", stock: 320, status: "review" as const, rating: 0, hsCode: "9031.80" },
-];
-
 export function AdminProducts() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const formatNumber = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return n.toLocaleString();
+  };
+
+  const formatMoney = (currency: string, price: any) => {
+    const c = (currency || "USD").toString().toUpperCase();
+    const n = Number(price);
+    if (!Number.isFinite(n)) return "—";
+    const sym = c === "USD" ? "$" : `${c} `;
+    return `${sym}${n.toFixed(2)}`;
+  };
+
+  const productStatusToPill = (s: string) => {
+    const x = (s || "").toString().toLowerCase();
+    if (x === "active") return { status: "success", label: "Active" };
+    if (x === "low_stock") return { status: "warning", label: "Low Stock" };
+    if (x === "out") return { status: "error", label: "Out" };
+    if (x === "review") return { status: "pending", label: "Review" };
+    return { status: "pending", label: x || "Review" };
+  };
+
   const [search, setSearch] = useState("");
-  const [catFilter, setCatFilter] = useState("all");
-  const categories = ["all", ...Array.from(new Set(productsData.map(p => p.category)))];
-  const filtered = productsData.filter(p =>
-    (catFilter === "all" || p.category === catFilter) &&
-    p.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const [catFilter, setCatFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "review">("all");
+  const [stats, setStats] = useState<any>(null);
+  const [categories, setCategories] = useState<any[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [form, setForm] = useState<any>({
+    name: "",
+    seller_email: "",
+    category_id: "",
+    hs_code: "",
+    currency: "USD",
+    price: "",
+    stock_units: "",
+    status: "active",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [statsData, catsData] = await Promise.all([
+          fetchJson("/api/v1/admin/products/stats"),
+          fetchJson("/api/v1/admin/products/categories"),
+        ]);
+        if (!cancelled) {
+          setStats(statsData);
+          setCategories(Array.isArray(catsData) ? catsData : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setStats(null);
+          setCategories([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    setLoading(true);
+    const t = setTimeout(() => {
+      (async () => {
+        try {
+          const params = new URLSearchParams();
+          if (search.trim()) params.set("q", search.trim());
+          if (catFilter !== "all") params.set("category", catFilter);
+          if (statusFilter !== "all") params.set("admin_status", statusFilter);
+          const data = await fetchJson(`/api/v1/admin/products/?${params.toString()}`);
+          const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+          if (!cancelled) setProducts(rows);
+        } catch (e: any) {
+          if (!cancelled) {
+            setProducts([]);
+            setError(e?.message || "Failed to load products.");
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [search, catFilter, statusFilter]);
+
+  const refreshStats = async () => {
+    try {
+      const statsData = await fetchJson("/api/v1/admin/products/stats");
+      setStats(statsData);
+    } catch {}
+  };
+
+  const openCreate = () => {
+    setFormError("");
+    setForm({
+      name: "",
+      seller_email: "",
+      category_id: categories?.[0]?.id ? String(categories[0].id) : "",
+      hs_code: "",
+      currency: "USD",
+      price: "",
+      stock_units: "",
+      status: "active",
+    });
+    setFormOpen(true);
+  };
+
+  const saveProduct = async () => {
+    setSaving(true);
+    setFormError("");
+    try {
+      const payload: any = {
+        name: (form.name || "").trim(),
+        seller_email: (form.seller_email || "").trim(),
+        category_id: Number(form.category_id),
+        currency: (form.currency || "USD").toString().toUpperCase(),
+        price: Number(form.price),
+        status: (form.status || "active").toString().toLowerCase(),
+        hs_code: (form.hs_code || "").trim(),
+      };
+      const stock = (form.stock_units || "").toString().trim();
+      if (stock !== "") payload.stock_units = Number(stock);
+
+      const created = await fetchJson("/api/v1/admin/products/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      setProducts(prev => [created, ...prev]);
+      setFormOpen(false);
+      await refreshStats();
+    } catch (e: any) {
+      setFormError(e?.message || "Failed to add product.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const exportCsv = async () => {
+    try {
+      const access = getAccess();
+      const params = new URLSearchParams();
+      if (search.trim()) params.set("q", search.trim());
+      if (catFilter !== "all") params.set("category", catFilter);
+      if (statusFilter !== "all") params.set("admin_status", statusFilter);
+      const res = await fetch(`${apiBase()}/api/v1/admin/products/export/?${params.toString()}`, {
+        headers: access ? { Authorization: `Bearer ${access}` } : {},
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "admin_products.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e?.message || "Export failed.");
+    }
+  };
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
@@ -722,16 +931,24 @@ export function AdminProducts() {
           <p className="text-muted-foreground text-[0.875rem]">Everything listed on TradeFlow. Manage catalog and compliance.</p>
         </div>
         <div className="flex gap-2">
-          <BounceButton variant="ghost" size="sm" icon={<Download size={14} />}>Export</BounceButton>
-          <BounceButton variant="primary" size="md" icon={<Package size={16} />}>Add Product</BounceButton>
+          <BounceButton variant="ghost" size="sm" icon={<Download size={14} />} onClick={exportCsv}>Export</BounceButton>
+          <BounceButton variant="primary" size="md" icon={<Package size={16} />} onClick={openCreate}>Add Product</BounceButton>
         </div>
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Total Products" value="1,284" icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
-        <StatCard label="Active Listings" value="1,148" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
-        <StatCard label="Low Stock" value="34" icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-        <StatCard label="Pending Review" value="18" icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "all" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter("all")}>
+          <StatCard label="Total Products" value={formatNumber(stats?.total_products)} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
+        </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "active" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "active" ? "all" : "active"))}>
+          <StatCard label="Active Listings" value={formatNumber(stats?.active_listings)} icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "low_stock" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "low_stock" ? "all" : "low_stock"))}>
+          <StatCard label="Low Stock" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "review" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "review" ? "all" : "review"))}>
+          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+        </button>
       </motion.div>
 
       <motion.div variants={stagger.item}>
@@ -745,16 +962,45 @@ export function AdminProducts() {
               />
             </div>
             <div className="flex gap-2 flex-wrap">
-              {categories.map(cat => (
-                <button key={cat} onClick={() => setCatFilter(cat)}
-                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === cat ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
-                >{cat === "all" ? "All" : cat}</button>
+              <button
+                key="all"
+                onClick={() => setCatFilter("all")}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
+              >
+                All
+              </button>
+              {categories.map((cat: any) => (
+                <button
+                  key={cat.slug || cat.id}
+                  onClick={() => setCatFilter(cat.slug || String(cat.id))}
+                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                    catFilter === (cat.slug || String(cat.id)) ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {cat.name}
+                </button>
               ))}
             </div>
           </div>
 
+          {error && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+              {error}
+            </div>
+          )}
+
           <div className="space-y-2">
-            {filtered.map((p, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading products…
+              </div>
+            )}
+            {!loading && products.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No products found.
+              </div>
+            )}
+            {products.map((p, i) => (
               <motion.div key={p.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
               >
@@ -764,24 +1010,145 @@ export function AdminProducts() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[0.875rem] text-foreground truncate">{p.name}</span>
-                    <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hsCode}</span>
+                    {!!p.hs_code && <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hs_code}</span>}
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller} · {p.category}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_name || "—"}</span>
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
-                  <span className="text-foreground/70">{p.price}</span>
-                  <span className={`${p.stock === 0 ? "text-[#E5484D]/80" : p.stock < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>{p.stock === 0 ? "Out of stock" : `${p.stock} units`}</span>
-                  {p.rating > 0 && <span className="flex items-center gap-1 text-[#FFB224]/80"><Star size={12} fill="#FFB224" />{p.rating}</span>}
+                  <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
+                  <span className={`${Number(p.stock_units) === 0 ? "text-[#E5484D]/80" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
+                    {Number(p.stock_units) === 0 ? "Out of stock" : `${formatNumber(p.stock_units)} units`}
+                  </span>
+                  {Number(p.vehsl_rating) > 0 && (
+                    <span className="flex items-center gap-1 text-[#FFB224]/80">
+                      <Star size={12} fill="#FFB224" />
+                      {Number(p.vehsl_rating).toFixed(1)}
+                    </span>
+                  )}
                 </div>
-                <StatusPill
-                  status={p.status === "active" ? "success" : p.status === "low-stock" ? "warning" : p.status === "out-of-stock" ? "error" : "pending"}
-                  label={p.status === "low-stock" ? "Low Stock" : p.status === "out-of-stock" ? "Out" : p.status === "review" ? "Review" : "Active"}
-                />
+                {(() => {
+                  const pill = productStatusToPill(p.admin_status);
+                  return <StatusPill status={pill.status as any} label={pill.label} />;
+                })()}
               </motion.div>
             ))}
           </div>
         </SectionCard>
       </motion.div>
+
+      <AnimatePresence>
+        {formOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setFormOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[560px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">Add Product</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">Create a product and set inventory quantity.</p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setFormOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {formError && (
+                <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+                  {formError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  value={form.name}
+                  onChange={e => setForm((p: any) => ({ ...p, name: e.target.value }))}
+                  placeholder="Product name"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.seller_email}
+                  onChange={e => setForm((p: any) => ({ ...p, seller_email: e.target.value }))}
+                  placeholder="Seller email"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <select
+                  value={form.category_id}
+                  onChange={e => setForm((p: any) => ({ ...p, category_id: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  {categories.map((c: any) => (
+                    <option key={c.id} value={String(c.id)}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={form.hs_code}
+                  onChange={e => setForm((p: any) => ({ ...p, hs_code: e.target.value }))}
+                  placeholder="HS code (optional)"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.price}
+                  onChange={e => setForm((p: any) => ({ ...p, price: e.target.value }))}
+                  placeholder="Price"
+                  inputMode="decimal"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.currency}
+                  onChange={e => setForm((p: any) => ({ ...p, currency: e.target.value }))}
+                  placeholder="Currency (USD)"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.stock_units}
+                  onChange={e => setForm((p: any) => ({ ...p, stock_units: e.target.value }))}
+                  placeholder="Stock units"
+                  inputMode="numeric"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <select
+                  value={form.status}
+                  onChange={e => setForm((p: any) => ({ ...p, status: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="active">Active</option>
+                  <option value="approved">Approved</option>
+                  <option value="pending">Pending</option>
+                  <option value="draft">Draft</option>
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setFormOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={saving ? undefined : saveProduct}
+                  className={saving ? "opacity-70 pointer-events-none" : ""}
+                  icon={saving ? <Clock size={14} /> : <Package size={14} />}
+                >
+                  {saving ? "Saving…" : "Create"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
