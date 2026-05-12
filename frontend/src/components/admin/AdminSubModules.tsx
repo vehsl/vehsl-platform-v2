@@ -696,23 +696,232 @@ export function AdminUsers() {
 //  ADMIN → PRODUCTS
 // ════════════════════════════════════════════════════════════
 
-const productsData = [
-  { id: 1, name: "Organic Herbal Tea Collection", seller: "GreenLeaf Organics", category: "Food & Beverage", price: "$24.99", stock: 1240, status: "active" as const, rating: 4.8, hsCode: "0902.10" },
-  { id: 2, name: "LED Panel Light 60W", seller: "BrightStar Electronics", category: "Electronics", price: "$45.00", stock: 890, status: "active" as const, rating: 4.6, hsCode: "8539.50" },
-  { id: 3, name: "Protein Energy Bar (Box/24)", seller: "FreshPack Foods", category: "Food & Beverage", price: "$36.00", stock: 2100, status: "active" as const, rating: 4.3, hsCode: "1806.90" },
-  { id: 4, name: "Carbon Fiber Composite Sheet", seller: "Atlas Materials", category: "Industrial", price: "$189.00", stock: 45, status: "low-stock" as const, rating: 4.9, hsCode: "6815.10" },
-  { id: 5, name: "Vitamin D3 Supplements", seller: "FreshPack Foods", category: "Health", price: "$18.50", stock: 0, status: "out-of-stock" as const, rating: 4.5, hsCode: "2936.29" },
-  { id: 6, name: "Smart Sensor Module v2", seller: "BrightStar Electronics", category: "Electronics", price: "$72.00", stock: 320, status: "review" as const, rating: 0, hsCode: "9031.80" },
-];
-
 export function AdminProducts() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const formatNumber = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return n.toLocaleString();
+  };
+
+  const formatMoney = (currency: string, price: any) => {
+    const c = (currency || "USD").toString().toUpperCase();
+    const n = Number(price);
+    if (!Number.isFinite(n)) return "—";
+    const sym = c === "USD" ? "$" : `${c} `;
+    return `${sym}${n.toFixed(2)}`;
+  };
+
+  const productStatusToPill = (s: string) => {
+    const x = (s || "").toString().toLowerCase();
+    if (x === "active") return { status: "success", label: "Active" };
+    if (x === "low_stock") return { status: "warning", label: "Low Stock" };
+    if (x === "out") return { status: "error", label: "Out" };
+    if (x === "review") return { status: "pending", label: "Review" };
+    return { status: "pending", label: x || "Review" };
+  };
+
   const [search, setSearch] = useState("");
-  const [catFilter, setCatFilter] = useState("all");
-  const categories = ["all", ...Array.from(new Set(productsData.map(p => p.category)))];
-  const filtered = productsData.filter(p =>
-    (catFilter === "all" || p.category === catFilter) &&
-    p.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const [catFilter, setCatFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "review">("all");
+  const [stats, setStats] = useState<any>(null);
+  const [categories, setCategories] = useState<any[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [form, setForm] = useState<any>({
+    name: "",
+    seller_email: "",
+    category_id: "",
+    hs_code: "",
+    currency: "USD",
+    price: "",
+    stock_units: "",
+    status: "active",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [statsData, catsData] = await Promise.all([
+          fetchJson("/api/v1/admin/products/stats"),
+          fetchJson("/api/v1/admin/products/categories"),
+        ]);
+        if (!cancelled) {
+          setStats(statsData);
+          setCategories(Array.isArray(catsData) ? catsData : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setStats(null);
+          setCategories([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    setLoading(true);
+    const t = setTimeout(() => {
+      (async () => {
+        try {
+          const params = new URLSearchParams();
+          if (search.trim()) params.set("q", search.trim());
+          if (catFilter !== "all") params.set("category", catFilter);
+          if (statusFilter !== "all") params.set("admin_status", statusFilter);
+          const data = await fetchJson(`/api/v1/admin/products/?${params.toString()}`);
+          const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+          if (!cancelled) setProducts(rows);
+        } catch (e: any) {
+          if (!cancelled) {
+            setProducts([]);
+            setError(e?.message || "Failed to load products.");
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [search, catFilter, statusFilter]);
+
+  const refreshStats = async () => {
+    try {
+      const statsData = await fetchJson("/api/v1/admin/products/stats");
+      setStats(statsData);
+    } catch {}
+  };
+
+  const openCreate = () => {
+    setFormError("");
+    setForm({
+      name: "",
+      seller_email: "",
+      category_id: categories?.[0]?.id ? String(categories[0].id) : "",
+      hs_code: "",
+      currency: "USD",
+      price: "",
+      stock_units: "",
+      status: "active",
+    });
+    setFormOpen(true);
+  };
+
+  const saveProduct = async () => {
+    setSaving(true);
+    setFormError("");
+    try {
+      const payload: any = {
+        name: (form.name || "").trim(),
+        seller_email: (form.seller_email || "").trim(),
+        category_id: Number(form.category_id),
+        currency: (form.currency || "USD").toString().toUpperCase(),
+        price: Number(form.price),
+        status: (form.status || "active").toString().toLowerCase(),
+        hs_code: (form.hs_code || "").trim(),
+      };
+      const stock = (form.stock_units || "").toString().trim();
+      if (stock !== "") payload.stock_units = Number(stock);
+
+      const created = await fetchJson("/api/v1/admin/products/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      setProducts(prev => [created, ...prev]);
+      setFormOpen(false);
+      await refreshStats();
+    } catch (e: any) {
+      setFormError(e?.message || "Failed to add product.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const exportCsv = async () => {
+    try {
+      const access = getAccess();
+      const params = new URLSearchParams();
+      if (search.trim()) params.set("q", search.trim());
+      if (catFilter !== "all") params.set("category", catFilter);
+      if (statusFilter !== "all") params.set("admin_status", statusFilter);
+      const res = await fetch(`${apiBase()}/api/v1/admin/products/export/?${params.toString()}`, {
+        headers: access ? { Authorization: `Bearer ${access}` } : {},
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "admin_products.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e?.message || "Export failed.");
+    }
+  };
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
@@ -722,16 +931,24 @@ export function AdminProducts() {
           <p className="text-muted-foreground text-[0.875rem]">Everything listed on TradeFlow. Manage catalog and compliance.</p>
         </div>
         <div className="flex gap-2">
-          <BounceButton variant="ghost" size="sm" icon={<Download size={14} />}>Export</BounceButton>
-          <BounceButton variant="primary" size="md" icon={<Package size={16} />}>Add Product</BounceButton>
+          <BounceButton variant="ghost" size="sm" icon={<Download size={14} />} onClick={exportCsv}>Export</BounceButton>
+          <BounceButton variant="primary" size="md" icon={<Package size={16} />} onClick={openCreate}>Add Product</BounceButton>
         </div>
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Total Products" value="1,284" icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
-        <StatCard label="Active Listings" value="1,148" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
-        <StatCard label="Low Stock" value="34" icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-        <StatCard label="Pending Review" value="18" icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "all" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter("all")}>
+          <StatCard label="Total Products" value={formatNumber(stats?.total_products)} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
+        </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "active" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "active" ? "all" : "active"))}>
+          <StatCard label="Active Listings" value={formatNumber(stats?.active_listings)} icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "low_stock" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "low_stock" ? "all" : "low_stock"))}>
+          <StatCard label="Low Stock" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "review" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "review" ? "all" : "review"))}>
+          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+        </button>
       </motion.div>
 
       <motion.div variants={stagger.item}>
@@ -745,16 +962,45 @@ export function AdminProducts() {
               />
             </div>
             <div className="flex gap-2 flex-wrap">
-              {categories.map(cat => (
-                <button key={cat} onClick={() => setCatFilter(cat)}
-                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === cat ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
-                >{cat === "all" ? "All" : cat}</button>
+              <button
+                key="all"
+                onClick={() => setCatFilter("all")}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
+              >
+                All
+              </button>
+              {categories.map((cat: any) => (
+                <button
+                  key={cat.slug || cat.id}
+                  onClick={() => setCatFilter(cat.slug || String(cat.id))}
+                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                    catFilter === (cat.slug || String(cat.id)) ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {cat.name}
+                </button>
               ))}
             </div>
           </div>
 
+          {error && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+              {error}
+            </div>
+          )}
+
           <div className="space-y-2">
-            {filtered.map((p, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading products…
+              </div>
+            )}
+            {!loading && products.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No products found.
+              </div>
+            )}
+            {products.map((p, i) => (
               <motion.div key={p.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
               >
@@ -764,24 +1010,145 @@ export function AdminProducts() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[0.875rem] text-foreground truncate">{p.name}</span>
-                    <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hsCode}</span>
+                    {!!p.hs_code && <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hs_code}</span>}
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller} · {p.category}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_name || "—"}</span>
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
-                  <span className="text-foreground/70">{p.price}</span>
-                  <span className={`${p.stock === 0 ? "text-[#E5484D]/80" : p.stock < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>{p.stock === 0 ? "Out of stock" : `${p.stock} units`}</span>
-                  {p.rating > 0 && <span className="flex items-center gap-1 text-[#FFB224]/80"><Star size={12} fill="#FFB224" />{p.rating}</span>}
+                  <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
+                  <span className={`${Number(p.stock_units) === 0 ? "text-[#E5484D]/80" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
+                    {Number(p.stock_units) === 0 ? "Out of stock" : `${formatNumber(p.stock_units)} units`}
+                  </span>
+                  {Number(p.vehsl_rating) > 0 && (
+                    <span className="flex items-center gap-1 text-[#FFB224]/80">
+                      <Star size={12} fill="#FFB224" />
+                      {Number(p.vehsl_rating).toFixed(1)}
+                    </span>
+                  )}
                 </div>
-                <StatusPill
-                  status={p.status === "active" ? "success" : p.status === "low-stock" ? "warning" : p.status === "out-of-stock" ? "error" : "pending"}
-                  label={p.status === "low-stock" ? "Low Stock" : p.status === "out-of-stock" ? "Out" : p.status === "review" ? "Review" : "Active"}
-                />
+                {(() => {
+                  const pill = productStatusToPill(p.admin_status);
+                  return <StatusPill status={pill.status as any} label={pill.label} />;
+                })()}
               </motion.div>
             ))}
           </div>
         </SectionCard>
       </motion.div>
+
+      <AnimatePresence>
+        {formOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setFormOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[560px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">Add Product</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">Create a product and set inventory quantity.</p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setFormOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {formError && (
+                <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+                  {formError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  value={form.name}
+                  onChange={e => setForm((p: any) => ({ ...p, name: e.target.value }))}
+                  placeholder="Product name"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.seller_email}
+                  onChange={e => setForm((p: any) => ({ ...p, seller_email: e.target.value }))}
+                  placeholder="Seller email"
+                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <select
+                  value={form.category_id}
+                  onChange={e => setForm((p: any) => ({ ...p, category_id: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  {categories.map((c: any) => (
+                    <option key={c.id} value={String(c.id)}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={form.hs_code}
+                  onChange={e => setForm((p: any) => ({ ...p, hs_code: e.target.value }))}
+                  placeholder="HS code (optional)"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.price}
+                  onChange={e => setForm((p: any) => ({ ...p, price: e.target.value }))}
+                  placeholder="Price"
+                  inputMode="decimal"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.currency}
+                  onChange={e => setForm((p: any) => ({ ...p, currency: e.target.value }))}
+                  placeholder="Currency (USD)"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={form.stock_units}
+                  onChange={e => setForm((p: any) => ({ ...p, stock_units: e.target.value }))}
+                  placeholder="Stock units"
+                  inputMode="numeric"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <select
+                  value={form.status}
+                  onChange={e => setForm((p: any) => ({ ...p, status: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="active">Active</option>
+                  <option value="approved">Approved</option>
+                  <option value="pending">Pending</option>
+                  <option value="draft">Draft</option>
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setFormOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={saving ? undefined : saveProduct}
+                  className={saving ? "opacity-70 pointer-events-none" : ""}
+                  icon={saving ? <Clock size={14} /> : <Package size={14} />}
+                >
+                  {saving ? "Saving…" : "Create"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -790,29 +1157,122 @@ export function AdminProducts() {
 //  ADMIN → LOGISTICS
 // ════════════════════════════════════════════════════════════
 
-const vehiclesData = [
-  { id: "VH-001", driver: "Mike Torres", type: "Van", plate: "IL-4829-TX", status: "in-transit" as const, location: "I-90 near Elgin", fuel: 72, currentTask: "Delivering to Meridian Corp" },
-  { id: "VH-002", driver: "Sam Wilson", type: "Truck", plate: "IL-7134-KV", status: "loading" as const, location: "Warehouse A", fuel: 85, currentTask: "Loading ORD-4835" },
-  { id: "VH-003", driver: "Nina Patel", type: "Van", plate: "IL-2956-RQ", status: "idle" as const, location: "Depot", fuel: 94, currentTask: "Waiting for assignment" },
-  { id: "VH-004", driver: "Tony Ruiz", type: "Refrigerated", plate: "IL-6281-WP", status: "in-transit" as const, location: "Route 59, Naperville", fuel: 58, currentTask: "Cold chain delivery — FreshPack" },
-  { id: "VH-005", driver: "Aisha Khan", type: "Van", plate: "IL-3847-LM", status: "maintenance" as const, location: "Service Center", fuel: 30, currentTask: "Scheduled oil change" },
-];
-
-const shipmentData = [
-  { month: "Mon", incoming: 28, outgoing: 35 },
-  { month: "Tue", incoming: 32, outgoing: 29 },
-  { month: "Wed", incoming: 45, outgoing: 42 },
-  { month: "Thu", incoming: 38, outgoing: 47 },
-  { month: "Fri", incoming: 52, outgoing: 51 },
-  { month: "Sat", incoming: 24, outgoing: 18 },
-  { month: "Sun", incoming: 12, outgoing: 8 },
-];
-
 const vehicleStatusColor: Record<string, string> = {
   "in-transit": "#3B82F6", loading: "#FFB224", idle: "#30A46C", maintenance: "#E5484D",
 };
 
 export function AdminLogistics() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const [stats, setStats] = useState<any>(null);
+  const [flow, setFlow] = useState<any[]>([]);
+  const [fleet, setFleet] = useState<any[]>([]);
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+
+  const fmtVehicles = (a: any, t: any) => {
+    const aa = Number(a);
+    const tt = Number(t);
+    if (!Number.isFinite(aa) || !Number.isFinite(tt)) return "—";
+    return `${aa}/${tt}`;
+  };
+
+  const fmtHours = (h: any) => {
+    const n = Number(h);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    return `${n.toFixed(1)}h`;
+  };
+
+  const fmtPct = (p: any) => {
+    const n = Number(p);
+    if (!Number.isFinite(n)) return "—";
+    return `${n.toFixed(1)}%`;
+  };
+
+  const fmtDeltaMin = (m: any) => {
+    const n = Number(m);
+    if (!Number.isFinite(n) || n === 0) return "";
+    const sign = n < 0 ? "−" : "+";
+    return `${sign}${Math.abs(Math.round(n))} min vs last week`;
+  };
+
+  const fmtDeltaPct = (p: any) => {
+    const n = Number(p);
+    if (!Number.isFinite(n) || n === 0) return undefined;
+    const sign = n < 0 ? "" : "+";
+    return `${sign}${n.toFixed(1)}%`;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    setLoading(true);
+    (async () => {
+      try {
+        const [s, f, fl] = await Promise.all([
+          fetchJson("/api/v1/admin/logistics/stats"),
+          fetchJson("/api/v1/admin/logistics/flow?days=7"),
+          fetchJson("/api/v1/admin/logistics/fleet?limit=8"),
+        ]);
+        if (cancelled) return;
+        setStats(s);
+        setFlow(Array.isArray(f) ? f : []);
+        setFleet(Array.isArray(fl) ? fl : []);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load logistics.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item}>
@@ -820,11 +1280,48 @@ export function AdminLogistics() {
         <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
       </motion.div>
 
+      {error && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+          {error}
+        </motion.div>
+      )}
+
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Active Vehicles" value="4/5" icon={<Truck size={20} className="text-[#3B82F6]" />} iconBg="bg-[#3B82F6]/8" index={0} accentColor="#3B82F6" />
-        <StatCard label="In Transit" value="2" icon={<MapPin size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={1} accentColor="#0171E3" />
-        <StatCard label="Avg Delivery" value="2.4h" icon={<Clock size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={2} accentColor="#30A46C" subtitle="−18 min vs last week" />
-        <StatCard label="On-Time Rate" value="96.2%" icon={<CheckCircle2 size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={3} accentColor="#FFB224" change="+1.4%" changeType="positive" />
+        <StatCard
+          label="Active Vehicles"
+          value={fmtVehicles(stats?.active_vehicles, stats?.total_vehicles)}
+          icon={<Truck size={20} className="text-[#3B82F6]" />}
+          iconBg="bg-[#3B82F6]/8"
+          index={0}
+          accentColor="#3B82F6"
+        />
+        <StatCard
+          label="In Transit"
+          value={typeof stats?.in_transit === "number" ? stats.in_transit : "—"}
+          icon={<MapPin size={20} className="text-[#0171E3]" />}
+          iconBg="bg-[#0171E3]/8"
+          index={1}
+          accentColor="#0171E3"
+        />
+        <StatCard
+          label="Avg Delivery"
+          value={fmtHours(stats?.avg_delivery_hours)}
+          icon={<Clock size={20} className="text-[#30A46C]" />}
+          iconBg="bg-[#30A46C]/8"
+          index={2}
+          accentColor="#30A46C"
+          subtitle={fmtDeltaMin(stats?.avg_delivery_delta_minutes)}
+        />
+        <StatCard
+          label="On-Time Rate"
+          value={fmtPct(stats?.on_time_rate)}
+          icon={<CheckCircle2 size={20} className="text-[#FFB224]" />}
+          iconBg="bg-[#FFB224]/8"
+          index={3}
+          accentColor="#FFB224"
+          change={fmtDeltaPct(stats?.on_time_delta)}
+          changeType={(Number(stats?.on_time_delta) || 0) >= 0 ? "positive" : "negative"}
+        />
       </motion.div>
 
       {/* Shipment Flow Chart */}
@@ -837,7 +1334,7 @@ export function AdminLogistics() {
             </div>
           </div>
           <CustomAreaChart
-            data={shipmentData}
+            data={flow}
             xKey="month"
             series={[
               { dataKey: "incoming", color: "#3B82F6", label: "Incoming" },
@@ -853,7 +1350,17 @@ export function AdminLogistics() {
         <SectionCard>
           <h2 className="text-foreground text-[0.9375rem] mb-6">Fleet Status</h2>
           <div className="space-y-2">
-            {vehiclesData.map((v, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading fleet…
+              </div>
+            )}
+            {!loading && fleet.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No fleet activity yet.
+              </div>
+            )}
+            {fleet.map((v, i) => (
               <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
               >
@@ -893,20 +1400,114 @@ export function AdminLogistics() {
 //  ADMIN → QUALITY
 // ════════════════════════════════════════════════════════════
 
-const qualityInspections = [
-  { id: "QI-482", product: "Herbal Tea Batch #284", seller: "GreenLeaf Organics", inspector: "Dr. Amara Johnson", status: "in-progress" as const, score: 82, date: "Mar 18, 2026" },
-  { id: "QI-481", product: "LED Panel Light 60W", seller: "BrightStar Electronics", inspector: "Marcus Lee", status: "passed" as const, score: 96, date: "Mar 17, 2026" },
-  { id: "QI-480", product: "Protein Energy Bar", seller: "FreshPack Foods", inspector: "Dr. Amara Johnson", status: "passed" as const, score: 91, date: "Mar 16, 2026" },
-  { id: "QI-479", product: "Carbon Fiber Sheet", seller: "Atlas Materials", inspector: "Marcus Lee", status: "failed" as const, score: 54, date: "Mar 15, 2026" },
-  { id: "QI-478", product: "Vitamin D3 Supplements", seller: "FreshPack Foods", inspector: "Dr. Amara Johnson", status: "passed" as const, score: 89, date: "Mar 14, 2026" },
-];
-
-const qualityTrend = [
-  { month: "Oct", score: 86 }, { month: "Nov", score: 88 }, { month: "Dec", score: 87 },
-  { month: "Jan", score: 91 }, { month: "Feb", score: 93 }, { month: "Mar", score: 92 },
-];
-
 export function AdminQuality() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const [stats, setStats] = useState<any>(null);
+  const [trend, setTrend] = useState<any[]>([]);
+  const [dist, setDist] = useState<any>(null);
+  const [recent, setRecent] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  const fmtPct = (p: any) => {
+    const n = Number(p);
+    if (!Number.isFinite(n)) return "—";
+    return `${n.toFixed(1)}%`;
+  };
+
+  const fmtScore = (s: any) => {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return "—";
+    return `${Math.round(n)}`;
+  };
+
+  const fmtDeltaScore = (d: any) => {
+    const n = Number(d);
+    if (!Number.isFinite(n) || n === 0) return undefined;
+    const sign = n < 0 ? "" : "+";
+    return `${sign}${Math.round(n)}`;
+  };
+
+  const formatDate = (iso: any) => {
+    if (!iso) return "—";
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return "—";
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const [s, t, d, r] = await Promise.all([
+          fetchJson("/api/v1/admin/quality/stats"),
+          fetchJson("/api/v1/admin/quality/trend?months=6"),
+          fetchJson("/api/v1/admin/quality/distribution?days=30"),
+          fetchJson("/api/v1/admin/quality/recent?limit=10"),
+        ]);
+        if (cancelled) return;
+        setStats(s);
+        setTrend(Array.isArray(t) ? t : []);
+        setDist(d);
+        setRecent(Array.isArray(r) ? r : []);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load quality data.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item}>
@@ -914,27 +1515,66 @@ export function AdminQuality() {
         <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
       </motion.div>
 
+      {error && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+          {error}
+        </motion.div>
+      )}
+
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Avg Quality Score" value="92" icon={<Star size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={0} accentColor="#FFB224" subtitle="out of 100" change="+3" changeType="positive" />
-        <StatCard label="Pass Rate" value="94.2%" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
-        <StatCard label="Pending" value="7" icon={<Clock size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={2} accentColor="#0171E3" subtitle="Awaiting inspection" />
-        <StatCard label="Failed" value="3" icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" subtitle="This month" />
+        <StatCard
+          label="Avg Quality Score"
+          value={fmtScore(stats?.avg_quality_score)}
+          icon={<Star size={20} className="text-[#FFB224]" />}
+          iconBg="bg-[#FFB224]/8"
+          index={0}
+          accentColor="#FFB224"
+          subtitle="out of 100"
+          change={fmtDeltaScore(stats?.avg_quality_score_delta)}
+          changeType={(Number(stats?.avg_quality_score_delta) || 0) >= 0 ? "positive" : "negative"}
+        />
+        <StatCard
+          label="Pass Rate"
+          value={fmtPct(stats?.pass_rate)}
+          icon={<CheckCircle2 size={20} className="text-[#30A46C]" />}
+          iconBg="bg-[#30A46C]/8"
+          index={1}
+          accentColor="#30A46C"
+        />
+        <StatCard
+          label="Pending"
+          value={typeof stats?.pending === "number" ? stats.pending : "—"}
+          icon={<Clock size={20} className="text-[#0171E3]" />}
+          iconBg="bg-[#0171E3]/8"
+          index={2}
+          accentColor="#0171E3"
+          subtitle="Awaiting inspection"
+        />
+        <StatCard
+          label="Failed"
+          value={typeof stats?.failed === "number" ? stats.failed : "—"}
+          icon={<XCircle size={20} className="text-[#E5484D]" />}
+          iconBg="bg-[#E5484D]/8"
+          index={3}
+          accentColor="#E5484D"
+          subtitle="This month"
+        />
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-5 gap-5">
         <SectionCard className="lg:col-span-3">
           <h2 className="text-foreground text-[0.9375rem] mb-1">Quality Score Trend</h2>
           <p className="text-muted-foreground/50 text-[0.75rem] mb-4">Average inspection score over time</p>
-          <CustomAreaChart data={qualityTrend} xKey="month" series={[{ dataKey: "score", color: "#0171E3" }]} height={180} yDomain={[70, 100]} />
+          <CustomAreaChart data={trend} xKey="month" series={[{ dataKey: "score", color: "#0171E3" }]} height={180} yDomain={[70, 100]} />
         </SectionCard>
         <SectionCard className="lg:col-span-2">
           <h2 className="text-foreground text-[0.9375rem] mb-4">Score Distribution</h2>
           <HorizontalBarList
             data={[
-              { label: "Excellent (90+)", value: 64, color: "#30A46C" },
-              { label: "Good (80-89)", value: 22, color: "#3B82F6" },
-              { label: "Fair (70-79)", value: 8, color: "#FFB224" },
-              { label: "Poor (<70)", value: 6, color: "#E5484D" },
+              { label: "Excellent (90+)", value: Number(dist?.excellent) || 0, color: "#30A46C" },
+              { label: "Good (80-89)", value: Number(dist?.good) || 0, color: "#3B82F6" },
+              { label: "Fair (70-79)", value: Number(dist?.fair) || 0, color: "#FFB224" },
+              { label: "Poor (<70)", value: Number(dist?.poor) || 0, color: "#E5484D" },
             ]}
             maxValue={100}
             valueFormatter={v => `${v}%`}
@@ -946,7 +1586,17 @@ export function AdminQuality() {
         <SectionCard>
           <h2 className="text-foreground text-[0.9375rem] mb-6">Recent Inspections</h2>
           <div className="space-y-2">
-            {qualityInspections.map((qi, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading inspections…
+              </div>
+            )}
+            {!loading && recent.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No inspections yet.
+              </div>
+            )}
+            {recent.map((qi, i) => (
               <motion.div key={qi.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
               >
@@ -954,14 +1604,14 @@ export function AdminQuality() {
                   <span className="text-[0.875rem]" style={{ color: qi.score >= 90 ? "#30A46C" : qi.score >= 70 ? "#D97706" : "#E5484D" }}>{qi.score}</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[0.875rem] text-foreground block truncate">{qi.product}</span>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{qi.seller} · {qi.inspector}</span>
+                  <span className="text-[0.875rem] text-foreground block truncate">{qi.product_name || "—"}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{qi.seller_name || "—"} · {qi.inspector_display || "—"}</span>
                 </div>
-                <span className="text-[0.75rem] text-muted-foreground/40 hidden sm:block">{qi.date}</span>
+                <span className="text-[0.75rem] text-muted-foreground/40 hidden sm:block">{formatDate(qi.inspected_at || qi.created_at)}</span>
                 <StatusPill
                   status={qi.status === "passed" ? "success" : qi.status === "failed" ? "error" : "pending"}
-                  label={qi.status}
-                  pulse={qi.status === "in-progress"}
+                  label={qi.status?.replace?.("_", " ") || qi.status}
+                  pulse={qi.status === "in_progress"}
                 />
               </motion.div>
             ))}
@@ -976,53 +1626,6 @@ export function AdminQuality() {
 //  ADMIN → SETTINGS
 // ════════════════════════════════════════════════════════════
 
-const settingsSections = [
-  {
-    title: "General",
-    icon: <Settings size={20} className="text-[#0171E3]" />,
-    color: "#0171E3",
-    items: [
-      { label: "Platform Name", value: "TradeFlow", type: "text" as const },
-      { label: "Default Currency", value: "USD", type: "select" as const },
-      { label: "Timezone", value: "America/Chicago (CST)", type: "select" as const },
-      { label: "Language", value: "English", type: "select" as const },
-    ],
-  },
-  {
-    title: "Notifications",
-    icon: <Bell size={20} className="text-[#FFB224]" />,
-    color: "#FFB224",
-    items: [
-      { label: "Email Notifications", value: "Enabled", type: "toggle" as const },
-      { label: "Push Notifications", value: "Enabled", type: "toggle" as const },
-      { label: "SMS Alerts", value: "Disabled", type: "toggle" as const },
-      { label: "Daily Digest", value: "Enabled", type: "toggle" as const },
-    ],
-  },
-  {
-    title: "Security",
-    icon: <Lock size={20} className="text-[#E5484D]" />,
-    color: "#E5484D",
-    items: [
-      { label: "Two-Factor Auth", value: "Enabled", type: "toggle" as const },
-      { label: "Session Timeout", value: "30 min", type: "select" as const },
-      { label: "IP Whitelisting", value: "Disabled", type: "toggle" as const },
-      { label: "Password Policy", value: "Strong (12+ chars)", type: "select" as const },
-    ],
-  },
-  {
-    title: "Integrations",
-    icon: <Globe size={20} className="text-[#30A46C]" />,
-    color: "#30A46C",
-    items: [
-      { label: "Stripe Payments", value: "Connected", type: "status" as const },
-      { label: "SendGrid Email", value: "Connected", type: "status" as const },
-      { label: "Twilio SMS", value: "Not Connected", type: "status" as const },
-      { label: "Google Maps", value: "Connected", type: "status" as const },
-    ],
-  },
-];
-
 export function AdminSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1030,6 +1633,7 @@ export function AdminSettings() {
   const [saved, setSaved] = useState(false);
 
   const [me, setMe] = useState<any>(null);
+  const [platformSettings, setPlatformSettings] = useState<any>(null);
   const [form, setForm] = useState<any>({
     first_name: "",
     last_name: "",
@@ -1068,6 +1672,56 @@ export function AdminSettings() {
 
   const isAdmin = useMemo(() => (me?.role || "").toString().toLowerCase() === "admin", [me]);
 
+  const platformDefaults = useMemo(
+    () => ({
+      general: { platform_name: "Vehsl", default_currency: "USD", timezone: "UTC", language: "English" },
+      notifications: { email_notifications: true, push_notifications: true, sms_alerts: false, daily_digest: true },
+      security: { two_factor_auth: true, session_timeout_minutes: 30, ip_whitelisting: false, password_policy: "strong_12_chars" },
+      integrations: { stripe_payments: "not_connected", sendgrid_email: "not_connected", twilio_sms: "not_connected", google_maps: "not_connected" },
+    }),
+    []
+  );
+
+  const settingsForm = useMemo(() => {
+    const s = platformSettings || {};
+    return {
+      general: { ...platformDefaults.general, ...(s.general || {}) },
+      notifications: { ...platformDefaults.notifications, ...(s.notifications || {}) },
+      security: { ...platformDefaults.security, ...(s.security || {}) },
+      integrations: { ...platformDefaults.integrations, ...(s.integrations || {}) },
+    };
+  }, [platformDefaults, platformSettings]);
+
+  const setSettingsForm = (updater: (prev: any) => any) => {
+    setPlatformSettings((prev: any) => {
+      const merged = {
+        general: { ...platformDefaults.general, ...((prev && prev.general) || {}) },
+        notifications: { ...platformDefaults.notifications, ...((prev && prev.notifications) || {}) },
+        security: { ...platformDefaults.security, ...((prev && prev.security) || {}) },
+        integrations: { ...platformDefaults.integrations, ...((prev && prev.integrations) || {}) },
+        ...(prev || {}),
+      };
+      const next = updater(merged);
+      return next;
+    });
+  };
+
+  const toForm = (data: any) => ({
+    first_name: data?.first_name || "",
+    last_name: data?.last_name || "",
+    email: data?.email || "",
+    phone: data?.phone || "",
+    department: data?.admin_profile?.department || "",
+    country: data?.profile?.country || "",
+    province: data?.profile?.province || "",
+    city: data?.profile?.city || "",
+    street: data?.profile?.street || "",
+    address: data?.profile?.address || "",
+    nationality: data?.profile?.nationality || "",
+    gender: data?.profile?.gender || "",
+    date_of_birth: data?.profile?.date_of_birth || "",
+  });
+
   useEffect(() => {
     if (!access) {
       setLoading(false);
@@ -1086,23 +1740,33 @@ export function AdminSettings() {
           setError("Failed to load profile.");
           return;
         }
-        const data = await res.json();
+        let data = await res.json();
+
+        const role = (data?.role || "").toString().toLowerCase();
+        if (role === "admin") {
+          try {
+            const profRes = await fetch(`${apiBase}/api/v1/profiles/admin/me`, {
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (profRes.ok) {
+              const prof = await profRes.json();
+              data = { ...data, admin_profile: { ...(data?.admin_profile || {}), ...(prof || {}) } };
+            }
+          } catch {}
+
+          try {
+            const sRes = await fetch(`${apiBase}/api/v1/admin/settings`, {
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (sRes.ok) {
+              const s = await sRes.json();
+              setPlatformSettings(s);
+            }
+          } catch {}
+        }
+
         setMe(data);
-        setForm({
-          first_name: data?.first_name || "",
-          last_name: data?.last_name || "",
-          email: data?.email || "",
-          phone: data?.phone || "",
-          department: data?.admin_profile?.department || "",
-          country: data?.profile?.country || "",
-          province: data?.profile?.province || "",
-          city: data?.profile?.city || "",
-          street: data?.profile?.street || "",
-          address: data?.profile?.address || "",
-          nationality: data?.profile?.nationality || "",
-          gender: data?.profile?.gender || "",
-          date_of_birth: data?.profile?.date_of_birth || "",
-        });
+        setForm(toForm(data));
         try {
           window.localStorage.setItem("vehsl.user", JSON.stringify(data));
         } catch {}
@@ -1157,16 +1821,52 @@ export function AdminSettings() {
           },
           body: JSON.stringify({ department: form.department }),
         });
+
+        if (platformSettings) {
+          const sRes = await fetch(`${apiBase}/api/v1/admin/settings`, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${access}`,
+            },
+            body: JSON.stringify({
+              general: settingsForm.general,
+              notifications: settingsForm.notifications,
+              security: settingsForm.security,
+            }),
+          });
+          if (!sRes.ok) {
+            const err = await sRes.json().catch(() => null);
+            const msg = (err && (err.detail || err.non_field_errors)) || "Failed to save settings.";
+            setError(typeof msg === "string" ? msg : "Failed to save settings.");
+            return;
+          }
+          const updated = await sRes.json().catch(() => null);
+          if (updated) setPlatformSettings(updated);
+        }
       }
 
+      let refreshedData: any = null;
       const refreshed = await fetch(`${apiBase}/api/v1/auth/me`, {
         headers: { Authorization: `Bearer ${access}` },
       });
       if (refreshed.ok) {
-        const data = await refreshed.json();
-        setMe(data);
+        refreshedData = await refreshed.json();
+        if ((refreshedData?.role || "").toString().toLowerCase() === "admin") {
+          try {
+            const profRes = await fetch(`${apiBase}/api/v1/profiles/admin/me`, {
+              headers: { Authorization: `Bearer ${access}` },
+            });
+            if (profRes.ok) {
+              const prof = await profRes.json();
+              refreshedData = { ...refreshedData, admin_profile: { ...(refreshedData?.admin_profile || {}), ...(prof || {}) } };
+            }
+          } catch {}
+        }
+        setMe(refreshedData);
+        setForm(toForm(refreshedData));
         try {
-          window.localStorage.setItem("vehsl.user", JSON.stringify(data));
+          window.localStorage.setItem("vehsl.user", JSON.stringify(refreshedData));
         } catch {}
       }
 
@@ -1178,11 +1878,36 @@ export function AdminSettings() {
     }
   };
 
+  const Toggle = ({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) => (
+    <button
+      type="button"
+      onClick={() => onChange(!value)}
+      className={`relative w-11 h-6 rounded-full transition-colors ${value ? "bg-primary/70" : "bg-muted/60"} border border-border/40`}
+      aria-pressed={value}
+    >
+      <span
+        className={`absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-background shadow transition-transform ${value ? "translate-x-5" : "translate-x-1"}`}
+      />
+    </button>
+  );
+
+  const statusPill = (status: string) => {
+    const s = (status || "").toLowerCase();
+    const ok = s === "connected";
+    return (
+      <span
+        className={`px-2.5 py-1 rounded-full text-[0.75rem] border ${ok ? "bg-[#30A46C]/10 text-[#30A46C] border-[#30A46C]/20" : "bg-[#E5484D]/8 text-[#E5484D] border-[#E5484D]/20"}`}
+      >
+        {ok ? "Connected" : "Not Connected"}
+      </span>
+    );
+  };
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[900px]">
       <motion.div variants={stagger.item}>
         <h1 className="text-foreground tracking-tight mb-1.5">Settings</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Manage your profile and account details.</p>
+        <p className="text-muted-foreground text-[0.875rem]">Manage your profile and system configuration.</p>
       </motion.div>
 
       <motion.div variants={stagger.item}>
@@ -1313,6 +2038,207 @@ export function AdminSettings() {
           )}
         </SectionCard>
       </motion.div>
+
+      {isAdmin && (
+        <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#0171E3]/10">
+                <Settings size={20} className="text-[#0171E3]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">General</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Platform-wide defaults</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Platform name</label>
+                <input
+                  value={settingsForm.general.platform_name}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), platform_name: e.target.value } }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Default currency</label>
+                  <select
+                    value={settingsForm.general.default_currency}
+                    onChange={(e) =>
+                      setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), default_currency: e.target.value } }))
+                    }
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    {["USD", "EUR", "GBP", "CAD", "AUD"].map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Language</label>
+                  <select
+                    value={settingsForm.general.language}
+                    onChange={(e) =>
+                      setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), language: e.target.value } }))
+                    }
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    {["English", "Spanish", "French"].map((l) => (
+                      <option key={l} value={l}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Timezone</label>
+                <select
+                  value={settingsForm.general.timezone}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({ ...p, general: { ...(p.general || {}), timezone: e.target.value } }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  {["UTC", "America/Chicago", "America/New_York", "Europe/London"].map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#FFB224]/10">
+                <Bell size={20} className="text-[#D97706]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Notifications</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Delivery preferences</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {[
+                { key: "email_notifications", label: "Email notifications" },
+                { key: "push_notifications", label: "Push notifications" },
+                { key: "sms_alerts", label: "SMS alerts" },
+                { key: "daily_digest", label: "Daily digest" },
+              ].map((it) => (
+                <div key={it.key} className="flex items-center justify-between gap-4">
+                  <span className="text-[0.8125rem] text-foreground">{it.label}</span>
+                  <Toggle
+                    value={!!settingsForm.notifications[it.key]}
+                    onChange={(v) => setSettingsForm((p: any) => ({ ...p, notifications: { ...(p.notifications || {}), [it.key]: v } }))}
+                  />
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#E5484D]/10">
+                <Lock size={20} className="text-[#E5484D]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Security</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Platform security posture</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-[0.8125rem] text-foreground">Two-factor auth</span>
+                <Toggle
+                  value={!!settingsForm.security.two_factor_auth}
+                  onChange={(v) => setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), two_factor_auth: v } }))}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-[0.8125rem] text-foreground">IP whitelisting</span>
+                <Toggle
+                  value={!!settingsForm.security.ip_whitelisting}
+                  onChange={(v) => setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), ip_whitelisting: v } }))}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Session timeout</label>
+                <select
+                  value={String(settingsForm.security.session_timeout_minutes)}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({
+                      ...p,
+                      security: { ...(p.security || {}), session_timeout_minutes: Number(e.target.value) },
+                    }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  {[15, 30, 60, 120, 240].map((m) => (
+                    <option key={m} value={String(m)}>
+                      {m} min
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Password policy</label>
+                <select
+                  value={settingsForm.security.password_policy}
+                  onChange={(e) =>
+                    setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), password_policy: e.target.value } }))
+                  }
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="strong_12_chars">Strong (12+ chars)</option>
+                  <option value="strong_10_chars">Strong (10+ chars)</option>
+                  <option value="standard_8_chars">Standard (8+ chars)</option>
+                </select>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#30A46C]/10">
+                <Globe size={20} className="text-[#30A46C]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Integrations</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Detected provider configuration</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {[
+                { key: "stripe_payments", label: "Stripe payments" },
+                { key: "sendgrid_email", label: "SendGrid email" },
+                { key: "twilio_sms", label: "Twilio SMS" },
+                { key: "google_maps", label: "Google Maps" },
+              ].map((it) => (
+                <div key={it.key} className="flex items-center justify-between gap-4">
+                  <span className="text-[0.8125rem] text-foreground">{it.label}</span>
+                  {statusPill(settingsForm.integrations[it.key])}
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        </motion.div>
+      )}
 
       <motion.div variants={stagger.item} className="flex justify-end">
         <BounceButton

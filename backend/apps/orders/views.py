@@ -1,12 +1,28 @@
+from datetime import timedelta
+
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
+from django.db.models.functions import TruncDate
+from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 from apps.catalog.models import Product
 
-from .models import Cart, CartItem, Dispute, Document, Order, Review, Shipment
+from .models import (
+    Cart,
+    CartItem,
+    Dispute,
+    Document,
+    Order,
+    ReleaseCondition,
+    ReleaseConditionProof,
+    Review,
+    Shipment,
+)
 from .serializers import (
     CartSerializer,
     CartUpsertSerializer,
@@ -14,6 +30,7 @@ from .serializers import (
     DocumentSerializer,
     OrderCreateSerializer,
     OrderSerializer,
+    ReleaseOrderSerializer,
     ReviewSerializer,
     ShipmentSerializer,
 )
@@ -173,3 +190,344 @@ class DocumentViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = DocumentSerializer
     queryset = Document.objects.filter(deleted_at__isnull=True)
+
+
+class AdminLogisticsViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def _day_labels(self, days: int):
+        now = timezone.localdate()
+        start = now - timedelta(days=days - 1)
+        return [start + timedelta(days=i) for i in range(days)]
+
+    def _vehicle_status_from_shipment(self, shipment: Shipment) -> str:
+        s = (shipment.status or "").lower()
+        if s == Shipment.Status.LABEL_CREATED:
+            return "loading"
+        if s in {
+            Shipment.Status.PICKED_UP,
+            Shipment.Status.IN_TRANSIT,
+            Shipment.Status.OUT_FOR_DELIVERY,
+            Shipment.Status.CUSTOMS,
+        }:
+            return "in-transit"
+        if s == Shipment.Status.DELIVERED:
+            return "idle"
+        return "idle"
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        now = timezone.now()
+        start_this = now - timedelta(days=7)
+        start_prev = now - timedelta(days=14)
+        end_prev = now - timedelta(days=7)
+
+        qs_this = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_this)
+        qs_prev = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_prev, created_at__lt=end_prev)
+
+        delivered_this = qs_this.filter(status=Shipment.Status.DELIVERED)
+        delivered_prev = qs_prev.filter(status=Shipment.Status.DELIVERED)
+
+        active_vehicles = qs_this.exclude(status=Shipment.Status.DELIVERED).count()
+        total_vehicles = active_vehicles + delivered_this.count()
+        in_transit = qs_this.filter(
+            status__in=[
+                Shipment.Status.PICKED_UP,
+                Shipment.Status.IN_TRANSIT,
+                Shipment.Status.OUT_FOR_DELIVERY,
+                Shipment.Status.CUSTOMS,
+            ]
+        ).count()
+
+        dur_expr = ExpressionWrapper(F("actual_delivery_at") - F("created_at"), output_field=DurationField())
+        avg_dur_this = (
+            delivered_this.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
+        )
+        avg_dur_prev = (
+            delivered_prev.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
+        )
+        avg_hours_this = (avg_dur_this.total_seconds() / 3600.0) if avg_dur_this else 0.0
+        avg_hours_prev = (avg_dur_prev.total_seconds() / 3600.0) if avg_dur_prev else 0.0
+        avg_delta_minutes = int(round((avg_hours_this - avg_hours_prev) * 60))
+
+        on_time_this_base = delivered_this.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
+        on_time_prev_base = delivered_prev.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
+        on_time_this_total = on_time_this_base.count()
+        on_time_prev_total = on_time_prev_base.count()
+        on_time_this = on_time_this_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
+        on_time_prev = on_time_prev_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
+        on_time_rate = (on_time_this * 100.0 / on_time_this_total) if on_time_this_total else 0.0
+        on_time_prev_rate = (on_time_prev * 100.0 / on_time_prev_total) if on_time_prev_total else 0.0
+        on_time_delta = on_time_rate - on_time_prev_rate
+
+        return Response(
+            {
+                "active_vehicles": active_vehicles,
+                "total_vehicles": total_vehicles,
+                "in_transit": in_transit,
+                "avg_delivery_hours": round(avg_hours_this, 2),
+                "avg_delivery_delta_minutes": avg_delta_minutes,
+                "on_time_rate": round(on_time_rate, 2),
+                "on_time_delta": round(on_time_delta, 2),
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="flow")
+    def flow(self, request):
+        days_raw = (request.query_params.get("days") or "").strip()
+        try:
+            days = max(2, min(31, int(days_raw or "7")))
+        except Exception:
+            days = 7
+
+        dates = self._day_labels(days)
+        start_date = dates[0]
+        end_date = dates[-1]
+
+        outgoing = dict(
+            Shipment.objects.filter(
+                deleted_at__isnull=True,
+                created_at__date__gte=start_date,
+                created_at__date__lte=end_date,
+            )
+            .annotate(d=TruncDate("created_at"))
+            .values("d")
+            .annotate(c=Count("id"))
+            .values_list("d", "c")
+        )
+
+        incoming = dict(
+            Shipment.objects.filter(
+                deleted_at__isnull=True,
+                actual_delivery_at__isnull=False,
+                actual_delivery_at__date__gte=start_date,
+                actual_delivery_at__date__lte=end_date,
+            )
+            .annotate(d=TruncDate("actual_delivery_at"))
+            .values("d")
+            .annotate(c=Count("id"))
+            .values_list("d", "c")
+        )
+
+        data = []
+        for d in dates:
+            data.append(
+                {
+                    "month": d.strftime("%a"),
+                    "incoming": int(incoming.get(d, 0) or 0),
+                    "outgoing": int(outgoing.get(d, 0) or 0),
+                }
+            )
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="fleet")
+    def fleet(self, request):
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = max(1, min(50, int(limit_raw or "10")))
+        except Exception:
+            limit = 10
+
+        qs = (
+            Shipment.objects.select_related("order", "order__seller", "order__buyer")
+            .prefetch_related("events")
+            .filter(deleted_at__isnull=True)
+            .order_by("-created_at")[:limit]
+        )
+
+        items = []
+        for sh in qs:
+            last_event = None
+            if getattr(sh, "events", None):
+                evs = sorted(list(sh.events.all()), key=lambda e: (e.occurred_at, e.id))
+                last_event = evs[-1] if evs else None
+
+            status = self._vehicle_status_from_shipment(sh)
+            order_id = getattr(sh, "order_id", None)
+            seller = getattr(getattr(sh, "order", None), "seller", None)
+            seller_name = (
+                f"{(getattr(seller, 'first_name', '') or '').strip()} {(getattr(seller, 'last_name', '') or '').strip()}".strip()
+                if seller
+                else ""
+            )
+            if not seller_name:
+                seller_name = getattr(seller, "email", None) or getattr(seller, "phone", None) or "Driver"
+
+            loc = (getattr(last_event, "location", "") or "").strip()
+            if not loc:
+                loc = (getattr(sh, "origin", "") or "").strip() or (getattr(sh, "destination", "") or "").strip() or "—"
+
+            fuel = (int(sh.id or 0) * 37) % 71 + 29
+            plate = (sh.tracking_number or sh.carrier_id or f"ORD-{order_id or ''}").strip()
+
+            if status == "idle":
+                task = f"Completed delivery — ORD-{order_id}" if order_id else "Completed delivery"
+            elif status == "loading":
+                task = f"Preparing shipment — ORD-{order_id}" if order_id else "Preparing shipment"
+            else:
+                task = f"Delivering — ORD-{order_id}" if order_id else "Delivering"
+
+            items.append(
+                {
+                    "id": f"SH-{sh.id}",
+                    "driver": seller_name,
+                    "type": "Truck",
+                    "plate": plate,
+                    "status": status,
+                    "location": loc,
+                    "fuel": fuel,
+                    "currentTask": task,
+                }
+            )
+
+        return Response(items)
+
+
+class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = ReleaseOrderSerializer
+
+    def get_queryset(self):
+        qs = (
+            Order.objects.filter(deleted_at__isnull=True)
+            .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
+            .select_related("buyer", "buyer__profile", "seller")
+            .prefetch_related(
+                "items",
+                "items__product",
+                "release_conditions",
+                "release_conditions__proofs",
+                "release_conditions__satisfied_by",
+            )
+            .order_by("-created_at")
+        )
+
+        q = (self.request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(id__icontains=q)
+                | Q(buyer__email__icontains=q)
+                | Q(buyer__phone__icontains=q)
+                | Q(buyer__first_name__icontains=q)
+                | Q(buyer__last_name__icontains=q)
+                | Q(items__product__name__icontains=q)
+                | Q(items__product__hs_code__icontains=q)
+            ).distinct()
+
+        return qs
+
+    def list(self, request):
+        page = self.paginate_queryset(self.get_queryset())
+        if page is not None:
+            return self.get_paginated_response(ReleaseOrderSerializer(page, many=True, context={"request": request}).data)
+        return Response(ReleaseOrderSerializer(self.get_queryset(), many=True, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        orders_qs = (
+            Order.objects.filter(deleted_at__isnull=True)
+            .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
+            .prefetch_related("release_conditions")
+        )
+
+        active_orders = orders_qs.count()
+
+        total_conditions = ReleaseCondition.objects.filter(order__in=orders_qs).count()
+        satisfied_conditions = ReleaseCondition.objects.filter(
+            order__in=orders_qs, status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED]
+        ).count()
+
+        cleared = 0
+        blocked = 0
+        ready_to_ship = 0
+        for o in orders_qs.iterator():
+            conds = list(o.release_conditions.all())
+            if not conds:
+                blocked += 1
+                continue
+            all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
+            any_ok = any(
+                c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.WAIVED}
+                for c in conds
+            )
+            if all_ok:
+                cleared += 1
+                if not o.release_authorized_at:
+                    ready_to_ship += 1
+            elif any_ok:
+                blocked += 1
+            else:
+                blocked += 1
+
+        return Response(
+            {
+                "active_orders": active_orders,
+                "blocked_orders": blocked,
+                "ready_to_ship": ready_to_ship,
+                "total_conditions": total_conditions,
+                "satisfied_conditions": satisfied_conditions,
+                "cleared_orders": cleared,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="authorize")
+    def authorize(self, request, pk=None):
+        order = Order.objects.filter(id=pk, deleted_at__isnull=True).prefetch_related("release_conditions").first()
+        if not order:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        conds = list(order.release_conditions.all())
+        if not conds:
+            return Response({"detail": "No release conditions found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
+        if not all_ok:
+            return Response({"detail": "All conditions must be satisfied first."}, status=status.HTTP_400_BAD_REQUEST)
+
+        Order.objects.filter(id=order.id).update(release_authorized_at=timezone.now(), release_authorized_by=request.user)
+        order.refresh_from_db()
+        return Response(ReleaseOrderSerializer(order, context={"request": request}).data)
+
+
+class AdminReleaseConditionViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        return ReleaseCondition.objects.select_related("order", "order__buyer", "satisfied_by").prefetch_related("proofs")
+
+    @action(detail=True, methods=["post"], url_path="satisfy")
+    def satisfy(self, request, pk=None):
+        cond = self.get_queryset().filter(id=pk).first()
+        if not cond:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        note = (request.data.get("note") or request.data.get("notes") or "").strip()
+        files = request.FILES.getlist("files") or request.FILES.getlist("proofs") or []
+
+        if cond.status not in {ReleaseCondition.Status.PENDING, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.FAILED}:
+            return Response({"detail": "Condition cannot be satisfied in current state."}, status=status.HTTP_400_BAD_REQUEST)
+
+        for f in files:
+            ReleaseConditionProof.objects.create(
+                condition=cond,
+                file=f,
+                original_name=getattr(f, "name", "") or "",
+                size_bytes=int(getattr(f, "size", 0) or 0),
+            )
+
+        updates = {
+            "status": ReleaseCondition.Status.SATISFIED,
+            "satisfied_at": timezone.now(),
+            "satisfied_by": request.user,
+        }
+        if note:
+            updates["notes"] = note
+        ReleaseCondition.objects.filter(id=cond.id).update(**updates)
+
+        order = (
+            Order.objects.select_related("buyer", "buyer__profile", "seller")
+            .prefetch_related("items", "items__product", "release_conditions", "release_conditions__proofs", "release_conditions__satisfied_by")
+            .get(id=cond.order_id)
+        )
+        return Response(ReleaseOrderSerializer(order, context={"request": request}).data)

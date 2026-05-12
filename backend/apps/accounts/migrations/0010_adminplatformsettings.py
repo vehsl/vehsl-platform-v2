@@ -1,0 +1,32 @@
+from django.db import migrations, models
+import django.db.models.deletion
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("accounts", "0009_adminuinotificationstate"),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="AdminPlatformSettings",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("key", models.CharField(default="global", max_length=32, unique=True)),
+                ("general", models.JSONField(blank=True, default=dict)),
+                ("notifications", models.JSONField(blank=True, default=dict)),
+                ("security", models.JSONField(blank=True, default=dict)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "updated_by",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="admin_platform_settings_updated",
+                        to="accounts.user",
+                    ),
+                ),
+            ],
+        ),
+    ]

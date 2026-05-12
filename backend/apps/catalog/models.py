@@ -49,6 +49,7 @@ class Product(models.Model):
     name = models.CharField(max_length=160)
     title = models.CharField(max_length=200, blank=True)
     sku = models.CharField(max_length=64, blank=True)
+    hs_code = models.CharField(max_length=32, blank=True)
     description = models.TextField(blank=True)
 
     currency = models.CharField(max_length=3, default="USD")

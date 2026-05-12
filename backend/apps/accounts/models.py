@@ -149,11 +149,27 @@ def _kyc_upload_to(instance: "KycDocument", filename: str) -> str:
 
 class KycDocument(models.Model):
     class Kind(models.TextChoices):
+        PASSPORT = "passport", "Passport"
+        DRIVING_LICENSE = "driving_license", "Driving License"
+        ID_CARD = "id_card", "ID Card"
+        BANK_STATEMENT = "bank_statement", "Bank Statement"
+        BUSINESS_LICENSE = "business_license", "Business License"
+        BUSINESS_REGISTRATION = "business_registration", "Business Registration"
+        UTILITY_BILL = "utility_bill", "Utility Bill"
+
+        # Legacy values (kept for backward compatibility)
         ID_DOC_1 = "id_doc_1", "ID Document 1"
         ID_DOC_2 = "id_doc_2", "ID Document 2"
         PROOF_OF_ADDRESS = "proof_of_address", "Proof of Address"
         BUSINESS_DOC_1 = "business_doc_1", "Business Document 1"
         BUSINESS_DOC_2 = "business_doc_2", "Business Document 2"
+
+    class ReviewStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        UNDER_REVIEW = "under_review", "Under Review"
+        VERIFIED = "verified", "Verified"
+        REJECTED = "rejected", "Rejected"
+        EXPIRED = "expired", "Expired"
 
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="kyc_documents")
@@ -164,6 +180,13 @@ class KycDocument(models.Model):
     content_type = models.CharField(max_length=128, blank=True)
     size_bytes = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
+    review_status = models.CharField(max_length=24, choices=ReviewStatus.choices, default=ReviewStatus.PENDING)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="kyc_documents_reviewed"
+    )
+    rejection_reason = models.CharField(max_length=255, blank=True)
+    expires_at = models.DateField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -288,6 +311,42 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"notification:{self.pk}"
+
+
+class AdminUiNotificationState(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="admin_ui_notification_states")
+    key = models.CharField(max_length=64)
+    seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "key"]),
+            models.Index(fields=["user", "seen_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "key"], name="uniq_admin_ui_notification_state_user_key"),
+        ]
+
+    def __str__(self):
+        return f"admin_ui_notif_state:{self.user_id}:{self.key}"
+
+
+class AdminPlatformSettings(models.Model):
+    key = models.CharField(max_length=32, unique=True, default="global")
+    general = models.JSONField(default=dict, blank=True)
+    notifications = models.JSONField(default=dict, blank=True)
+    security = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="admin_platform_settings_updated",
+    )
+
+    def __str__(self):
+        return f"admin_platform_settings:{self.key}"
 
 
 class AuditLog(models.Model):

@@ -8,7 +8,7 @@ import {
   LayoutDashboard, Settings, Users, Truck, Shield, ClipboardCheck,
   Package, Bell, Search, ChevronRight, LogOut, Menu, X,
   Scale, FileText, AlertTriangle, Home, Briefcase, HardHat,
-  Layers, Calendar, Receipt, Camera, Headphones, Fingerprint,
+  Layers, Calendar, Receipt, Camera, Headphones, Fingerprint, Lock,
   TrendingUp, Play, Star, BookOpen, Globe, MessageCircle,
   Microscope, BarChart3, History
 } from "lucide-react";
@@ -30,7 +30,7 @@ const roleNavs: Record<string, { title: string; emoji: string; items: NavItem[] 
       { icon: <Package size={20} />, label: "Products", path: "/admin/products" },
       { icon: <Truck size={20} />, label: "Logistics", path: "/admin/logistics" },
       { icon: <ClipboardCheck size={20} />, label: "Quality", path: "/admin/quality" },
-      { icon: <Fingerprint size={20} />, label: "Verification", path: "/admin/verification", badge: 2 },
+      { icon: <Fingerprint size={20} />, label: "Verification", path: "/admin/verification" },
       { icon: <Settings size={20} />, label: "Settings", path: "/admin/settings" },
     ],
   },
@@ -106,10 +106,16 @@ export function Layout() {
   const location = useLocation();
   const { lastBounceTime, getIntensity } = useBounce();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [notifications] = useState(7);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(true);
+  const [verificationBadge, setVerificationBadge] = useState(0);
+  const [usersBadge, setUsersBadge] = useState(0);
+  const [productsBadge, setProductsBadge] = useState(0);
+  const [qualityBadge, setQualityBadge] = useState(0);
+  const [uiNotifications, setUiNotifications] = useState<
+    { key: string; title: string; body: string; occurred_at?: string; unread: boolean; level?: string; path?: string }[]
+  >([]);
 
   const currentRole = location.pathname.split("/")[1] || "admin";
   const nav = roleNavs[currentRole] || roleNavs.admin;
@@ -136,6 +142,175 @@ export function Layout() {
     }
     return "http://localhost:8000";
   };
+
+  useEffect(() => {
+    if (currentRole !== "admin") {
+      setVerificationBadge(0);
+      setUsersBadge(0);
+      setProductsBadge(0);
+      setQualityBadge(0);
+      return;
+    }
+
+    const access = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    })();
+    if (!access) {
+      setVerificationBadge(0);
+      setUsersBadge(0);
+      setProductsBadge(0);
+      setQualityBadge(0);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [verRes, relRes, usersRes, productsRes, qualityRes] = await Promise.all([
+          fetch(`${apiBase()}/api/v1/admin/verification/users/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
+          fetch(`${apiBase()}/api/v1/admin/verification/release/orders/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
+          fetch(`${apiBase()}/api/v1/admin/users/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
+          fetch(`${apiBase()}/api/v1/admin/products/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
+          fetch(`${apiBase()}/api/v1/admin/quality/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
+        ]);
+
+        const ver = verRes.ok ? await verRes.json() : null;
+        const rel = relRes.ok ? await relRes.json() : null;
+        const users = usersRes.ok ? await usersRes.json() : null;
+        const products = productsRes.ok ? await productsRes.json() : null;
+        const quality = qualityRes.ok ? await qualityRes.json() : null;
+
+        const pendingVer = Number(ver?.pending_review || 0) || 0;
+        const blocked = Number(rel?.blocked_orders || 0) || 0;
+        const pendingUsers = Number(users?.pending_review || 0) || 0;
+        const rejectedUsers = Number(users?.review || 0) || 0;
+        const productsPending = Number(products?.pending_review || 0) || 0;
+        const qualityFailed = Number(quality?.failed || 0) || 0;
+
+        if (!cancelled) {
+          setVerificationBadge(pendingVer + blocked);
+          setUsersBadge(pendingUsers + rejectedUsers);
+          setProductsBadge(productsPending);
+          setQualityBadge(qualityFailed);
+        }
+      } catch {
+        if (!cancelled) setVerificationBadge(0);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRole, location.pathname]);
+
+  const fetchUiNotifications = async () => {
+    const access = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    })();
+    if (!access || currentRole !== "admin") {
+      setUiNotifications([]);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${apiBase()}/api/v1/admin/ui/notifications`, {
+        headers: { Authorization: `Bearer ${access}` },
+      });
+      if (!res.ok) {
+        setUiNotifications([]);
+        return;
+      }
+      const data = await res.json();
+      setUiNotifications(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setUiNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    if (currentRole !== "admin") {
+      setUiNotifications([]);
+      return;
+    }
+    fetchUiNotifications();
+  }, [currentRole]);
+
+  useEffect(() => {
+    if (!notifOpen) return;
+    fetchUiNotifications();
+  }, [notifOpen, currentRole]);
+
+  const unreadCount = useMemo(() => uiNotifications.filter((n) => n.unread).length, [uiNotifications]);
+
+  const markAllNotificationsRead = async () => {
+    const access = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    })();
+    if (!access) return;
+    const keys = uiNotifications.map((n) => n.key).filter(Boolean);
+    if (!keys.length) return;
+
+    try {
+      await fetch(`${apiBase()}/api/v1/admin/ui/notifications/mark-all-read`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${access}`,
+        },
+        body: JSON.stringify({ keys }),
+      });
+    } catch {}
+    await fetchUiNotifications();
+  };
+
+  const timeAgo = (iso?: string) => {
+    if (!iso) return "";
+    const ts = new Date(iso).getTime();
+    if (!Number.isFinite(ts)) return "";
+    const diff = Date.now() - ts;
+    const sec = Math.max(0, Math.floor(diff / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min} min ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const days = Math.floor(hr / 24);
+    return `${days}d ago`;
+  };
+
+  const notifIcon = (n: { key: string; level?: string }) => {
+    const key = (n.key || "").toLowerCase();
+    if (key.includes("verification")) return { icon: <Fingerprint size={15} />, color: "#8B5CF6" };
+    if (key.includes("release")) return { icon: <Lock size={15} />, color: "#E5484D" };
+    if (key.includes("quality")) return { icon: <AlertTriangle size={15} />, color: "#FFB224" };
+    if (key.includes("stock") || key.includes("product")) return { icon: <Package size={15} />, color: "#D97706" };
+    if ((n.level || "").toLowerCase() === "error") return { icon: <AlertTriangle size={15} />, color: "#E5484D" };
+    return { icon: <Bell size={15} />, color: "#0171E3" };
+  };
+
+  const navItems = useMemo(() => {
+    const base = nav.items || [];
+    if (currentRole !== "admin") return base;
+    return base.map((it) => {
+      if (it.path === "/admin/verification") return { ...it, badge: verificationBadge || undefined };
+      if (it.path === "/admin/users") return { ...it, badge: usersBadge || undefined };
+      if (it.path === "/admin/products") return { ...it, badge: productsBadge || undefined };
+      if (it.path === "/admin/quality") return { ...it, badge: qualityBadge || undefined };
+      return it;
+    });
+  }, [nav.items, currentRole, verificationBadge, usersBadge, productsBadge, qualityBadge]);
 
   useEffect(() => {
     const access = (() => {
@@ -255,53 +430,6 @@ export function Layout() {
     return "Good evening";
   }, []);
 
-  // Role-aware notifications
-  const roleNotifications: Record<string, { id: number; icon: React.ReactNode; color: string; title: string; body: string; time: string; unread: boolean; path?: string }[]> = {
-    admin: [
-      { id: 1, icon: <Fingerprint size={15} />, color: "#8B5CF6", title: "Buyer verification pending", body: "Meridian Corp submitted 3 documents for release approval", time: "3 min ago", unread: true, path: "/admin/verification" },
-      { id: 2, icon: <AlertTriangle size={15} />, color: "#E5484D", title: "Compliance flag raised", body: "HS 8518.30 rule conflict detected for India → US route", time: "12 min ago", unread: true, path: "/admin/quality" },
-      { id: 3, icon: <Users size={15} />, color: "#0171E3", title: "New user registration", body: "GreenLeaf Organics joined as a seller", time: "28 min ago", unread: true },
-      { id: 4, icon: <Package size={15} />, color: "#D97706", title: "Inventory alert", body: "LED Panel stock below threshold — 12 units remaining", time: "1h ago", unread: false },
-      { id: 5, icon: <Truck size={15} />, color: "#30A46C", title: "Delivery completed", body: "ORD-4819 delivered to FreshPack HQ successfully", time: "2h ago", unread: false },
-    ],
-    management: [
-      { id: 1, icon: <TrendingUp size={15} />, color: "#0171E3", title: "Seller trend spike", body: "GreenLeaf Organics orders up 340% this week", time: "5 min ago", unread: true, path: "/management/trends" },
-      { id: 2, icon: <Package size={15} />, color: "#E5484D", title: "24 orders need attention", body: "7 orders overdue, 3 pending seller confirmation", time: "10 min ago", unread: true, path: "/management/orders" },
-      { id: 3, icon: <Camera size={15} />, color: "#D97706", title: "Quality issue reported", body: "Batch #284 failed visual inspection — photos attached", time: "22 min ago", unread: true, path: "/management/quality-issues" },
-      { id: 4, icon: <Truck size={15} />, color: "#30A46C", title: "12 deliveries in transit", body: "3 arriving within the hour", time: "35 min ago", unread: false, path: "/management/deliveries" },
-      { id: 5, icon: <Calendar size={15} />, color: "#8B5CF6", title: "Schedule conflict", body: "Driver Ahmed has overlapping pickups at 2:00 PM", time: "1h ago", unread: false, path: "/management/scheduling" },
-    ],
-    workers: [
-      { id: 1, icon: <Truck size={15} />, color: "#30A46C", title: "New delivery assigned", body: "Deliver to Meridian Corp — Container from Mumbai Port", time: "2 min ago", unread: true, path: "/workers" },
-      { id: 2, icon: <AlertTriangle size={15} />, color: "#E5484D", title: "Urgent: Route changed", body: "Pickup from GreenLeaf moved to 78 Market Ave due to road closure", time: "8 min ago", unread: true, path: "/workers/routes" },
-      { id: 3, icon: <ClipboardCheck size={15} />, color: "#0171E3", title: "Inspection reminder", body: "Herbal Tea Batch #284 inspection due by 10:30 AM", time: "15 min ago", unread: true, path: "/workers/inspections" },
-      { id: 4, icon: <Star size={15} />, color: "#FFB224", title: "Great feedback!", body: "Buyer James Rodriguez rated your last delivery 5 stars", time: "1h ago", unread: false },
-      { id: 5, icon: <Package size={15} />, color: "#D97706", title: "Packaging specs updated", body: "Gift Box — Premium Tea Set now requires double wrap", time: "2h ago", unread: false, path: "/workers/packaging" },
-    ],
-    legal: [
-      { id: 1, icon: <Globe size={15} />, color: "#E5484D", title: "Trade rule violation risk", body: "HS 8518.30 shipment India→US may require additional cert", time: "5 min ago", unread: true, path: "/legal/trade-compliance" },
-      { id: 2, icon: <FileText size={15} />, color: "#0171E3", title: "Contract awaiting review", body: "GreenLeaf Organics seller agreement — 6 clauses flagged", time: "18 min ago", unread: true, path: "/legal/contracts" },
-      { id: 3, icon: <MessageCircle size={15} />, color: "#8B5CF6", title: "Team Hub: New message", body: "Sarah posted in #asia-compliance about tariff update", time: "30 min ago", unread: true, path: "/legal/team-hub" },
-      { id: 4, icon: <AlertTriangle size={15} />, color: "#D97706", title: "Dispute escalation", body: "Buyer dispute #D-2847 escalated to mediation", time: "1h ago", unread: false, path: "/legal/disputes" },
-      { id: 5, icon: <Scale size={15} />, color: "#30A46C", title: "Regulation update", body: "EU CBAM reporting deadline extended to April 30", time: "3h ago", unread: false, path: "/legal/regulations" },
-    ],
-    support: [
-      { id: 1, icon: <Headphones size={15} />, color: "#E5484D", title: "Urgent ticket", body: "Buyer unable to access verification portal — account locked", time: "3 min ago", unread: true, path: "/support" },
-      { id: 2, icon: <BookOpen size={15} />, color: "#0171E3", title: "Knowledge Base update", body: "New article on shipping delays added", time: "20 min ago", unread: true, path: "/support/knowledge" },
-      { id: 3, icon: <Star size={15} />, color: "#FFB224", title: "New feedback received", body: "Meridian Corp left a 4-star review with suggestions", time: "45 min ago", unread: true, path: "/support/feedback" },
-      { id: 4, icon: <Headphones size={15} />, color: "#0171E3", title: "Ticket resolved", body: "Shipping delay inquiry #T-4421 closed by auto-resolve", time: "2h ago", unread: false },
-    ],
-    inspector: [
-      { id: 1, icon: <Microscope size={15} />, color: "#0171E3", title: "New inspection", body: "Batch #284 requires visual inspection", time: "5 min ago", unread: true, path: "/inspector" },
-      { id: 2, icon: <ClipboardCheck size={15} />, color: "#E5484D", title: "Test failed", body: "Batch #284 failed visual inspection — photos attached", time: "10 min ago", unread: true, path: "/inspector/active" },
-      { id: 3, icon: <BarChart3 size={15} />, color: "#8B5CF6", title: "Inspection report", body: "Batch #284 inspection report available", time: "22 min ago", unread: true, path: "/inspector/reports" },
-      { id: 4, icon: <History size={15} />, color: "#30A46C", title: "Inspection history", body: "View inspection history for Batch #284", time: "35 min ago", unread: false, path: "/inspector/history" },
-    ],
-  };
-
-  const currentNotifs = roleNotifications[currentRole] || roleNotifications.admin;
-  const unreadCount = currentNotifs.filter(n => n.unread).length;
-
   return (
     <div className="flex min-h-dvh h-dvh bg-background overflow-x-hidden">
       {/* Desktop Sidebar */}
@@ -381,7 +509,7 @@ export function Layout() {
 
         {/* Navigation */}
         <nav className="flex-1 space-y-0.5">
-          {nav.items.map((item, index) => {
+          {navItems.map((item, index) => {
             const isActive = location.pathname === item.path;
             return (
               <motion.button
@@ -509,7 +637,7 @@ export function Layout() {
               </div>
 
               <nav className="flex-1 space-y-1">
-                {nav.items.map((item) => {
+                {navItems.map((item) => {
                   const isActive = location.pathname === item.path;
                   return (
                     <button
@@ -539,7 +667,7 @@ export function Layout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top Bar */}
         <motion.header
-          className="h-[68px] flex items-center justify-between px-6 lg:px-10 bg-card/70 backdrop-blur-2xl border-b border-black/[0.03]"
+          className="relative z-[200] h-[68px] flex items-center justify-between px-6 lg:px-10 bg-card/70 backdrop-blur-2xl border-b border-black/[0.03]"
           initial={{ y: -10, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ duration: 0.4, delay: 0.1, ease: [0.25, 0.46, 0.45, 0.94] }}
@@ -588,14 +716,14 @@ export function Layout() {
                 {notifOpen && (
                   <>
                     <motion.div
-                      className="fixed inset-0 z-40"
+                      className="fixed inset-0 z-[300]"
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
                       onClick={() => setNotifOpen(false)}
                     />
                     <motion.div
-                      className="absolute right-0 top-[calc(100%+8px)] w-[380px] bg-card rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.10),0_0_0_1px_rgba(0,0,0,0.04)] z-50 overflow-hidden"
+                      className="absolute right-0 top-[calc(100%+8px)] w-[92vw] max-w-[380px] bg-card rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.10),0_0_0_1px_rgba(0,0,0,0.04)] z-[400] overflow-hidden"
                       initial={{ opacity: 0, y: -6, scale: 0.97 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -6, scale: 0.97 }}
@@ -619,30 +747,48 @@ export function Layout() {
 
                       {/* Notification list */}
                       <div className="max-h-[420px] overflow-y-auto px-2 pb-2" style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(0,0,0,0.06) transparent" }}>
-                        {currentNotifs.map((notif, i) => (
-                          <motion.button
-                            key={notif.id}
-                            className={`w-full flex items-start gap-3 px-3 py-3.5 rounded-xl text-left transition-all cursor-pointer group ${
-                              notif.unread ? "bg-primary/[0.02] hover:bg-primary/[0.05]" : "hover:bg-black/[0.02]"
-                            }`}
-                            initial={{ opacity: 0, y: 4 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: i * 0.03 }}
-                            whileTap={{ scale: 0.985 }}
-                            onClick={() => {
-                              if (notif.path) {
-                                navigate(notif.path);
-                                setNotifOpen(false);
-                              }
-                            }}
-                          >
-                            {/* Icon */}
-                            <div
-                              className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-                              style={{ backgroundColor: `${notif.color}10` }}
+                        {uiNotifications.map((notif, i) => {
+                          const { icon, color } = notifIcon(notif);
+                          return (
+                            <motion.button
+                              key={notif.key}
+                              className={`w-full flex items-start gap-3 px-3 py-3.5 rounded-xl text-left transition-all cursor-pointer group ${
+                                notif.unread ? "bg-primary/[0.02] hover:bg-primary/[0.05]" : "hover:bg-black/[0.02]"
+                              }`}
+                              initial={{ opacity: 0, y: 4 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: i * 0.03 }}
+                              whileTap={{ scale: 0.985 }}
+                              onClick={async () => {
+                                if (notif.path) {
+                                  if (notif.unread) {
+                                    const access = (() => {
+                                      try {
+                                        return window.localStorage.getItem("vehsl.access") || "";
+                                      } catch {
+                                        return "";
+                                      }
+                                    })();
+                                    if (access) {
+                                      try {
+                                        await fetch(`${apiBase()}/api/v1/admin/ui/notifications/${encodeURIComponent(notif.key)}/mark-read`, {
+                                          method: "POST",
+                                          headers: { Authorization: `Bearer ${access}` },
+                                        });
+                                      } catch {}
+                                    }
+                                  }
+                                  navigate(notif.path);
+                                  setNotifOpen(false);
+                                }
+                              }}
                             >
-                              <span style={{ color: notif.color }}>{notif.icon}</span>
-                            </div>
+                              <div
+                                className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
+                                style={{ backgroundColor: `${color}10` }}
+                              >
+                                <span style={{ color }}>{icon}</span>
+                              </div>
 
                             {/* Content */}
                             <div className="flex-1 min-w-0">
@@ -653,22 +799,25 @@ export function Layout() {
                                 )}
                               </div>
                               <p className="text-[0.75rem] text-muted-foreground/45 mt-0.5 line-clamp-2">{notif.body}</p>
-                              <p className="text-[0.625rem] text-muted-foreground/30 mt-1.5 tabular-nums">{notif.time}</p>
+                              <p className="text-[0.625rem] text-muted-foreground/30 mt-1.5 tabular-nums">{timeAgo(notif.occurred_at)}</p>
                             </div>
 
                             {/* Navigate arrow for actionable notifs */}
                             {notif.path && (
                               <ChevronRight size={13} className="text-muted-foreground/20 flex-shrink-0 mt-1 opacity-0 group-hover:opacity-100 transition-opacity" />
                             )}
-                          </motion.button>
-                        ))}
+                            </motion.button>
+                          );
+                        })}
                       </div>
 
                       {/* Footer */}
                       <div className="px-5 py-3 border-t border-black/[0.03]">
                         <button
                           className="w-full text-center text-[0.75rem] text-primary/60 hover:text-primary transition-colors cursor-pointer py-1"
-                          onClick={() => setNotifOpen(false)}
+                          onClick={async () => {
+                            await markAllNotificationsRead();
+                          }}
                         >
                           Mark all as read
                         </button>

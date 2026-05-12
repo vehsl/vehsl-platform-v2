@@ -1,13 +1,13 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Shield, CheckCircle2, Clock, User, AlertCircle,
   ChevronRight, X, FileText, Camera, Eye,
   Fingerprint, CreditCard, Building2, Truck as TruckIcon,
   Upload, ThumbsUp, ThumbsDown, ChevronLeft,
-  UserCheck, Users, Star, MapPin, Calendar, Lock, Scan
+  UserCheck, Users, Star, MapPin, Calendar, Lock
 } from "lucide-react";
 import { BounceButton } from "./BounceButton";
 import { StatusPill } from "./StatusPill";
@@ -17,7 +17,15 @@ import { ImageWithFallback } from "./figma/ImageWithFallback";
 // ─── Types ──────────────────────────────────────────────
 
 type UserType = "buyer" | "seller";
-type DocType = "passport" | "driving_license" | "factory_ownership" | "business_registration" | "id_card";
+type DocType =
+  | "passport"
+  | "driving_license"
+  | "id_card"
+  | "bank_statement"
+  | "utility_bill"
+  | "business_license"
+  | "business_registration"
+  | "factory_ownership";
 type VerificationStatus = "pending" | "verified" | "rejected" | "expired" | "under_review";
 
 interface Document {
@@ -42,7 +50,7 @@ interface BiometricRecord {
 }
 
 interface VerificationProfile {
-  id: string;
+  id: string | number;
   name: string;
   avatar: string;
   type: UserType;
@@ -65,7 +73,7 @@ type ReleaseConditionType = "inspection" | "lab_test" | "certification" | "docum
 type ReleaseConditionStatus = "pending" | "in_progress" | "satisfied" | "waived" | "failed";
 
 interface ReleaseCondition {
-  id: string;
+  id: string | number;
   type: ReleaseConditionType;
   title: string;
   description: string;
@@ -81,7 +89,7 @@ interface ReleaseCondition {
 }
 
 interface BuyerReleaseOrder {
-  id: string;
+  id: string | number;
   orderRef: string;
   buyerName: string;
   buyerAvatar: string;
@@ -154,9 +162,12 @@ const mockReleaseOrders: BuyerReleaseOrder[] = [
 const docTypeConfig: Record<DocType, { icon: React.ReactNode; label: string; color: string }> = {
   passport: { icon: <CreditCard size={16} />, label: "Passport", color: "#3B82F6" },
   driving_license: { icon: <TruckIcon size={16} />, label: "Driving License", color: "#0171E3" },
+  id_card: { icon: <CreditCard size={16} />, label: "ID Card", color: "#8B5CF6" },
+  bank_statement: { icon: <FileText size={16} />, label: "Bank Statement", color: "#30A46C" },
+  utility_bill: { icon: <FileText size={16} />, label: "Utility Bill", color: "#FFB224" },
+  business_license: { icon: <FileText size={16} />, label: "Business License", color: "#30A46C" },
   factory_ownership: { icon: <Building2 size={16} />, label: "Factory Ownership", color: "#D97706" },
   business_registration: { icon: <FileText size={16} />, label: "Business Registration", color: "#30A46C" },
-  id_card: { icon: <CreditCard size={16} />, label: "National ID", color: "#8B5CF6" },
 };
 
 // ─── Mock Profiles ──────────────────────────────────────
@@ -326,7 +337,28 @@ function TrustScore({ score }: { score: number }) {
 
 // ─── Profile Detail ─────────────────────────────────────
 
-function ProfileDetail({ profile, onClose }: { profile: VerificationProfile; onClose: () => void }) {
+function ProfileDetail({
+  profile,
+  onClose,
+  onApproveDoc,
+  onRejectDoc,
+  onApproveAll,
+  onRequestReverification,
+}: {
+  profile: VerificationProfile;
+  onClose: () => void;
+  onApproveDoc: (docId: string) => void;
+  onRejectDoc: (docId: string) => void;
+  onApproveAll: () => void;
+  onRequestReverification: () => void;
+}) {
+  const fmt = (d: any) => {
+    if (!d) return "—";
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return "—";
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+  };
+
   return (
     <motion.div
       className="fixed inset-0 z-50 flex"
@@ -400,6 +432,7 @@ function ProfileDetail({ profile, onClose }: { profile: VerificationProfile; onC
           </div>
 
           {/* Biometrics */}
+          {/*
           <div>
             <h4 className="text-[0.8125rem] text-muted-foreground mb-3 flex items-center gap-1.5">
               <Fingerprint size={14} />
@@ -447,6 +480,7 @@ function ProfileDetail({ profile, onClose }: { profile: VerificationProfile; onC
               })}
             </div>
           </div>
+          */}
 
           {/* Documents */}
           <div>
@@ -480,8 +514,8 @@ function ProfileDetail({ profile, onClose }: { profile: VerificationProfile; onC
                           <span className="text-[0.8125rem] text-foreground">{doc.label}</span>
                         </div>
                         <div className="flex items-center gap-3 text-[0.6875rem] text-muted-foreground">
-                          <span>Uploaded: {doc.uploadedAt}</span>
-                          {doc.expiresAt && <span>Expires: {doc.expiresAt}</span>}
+                          <span>Uploaded: {fmt(doc.uploadedAt)}</span>
+                          {doc.expiresAt && <span>Expires: {fmt(doc.expiresAt)}</span>}
                         </div>
                         {doc.verifiedBy && (
                           <p className="text-[0.625rem] text-[#30A46C] mt-0.5">Verified by: {doc.verifiedBy}</p>
@@ -505,10 +539,16 @@ function ProfileDetail({ profile, onClose }: { profile: VerificationProfile; onC
                     {/* Action buttons for pending/under_review */}
                     {(doc.status === "pending" || doc.status === "under_review") && (
                       <div className="flex gap-2 mt-3 pt-3 border-t border-border/15">
-                        <BounceButton variant="success" size="sm" icon={<ThumbsUp size={13} />} energyWeight={3}>
+                        <BounceButton
+                          variant="success"
+                          size="sm"
+                          icon={<ThumbsUp size={13} />}
+                          energyWeight={3}
+                          onClick={() => onApproveDoc(doc.id)}
+                        >
                           Approve
                         </BounceButton>
-                        <BounceButton variant="ghost" size="sm" icon={<ThumbsDown size={13} />}>
+                        <BounceButton variant="ghost" size="sm" icon={<ThumbsDown size={13} />} onClick={() => onRejectDoc(doc.id)}>
                           Reject
                         </BounceButton>
                         <BounceButton variant="secondary" size="sm" icon={<Eye size={13} />}>
@@ -525,11 +565,11 @@ function ProfileDetail({ profile, onClose }: { profile: VerificationProfile; onC
           {/* Overall Actions */}
           <div className="flex flex-wrap gap-2 pt-4 border-t border-border/30">
             {profile.overallStatus !== "verified" && (
-              <BounceButton variant="success" size="md" icon={<UserCheck size={16} />} energyWeight={5}>
+              <BounceButton variant="success" size="md" icon={<UserCheck size={16} />} energyWeight={5} onClick={onApproveAll}>
                 Approve All & Verify
               </BounceButton>
             )}
-            <BounceButton variant="secondary" size="md" icon={<Lock size={16} />}>
+            <BounceButton variant="secondary" size="md" icon={<Lock size={16} />} onClick={onRequestReverification}>
               Request Re-verification
             </BounceButton>
           </div>
@@ -546,39 +586,265 @@ export function VerificationCenter() {
   const [filterType, setFilterType] = useState<"all" | "buyer" | "seller">("all");
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "verified" | "under_review">("all");
   const [activeTab, setActiveTab] = useState<"users" | "release">("release");
-  const [releaseOrders, setReleaseOrders] = useState(mockReleaseOrders);
-  const [expandedOrder, setExpandedOrder] = useState<string | null>(mockReleaseOrders[0]?.id || null);
-  const [satisfyingCondition, setSatisfyingCondition] = useState<{ orderId: string; conditionId: string } | null>(null);
-  const [satisfyDocs, setSatisfyDocs] = useState<{ name: string; size: string; uploadedAt: string }[]>([]);
+  const [releaseOrders, setReleaseOrders] = useState<BuyerReleaseOrder[]>([]);
+  const [releaseStats, setReleaseStats] = useState<any>(null);
+  const [expandedOrder, setExpandedOrder] = useState<string | number | null>(null);
+  const [satisfyingCondition, setSatisfyingCondition] = useState<{ orderId: string | number; conditionId: string | number } | null>(null);
+  const [satisfyDocs, setSatisfyDocs] = useState<{ file: File; name: string; size: string }[]>([]);
   const [satisfyNote, setSatisfyNote] = useState("");
+  const [profiles, setProfiles] = useState<VerificationProfile[]>([]);
+  const [userStats, setUserStats] = useState<any>(null);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [releaseLoading, setReleaseLoading] = useState(false);
+  const [error, setError] = useState<string>("");
 
-  const filtered = mockProfiles.filter(p => {
-    if (filterType !== "all" && p.type !== filterType) return false;
-    if (filterStatus !== "all" && p.overallStatus !== filterStatus) return false;
-    return true;
-  });
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
 
-  const pendingCount = mockProfiles.filter(p => p.overallStatus === "pending" || p.overallStatus === "under_review").length;
-  const verifiedCount = mockProfiles.filter(p => p.overallStatus === "verified").length;
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const formatSize = (bytes: number) => {
+    if (!Number.isFinite(bytes)) return "—";
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const fmtDate = (d: any) => {
+    if (!d) return "";
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return "";
+    return dt.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+  };
+
+  const fmtDateFull = (d: any) => {
+    if (!d) return "";
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return "";
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+  };
+
+  const relativeTime = (d: any) => {
+    if (!d) return "—";
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return "—";
+    const diffMs = Date.now() - dt.getTime();
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} hours ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days} days ago`;
+  };
+
+  const toCount = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+  const refreshUserStats = async () => {
+    try {
+      const s = await fetchJson("/api/v1/admin/verification/users/stats/");
+      setUserStats(s);
+    } catch {
+      setUserStats(null);
+    }
+  };
+
+  const refreshRelease = async () => {
+    setReleaseLoading(true);
+    setError("");
+    try {
+      const [s, list] = await Promise.all([
+        fetchJson("/api/v1/admin/verification/release/orders/stats/"),
+        fetchJson("/api/v1/admin/verification/release/orders/"),
+      ]);
+      const rows = Array.isArray(list) ? list : Array.isArray(list?.results) ? list.results : [];
+      setReleaseStats(s);
+      setReleaseOrders(rows);
+      if (!expandedOrder && rows?.[0]?.id) setExpandedOrder(rows[0].id);
+    } catch (e: any) {
+      setError(e?.message || "Failed to load release requirements.");
+    } finally {
+      setReleaseLoading(false);
+    }
+  };
+
+  const refreshUsers = async () => {
+    setUsersLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      if (filterType !== "all") params.set("type", filterType);
+      if (filterStatus !== "all") params.set("status", filterStatus);
+      const list = await fetchJson(`/api/v1/admin/verification/users/?${params.toString()}`);
+      const rows = Array.isArray(list) ? list : Array.isArray(list?.results) ? list.results : [];
+      setProfiles(
+        rows.map((p: any) => ({
+          ...p,
+          lastActive: p.lastActive || relativeTime(p.lastActiveAt),
+        }))
+      );
+    } catch (e: any) {
+      setError(e?.message || "Failed to load users.");
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshRelease();
+    refreshUserStats();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "users") refreshUsers();
+  }, [activeTab, filterType, filterStatus]);
+
+  const filtered = useMemo(() => profiles, [profiles]);
+
+  const pendingCount =
+    toCount(userStats?.pending_review) ||
+    filtered.filter(p => p.overallStatus === "pending" || p.overallStatus === "under_review").length;
+  const verifiedCount = toCount(userStats?.fully_verified) || filtered.filter(p => p.overallStatus === "verified").length;
+  const totalUsers = toCount(userStats?.total_users) || filtered.length;
+  const buyersCount = toCount(userStats?.buyers) || filtered.filter(p => p.type === "buyer").length;
+  const sellersCount = toCount(userStats?.sellers) || filtered.filter(p => p.type === "seller").length;
+  const avgTrustScore = toCount(userStats?.avg_trust_score) || Math.round(filtered.reduce((s, p) => s + (p.trustScore || 0), 0) / Math.max(1, filtered.length));
   const blockedOrders = releaseOrders.filter(o => o.overallStatus === "blocked" || o.overallStatus === "partial").length;
   const clearedOrders = releaseOrders.filter(o => o.overallStatus === "cleared" || o.overallStatus === "released").length;
   const totalConditions = releaseOrders.flatMap(o => o.conditions).length;
   const satisfiedConditions = releaseOrders.flatMap(o => o.conditions).filter(c => c.status === "satisfied").length;
 
-  const satisfyCondition = () => {
+  const satisfyCondition = async () => {
     if (!satisfyingCondition) return;
-    setReleaseOrders(prev => prev.map(o => {
-      if (o.id !== satisfyingCondition.orderId) return o;
-      const updated = { ...o, conditions: o.conditions.map(c => {
-        if (c.id !== satisfyingCondition.conditionId) return c;
-        return { ...c, status: "satisfied" as const, satisfiedAt: "Mar 17", satisfiedBy: "Compliance Team", proofDocs: satisfyDocs, notes: satisfyNote || c.notes };
-      })};
-      const allSatisfied = updated.conditions.every(c => c.status === "satisfied" || c.status === "waived");
-      const someSatisfied = updated.conditions.some(c => c.status === "satisfied");
-      updated.overallStatus = allSatisfied ? "cleared" : someSatisfied ? "partial" : "blocked";
-      return updated;
-    }));
-    setSatisfyingCondition(null); setSatisfyDocs([]); setSatisfyNote("");
+    try {
+      const fd = new FormData();
+      if (satisfyNote.trim()) fd.append("note", satisfyNote.trim());
+      satisfyDocs.forEach(d => fd.append("files", d.file));
+      await fetchJson(`/api/v1/admin/verification/release/conditions/${satisfyingCondition.conditionId}/satisfy/`, {
+        method: "POST",
+        body: fd,
+      });
+      setSatisfyingCondition(null);
+      setSatisfyDocs([]);
+      setSatisfyNote("");
+      await refreshRelease();
+    } catch (e: any) {
+      setError(e?.message || "Failed to satisfy condition.");
+    }
+  };
+
+  const authorizeRelease = async (orderId: string | number) => {
+    try {
+      await fetchJson(`/api/v1/admin/verification/release/orders/${orderId}/authorize/`, { method: "POST" });
+      await refreshRelease();
+    } catch (e: any) {
+      setError(e?.message || "Failed to authorize release.");
+    }
+  };
+
+  const openProfile = async (id: string) => {
+    try {
+      const p = await fetchJson(`/api/v1/admin/verification/users/${id}/`);
+      setSelectedProfile({
+        ...p,
+        lastActive: p.lastActive || relativeTime(p.lastActiveAt),
+      });
+    } catch (e: any) {
+      setError(e?.message || "Failed to load profile.");
+    }
+  };
+
+  const approveDoc = async (docId: string) => {
+    if (!selectedProfile) return;
+    try {
+      await fetchJson(`/api/v1/admin/verification/kyc-documents/${docId}/approve/`, { method: "POST" });
+      await openProfile(String(selectedProfile.id));
+      await refreshUsers();
+      await refreshUserStats();
+    } catch (e: any) {
+      setError(e?.message || "Failed to approve document.");
+    }
+  };
+
+  const rejectDoc = async (docId: string) => {
+    if (!selectedProfile) return;
+    const reason = typeof window !== "undefined" ? window.prompt("Rejection reason (optional):") || "" : "";
+    try {
+      await fetchJson(`/api/v1/admin/verification/kyc-documents/${docId}/reject/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+      await openProfile(String(selectedProfile.id));
+      await refreshUsers();
+      await refreshUserStats();
+    } catch (e: any) {
+      setError(e?.message || "Failed to reject document.");
+    }
+  };
+
+  const approveAll = async () => {
+    if (!selectedProfile) return;
+    try {
+      await fetchJson(`/api/v1/admin/verification/users/${selectedProfile.id}/approve-all/`, { method: "POST" });
+      await openProfile(String(selectedProfile.id));
+      await refreshUsers();
+      await refreshUserStats();
+    } catch (e: any) {
+      setError(e?.message || "Failed to approve all.");
+    }
+  };
+
+  const requestReverification = async () => {
+    if (!selectedProfile) return;
+    try {
+      await fetchJson(`/api/v1/admin/verification/users/${selectedProfile.id}/request-reverification/`, { method: "POST" });
+      await openProfile(String(selectedProfile.id));
+      await refreshUsers();
+      await refreshUserStats();
+    } catch (e: any) {
+      setError(e?.message || "Failed to request re-verification.");
+    }
   };
 
   const releaseStatusConfig = {
@@ -607,21 +873,65 @@ export function VerificationCenter() {
         ))}
       </div>
 
+      {error && (
+        <div className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+          {error}
+        </div>
+      )}
+
       <AnimatePresence mode="wait">
         {activeTab === "release" ? (
           <motion.div key="release" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-              <StatCard label="Active Orders" value={releaseOrders.length.toString()} icon={<Lock size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} subtitle={`${blockedOrders} need attention`} accentColor="#0171E3" />
-              <StatCard label="Conditions Met" value={`${satisfiedConditions}/${totalConditions}`} icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} subtitle={`${Math.round((satisfiedConditions / totalConditions) * 100)}% complete`} accentColor="#30A46C" />
-              <StatCard label="Ready to Ship" value={clearedOrders.toString()} icon={<TruckIcon size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={2} subtitle="All conditions satisfied" accentColor="#30A46C" />
+              <StatCard
+                label="Active Orders"
+                value={(toCount(releaseStats?.active_orders) || releaseOrders.length).toString()}
+                icon={<Lock size={20} className="text-[#0171E3]" />}
+                iconBg="bg-[#0171E3]/8"
+                index={0}
+                subtitle={`${(toCount(releaseStats?.blocked_orders) || blockedOrders).toString()} need attention`}
+                accentColor="#0171E3"
+              />
+              <StatCard
+                label="Conditions Met"
+                value={`${toCount(releaseStats?.satisfied_conditions) || satisfiedConditions}/${toCount(releaseStats?.total_conditions) || totalConditions}`}
+                icon={<CheckCircle2 size={20} className="text-[#30A46C]" />}
+                iconBg="bg-[#30A46C]/8"
+                index={1}
+                subtitle={`${Math.round(
+                  (((toCount(releaseStats?.satisfied_conditions) || satisfiedConditions) * 100) /
+                    Math.max(1, toCount(releaseStats?.total_conditions) || totalConditions))
+                )}% complete`}
+                accentColor="#30A46C"
+              />
+              <StatCard
+                label="Ready to Ship"
+                value={(toCount(releaseStats?.ready_to_ship) || clearedOrders).toString()}
+                icon={<TruckIcon size={20} className="text-[#30A46C]" />}
+                iconBg="bg-[#30A46C]/8"
+                index={2}
+                subtitle="All conditions satisfied"
+                accentColor="#30A46C"
+              />
             </div>
 
             <div className="space-y-4">
+              {releaseLoading && (
+                <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading release orders…
+                </div>
+              )}
+              {!releaseLoading && releaseOrders.length === 0 && (
+                <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                  No active orders found.
+                </div>
+              )}
               {releaseOrders.map((order, oi) => {
                 const isExpanded = expandedOrder === order.id;
                 const statusCfg = releaseStatusConfig[order.overallStatus];
                 const satisfiedCount = order.conditions.filter(c => c.status === "satisfied" || c.status === "waived").length;
-                const pct = Math.round((satisfiedCount / order.conditions.length) * 100);
+                const denom = Math.max(1, order.conditions.length);
+                const pct = order.conditions.length ? Math.round((satisfiedCount / denom) * 100) : 0;
                 return (
                   <motion.div key={order.id} layout className={`bg-card rounded-3xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] border overflow-hidden ${order.overallStatus === "blocked" ? "border-[#E5484D]/20" : order.overallStatus === "partial" ? "border-[#FFB224]/15" : "border-border/40"}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: oi * 0.05 }}>
                     <motion.button onClick={() => setExpandedOrder(isExpanded ? null : order.id)} className="w-full p-6 text-left cursor-pointer" whileTap={{ scale: 0.998 }}>
@@ -638,7 +948,11 @@ export function VerificationCenter() {
                           </div>
                           <p className="text-[0.8125rem] text-muted-foreground/50">{order.productName}</p>
                           <div className="flex items-center gap-3 mt-2 text-[0.6875rem] text-muted-foreground/35">
-                            <span>HS {order.hsCode}</span><span className="text-[0.5rem]">|</span><span>{order.quantity} units</span><span className="text-[0.5rem]">|</span><span>{order.createdAt}</span>
+                            <span>HS {order.hsCode}</span>
+                            <span className="text-[0.5rem]">|</span>
+                            <span>{order.quantity} units</span>
+                            <span className="text-[0.5rem]">|</span>
+                            <span>{fmtDateFull(order.createdAt)}</span>
                           </div>
                         </div>
                         <div className="flex flex-col items-center gap-1 flex-shrink-0">
@@ -675,8 +989,13 @@ export function VerificationCenter() {
                                       </div>
                                       <p className="text-[0.75rem] text-muted-foreground/40 leading-relaxed mb-2">{cond.description}</p>
                                       <div className="flex items-center gap-3 text-[0.625rem] text-muted-foreground/30 mb-2">
-                                        <span className="flex items-center gap-1"><Calendar size={9} />Due: {cond.dueDate}</span>
-                                        {cond.satisfiedAt && <span className="flex items-center gap-1 text-[#30A46C]/60"><CheckCircle2 size={9} />Satisfied: {cond.satisfiedAt}</span>}
+                                        <span className="flex items-center gap-1"><Calendar size={9} />Due: {fmtDate(cond.dueDate)}</span>
+                                        {cond.satisfiedAt && (
+                                          <span className="flex items-center gap-1 text-[#30A46C]/60">
+                                            <CheckCircle2 size={9} />
+                                            Satisfied: {fmtDate(cond.satisfiedAt)}
+                                          </span>
+                                        )}
                                         {cond.satisfiedBy && <span>by {cond.satisfiedBy}</span>}
                                       </div>
                                       {cond.notes && <div className="px-3 py-2 rounded-lg bg-[#FFB224]/[0.04] border border-[#FFB224]/10 mb-2"><p className="text-[0.6875rem] text-foreground/45">{cond.notes}</p></div>}
@@ -706,7 +1025,9 @@ export function VerificationCenter() {
                             {order.overallStatus === "cleared" && (
                               <div className="flex items-center justify-between pt-3 mt-2 border-t border-[#30A46C]/15">
                                 <div className="flex items-center gap-2"><CheckCircle2 size={16} className="text-[#30A46C]" /><span className="text-[0.8125rem] text-[#30A46C]/70">All conditions satisfied</span></div>
-                                <BounceButton variant="success" size="md" icon={<TruckIcon size={16} />} energyWeight={5}>Authorize Release</BounceButton>
+                                <BounceButton variant="success" size="md" icon={<TruckIcon size={16} />} energyWeight={5} onClick={() => authorizeRelease(order.id)}>
+                                  Authorize Release
+                                </BounceButton>
                               </div>
                             )}
                           </div>
@@ -721,23 +1042,83 @@ export function VerificationCenter() {
         ) : (
           <motion.div key="users" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-              <StatCard label="Total Users" value={mockProfiles.length.toString()} icon={<Users size={20} className="text-primary" />} iconBg="bg-primary/8" index={0} subtitle={`${mockProfiles.filter(p => p.type === "buyer").length} buyers · ${mockProfiles.filter(p => p.type === "seller").length} sellers`} accentColor="#0171E3" />
-              <StatCard label="Fully Verified" value={verifiedCount.toString()} change={`${Math.round((verifiedCount / mockProfiles.length) * 100)}% of total`} changeType="positive" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" sparklineData={[1, 2, 2, 3, 3, 4, verifiedCount]} sparklineColor="#30A46C" />
+              <StatCard
+                label="Total Users"
+                value={totalUsers.toString()}
+                icon={<Users size={20} className="text-primary" />}
+                iconBg="bg-primary/8"
+                index={0}
+                subtitle={`${buyersCount} buyers · ${sellersCount} sellers`}
+                accentColor="#0171E3"
+              />
+              <StatCard
+                label="Fully Verified"
+                value={verifiedCount.toString()}
+                change={`${Math.round((verifiedCount * 100) / Math.max(1, totalUsers))}% of total`}
+                changeType="positive"
+                icon={<CheckCircle2 size={20} className="text-[#30A46C]" />}
+                iconBg="bg-[#30A46C]/8"
+                index={1}
+                accentColor="#30A46C"
+                sparklineData={[1, 2, 2, 3, 3, 4, verifiedCount]}
+                sparklineColor="#30A46C"
+              />
               <StatCard label="Pending Review" value={pendingCount.toString()} change="Needs attention" changeType="negative" icon={<Clock size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-              <StatCard label="Avg. Trust Score" value={Math.round(mockProfiles.reduce((s, p) => s + p.trustScore, 0) / mockProfiles.length).toString()} change="Out of 100" changeType="neutral" icon={<Shield size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={3} />
+              <StatCard
+                label="Avg. Trust Score"
+                value={avgTrustScore.toString()}
+                change="Out of 100"
+                changeType="neutral"
+                icon={<Shield size={20} className="text-[#0171E3]" />}
+                iconBg="bg-[#0171E3]/8"
+                index={3}
+              />
             </div>
+            {/* Biometric Security */}
+            {/*
             <div className="bg-card rounded-3xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)] border border-border/40">
               <div className="flex items-center gap-3 mb-4"><div className="w-10 h-10 rounded-2xl bg-[#0171E3]/8 flex items-center justify-center"><Fingerprint size={20} className="text-[#0171E3]" /></div><div><h3 className="text-foreground tracking-tight">Biometric Security</h3><p className="text-muted-foreground text-[0.75rem]">Multi-factor identity verification across all users</p></div></div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {[{ label: "Fingerprint Enrolled", count: mockProfiles.filter(p => p.biometrics.some(b => b.type === "fingerprint" && b.status === "verified")).length, total: mockProfiles.length, icon: <Fingerprint size={16} />, color: "#3B82F6" }, { label: "Face ID Enrolled", count: mockProfiles.filter(p => p.biometrics.some(b => b.type === "face_id" && b.status === "verified")).length, total: mockProfiles.length, icon: <Scan size={16} />, color: "#0171E3" }, { label: "KYC Level 3", count: mockProfiles.filter(p => p.kycLevel === 3).length, total: mockProfiles.length, icon: <Shield size={16} />, color: "#30A46C" }].map((item) => (
+                {[
+                  {
+                    label: "Fingerprint Enrolled",
+                    count: toCount(userStats?.fingerprint_enrolled) || filtered.filter(p => p.biometrics.some(b => b.type === "fingerprint" && b.status === "verified")).length,
+                    total: totalUsers,
+                    icon: <Fingerprint size={16} />,
+                    color: "#3B82F6",
+                  },
+                  {
+                    label: "Face ID Enrolled",
+                    count: toCount(userStats?.face_id_enrolled) || filtered.filter(p => p.biometrics.some(b => b.type === "face_id" && b.status === "verified")).length,
+                    total: totalUsers,
+                    icon: <Scan size={16} />,
+                    color: "#0171E3",
+                  },
+                  {
+                    label: "KYC Level 3",
+                    count: toCount(userStats?.kyc_level_3) || filtered.filter(p => p.kycLevel === 3).length,
+                    total: totalUsers,
+                    icon: <Shield size={16} />,
+                    color: "#30A46C",
+                  },
+                ].map((item) => (
                   <div key={item.label} className="p-4 rounded-2xl bg-muted/10 border border-border/15">
                     <div className="flex items-center justify-between mb-2"><span style={{ color: item.color }}>{item.icon}</span><span className="text-[0.8125rem] text-foreground">{item.count}/{item.total}</span></div>
                     <p className="text-[0.75rem] text-muted-foreground">{item.label}</p>
-                    <div className="h-1.5 bg-muted/40 rounded-full overflow-hidden mt-2"><motion.div className="h-full rounded-full" style={{ background: item.color }} initial={{ width: 0 }} animate={{ width: `${(item.count / item.total) * 100}%` }} transition={{ duration: 0.8, ease: [0.4, 0, 0.2, 1] }} /></div>
+                    <div className="h-1.5 bg-muted/40 rounded-full overflow-hidden mt-2">
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ background: item.color }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(item.count / Math.max(1, item.total)) * 100}%` }}
+                        transition={{ duration: 0.8, ease: [0.4, 0, 0.2, 1] }}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
+            */}
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-1.5 bg-muted/20 rounded-xl p-1">
                 {(["all", "buyer", "seller"] as const).map((type) => (<button key={type} onClick={() => setFilterType(type)} className={`px-3.5 py-2 rounded-lg text-[0.8125rem] transition-all cursor-pointer capitalize ${filterType === type ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{type === "all" ? "All Users" : type === "buyer" ? "Buyers" : "Sellers"}</button>))}
@@ -747,15 +1128,28 @@ export function VerificationCenter() {
               </div>
             </div>
             <div className="space-y-3">
+              {usersLoading && (
+                <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading users…
+                </div>
+              )}
+              {!usersLoading && filtered.length === 0 && (
+                <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                  No users found.
+                </div>
+              )}
               {filtered.map((profile, i) => (
-                <motion.div key={profile.id} className="bg-card rounded-2xl border border-border/30 p-5 hover:shadow-md transition-all cursor-pointer group" onClick={() => setSelectedProfile(profile)} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }} whileHover={{ y: -1 }}>
+                <motion.div key={profile.id} className="bg-card rounded-2xl border border-border/30 p-5 hover:shadow-md transition-all cursor-pointer group" onClick={() => openProfile(String(profile.id))} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }} whileHover={{ y: -1 }}>
                   <div className="flex items-center gap-4">
                     <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white text-[0.75rem] flex-shrink-0 ${profile.type === "buyer" ? "bg-gradient-to-br from-[#3B82F6] to-[#0171E3]" : "bg-gradient-to-br from-[#D97706] to-[#FFB224]"}`}>{profile.avatar}</div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-0.5"><h4 className="text-[0.875rem] text-foreground">{profile.name}</h4><span className={`text-[0.5625rem] px-1.5 py-0.5 rounded capitalize ${profile.type === "buyer" ? "bg-[#3B82F6]/8 text-[#3B82F6]" : "bg-[#D97706]/8 text-[#D97706]"}`}>{profile.type}</span></div>
                       <p className="text-[0.75rem] text-muted-foreground">{profile.companyName ? `${profile.companyName} · ` : ""}{profile.location}</p>
                     </div>
-                    <div className="hidden sm:flex items-center gap-3"><KYCLevel level={profile.kycLevel} /><div className="flex items-center gap-1">{profile.biometrics.map((bio) => (<span key={bio.type} className={`w-6 h-6 rounded-lg flex items-center justify-center ${bio.status === "verified" ? "bg-[#30A46C]/10 text-[#30A46C]" : "bg-muted/30 text-muted-foreground/30"}`}>{bio.type === "fingerprint" ? <Fingerprint size={12} /> : <Scan size={12} />}</span>))}</div></div>
+                    <div className="hidden sm:flex items-center gap-3">
+                      <KYCLevel level={profile.kycLevel} />
+                      {/* {profile.biometrics.map((bio) => (...))} */}
+                    </div>
                     <div className="hidden sm:block"><TrustScore score={profile.trustScore} /></div>
                     <StatusPill status={profile.overallStatus === "verified" ? "success" : profile.overallStatus === "pending" ? "warning" : profile.overallStatus === "under_review" ? "info" : profile.overallStatus === "rejected" ? "error" : "neutral"} label={profile.overallStatus === "under_review" ? "Reviewing" : profile.overallStatus.charAt(0).toUpperCase() + profile.overallStatus.slice(1)} pulse={profile.overallStatus === "pending"} />
                     <ChevronRight size={16} className="text-muted-foreground/30 group-hover:text-muted-foreground flex-shrink-0" />
@@ -773,7 +1167,18 @@ export function VerificationCenter() {
         )}
       </AnimatePresence>
 
-      <AnimatePresence>{selectedProfile && <ProfileDetail profile={selectedProfile} onClose={() => setSelectedProfile(null)} />}</AnimatePresence>
+      <AnimatePresence>
+        {selectedProfile && (
+          <ProfileDetail
+            profile={selectedProfile}
+            onClose={() => setSelectedProfile(null)}
+            onApproveDoc={approveDoc}
+            onRejectDoc={rejectDoc}
+            onApproveAll={approveAll}
+            onRequestReverification={requestReverification}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Satisfy Condition Modal */}
       <AnimatePresence>
@@ -804,7 +1209,22 @@ export function VerificationCenter() {
                   <label className="flex items-center gap-2 px-3.5 py-3 rounded-xl border border-dashed border-[#30A46C]/20 bg-[#30A46C]/[0.02] cursor-pointer hover:bg-[#30A46C]/[0.04] hover:border-[#30A46C]/30 transition-colors group">
                     <Upload size={13} className="text-[#30A46C]/30 group-hover:text-[#30A46C]/50 transition-colors" />
                     <span className="text-[0.6875rem] text-muted-foreground/35 group-hover:text-muted-foreground/55 transition-colors">Upload proof documents</span>
-                    <input type="file" multiple className="hidden" onChange={(e) => { const files = e.target.files; if (!files) return; const newDocs = Array.from(files).map(f => ({ name: f.name, size: f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`, uploadedAt: "Mar 17" })); setSatisfyDocs(prev => [...prev, ...newDocs]); e.target.value = ""; }} />
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        const files = e.target.files;
+                        if (!files) return;
+                        const newDocs = Array.from(files).map((f) => ({
+                          file: f,
+                          name: f.name,
+                          size: formatSize(f.size),
+                        }));
+                        setSatisfyDocs((prev) => [...prev, ...newDocs]);
+                        e.target.value = "";
+                      }}
+                    />
                   </label>
                 </div>
               </div>

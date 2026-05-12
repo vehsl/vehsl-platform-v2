@@ -57,6 +57,14 @@ class Order(models.Model):
     currency = models.CharField(max_length=3, default="USD")
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], default=0)
     deadline_at = models.DateTimeField(null=True, blank=True)
+    release_authorized_at = models.DateTimeField(null=True, blank=True)
+    release_authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="release_authorizations",
+    )
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -226,3 +234,75 @@ class Review(models.Model):
 
     def __str__(self):
         return f"review:{self.pk}"
+
+
+def _release_proof_upload_to(instance: "ReleaseConditionProof", filename: str) -> str:
+    base = filename.replace("\\", "_").replace("/", "_").strip() or "document"
+    return f"release_proofs/order_{instance.condition.order_id}/cond_{instance.condition_id}/{base}"
+
+
+class ReleaseCondition(models.Model):
+    class Type(models.TextChoices):
+        INSPECTION = "inspection", "Inspection"
+        LAB_TEST = "lab_test", "Lab Test"
+        CERTIFICATION = "certification", "Certification"
+        DOCUMENTATION = "documentation", "Documentation"
+        PHOTO_PROOF = "photo_proof", "Photo Proof"
+        CUSTOM = "custom", "Custom"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        IN_PROGRESS = "in_progress", "In Progress"
+        SATISFIED = "satisfied", "Satisfied"
+        WAIVED = "waived", "Waived"
+        FAILED = "failed", "Failed"
+
+    class Priority(models.TextChoices):
+        CRITICAL = "critical", "Critical"
+        REQUIRED = "required", "Required"
+        OPTIONAL = "optional", "Optional"
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="release_conditions")
+    type = models.CharField(max_length=24, choices=Type.choices, default=Type.CUSTOM)
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    priority = models.CharField(max_length=16, choices=Priority.choices, default=Priority.REQUIRED)
+    due_at = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    satisfied_at = models.DateTimeField(null=True, blank=True)
+    satisfied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="release_conditions_satisfied",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["order", "status"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"release_condition:{self.pk}"
+
+
+class ReleaseConditionProof(models.Model):
+    condition = models.ForeignKey(ReleaseCondition, on_delete=models.CASCADE, related_name="proofs")
+    file = models.FileField(upload_to=_release_proof_upload_to)
+    original_name = models.CharField(max_length=255, blank=True)
+    size_bytes = models.PositiveIntegerField(default=0)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["condition", "uploaded_at"]),
+        ]
+
+    def __str__(self):
+        return f"release_proof:{self.pk}"

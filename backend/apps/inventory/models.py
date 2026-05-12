@@ -46,3 +46,32 @@ class SampleRequest(models.Model):
 
     def __str__(self):
         return f"sample_request:{self.pk}"
+
+
+class QualityInspection(models.Model):
+    class Status(models.TextChoices):
+        IN_PROGRESS = "in_progress", "In Progress"
+        PASSED = "passed", "Passed"
+        FAILED = "failed", "Failed"
+
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="quality_inspections")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="quality_inspections_as_seller")
+    inspector = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="quality_inspections_as_inspector"
+    )
+    inspector_name = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.IN_PROGRESS)
+    score = models.PositiveIntegerField(default=0)
+    inspected_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["product", "created_at"]),
+            models.Index(fields=["seller", "status"]),
+        ]
+
+    def __str__(self):
+        return f"quality_inspection:{self.pk}"
