@@ -377,21 +377,69 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
         out = []
         for d in docs:
             kind = (d.kind or "").lower()
-            if kind == "id_doc_1":
+            dt = (d.doc_type or "").strip().lower()
+
+            def _title(s: str) -> str:
+                s = (s or "").replace("_", " ").replace("-", " ").strip()
+                return " ".join((w[:1].upper() + w[1:]) if w else "" for w in s.split())
+
+            if kind in {"passport"}:
                 dtype = "passport"
-                label = "ID Document 1"
-            elif kind == "id_doc_2":
+                label = "Passport"
+            elif kind in {"driving_license"}:
                 dtype = "driving_license"
-                label = "ID Document 2"
-            elif kind == "business_doc_1":
+                label = "Driving License"
+            elif kind in {"id_card"}:
+                dtype = "id_card"
+                label = "ID Card"
+            elif kind in {"bank_statement"}:
+                dtype = "bank_statement"
+                label = "Bank Statement"
+            elif kind in {"utility_bill"}:
+                dtype = "utility_bill"
+                label = "Utility Bill"
+            elif kind in {"business_license"}:
+                dtype = "business_license"
+                label = "Business License"
+            elif kind in {"business_registration"}:
                 dtype = "business_registration"
-                label = "Business Document 1"
-            elif kind == "business_doc_2":
-                dtype = "factory_ownership"
-                label = "Business Document 2"
+                label = "Business Registration"
+            elif kind in {"id_doc_1", "id_doc_2"}:
+                if dt in {"passport"}:
+                    dtype = "passport"
+                    label = "Passport"
+                elif dt in {"national_id", "id_card", "nid"}:
+                    dtype = "id_card"
+                    label = "ID Card"
+                elif dt in {"driving_license", "driver_license", "drivers_license"}:
+                    dtype = "driving_license"
+                    label = "Driving License"
+                else:
+                    dtype = "id_card"
+                    label = _title(dt) if dt else ("ID Document 1" if kind == "id_doc_1" else "ID Document 2")
+            elif kind in {"proof_of_address"}:
+                if dt in {"bank_statement", "bank-statement"}:
+                    dtype = "bank_statement"
+                    label = "Bank Statement"
+                elif dt in {"utility_bill", "utility-bill"}:
+                    dtype = "utility_bill"
+                    label = "Utility Bill"
+                else:
+                    dtype = "bank_statement" if "bank" in dt else "utility_bill" if "utility" in dt else "id_card"
+                    label = _title(dt) if dt else "Proof of Address"
+            elif kind in {"business_doc_1", "business_doc_2"}:
+                if dt in {"business_license", "license", "licence"}:
+                    dtype = "business_license"
+                    label = "Business License"
+                elif dt in {"business_registration", "certificate_of_incorporation", "incorporation"}:
+                    dtype = "business_registration"
+                    label = "Business Registration"
+                else:
+                    dtype = "business_registration"
+                    label = _title(dt) if dt else ("Business Document 1" if kind == "business_doc_1" else "Business Document 2")
             else:
                 dtype = "id_card"
-                label = "Proof Document"
+                label = _title(dt) if dt else "Document"
 
             out.append(
                 {
@@ -433,9 +481,10 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
         return 1 if docs else 0
 
     def get_biometrics(self, obj: User):
-        enabled = bool(getattr(obj, "two_factor_enabled", False))
-        status = "verified" if enabled else "pending"
-        return [{"type": "fingerprint", "status": status}, {"type": "face_id", "status": "pending"}]
+        # enabled = bool(getattr(obj, "two_factor_enabled", False))
+        # status = "verified" if enabled else "pending"
+        # return [{"type": "fingerprint", "status": status}, {"type": "face_id", "status": "pending"}]
+        return []
 
     def get_trustScore(self, obj: User):
         base = 50
@@ -510,6 +559,15 @@ class RegisterSerializer(serializers.Serializer):
     business_doc_1_type = serializers.CharField(required=False, allow_blank=True)
     business_doc_2 = serializers.FileField(required=False, allow_null=True)
     business_doc_2_type = serializers.CharField(required=False, allow_blank=True)
+
+    # New field aliases (preferred names)
+    passport = serializers.FileField(required=False, allow_null=True)
+    driving_license = serializers.FileField(required=False, allow_null=True)
+    id_card = serializers.FileField(required=False, allow_null=True)
+    bank_statement = serializers.FileField(required=False, allow_null=True)
+    business_license = serializers.FileField(required=False, allow_null=True)
+    business_registration = serializers.FileField(required=False, allow_null=True)
+    utility_bill = serializers.FileField(required=False, allow_null=True)
 
     def validate_phone(self, value):
         value = (value or "").strip()
@@ -606,6 +664,14 @@ class RegisterSerializer(serializers.Serializer):
         biz_2 = validated_data.pop("business_doc_2", None)
         biz_2_type = validated_data.pop("business_doc_2_type", "")
 
+        passport_file = validated_data.pop("passport", None)
+        driving_license_file = validated_data.pop("driving_license", None)
+        id_card_file = validated_data.pop("id_card", None)
+        bank_statement_file = validated_data.pop("bank_statement", None)
+        business_license_file = validated_data.pop("business_license", None)
+        business_registration_file = validated_data.pop("business_registration", None)
+        utility_bill_file = validated_data.pop("utility_bill", None)
+
         user = User.objects.create_user(password=password, **validated_data)
         profile, _ = UserProfile.objects.get_or_create(user=user)
         for k, v in profile_fields.items():
@@ -618,12 +684,37 @@ class RegisterSerializer(serializers.Serializer):
         elif account_type == User.AccountType.SELLER:
             SellerProfile.objects.get_or_create(user=user)
 
+        def _guess_kind(legacy_kind: str, dtype: str) -> str:
+            t = (dtype or "").strip().lower()
+            if t in {"passport"}:
+                return KycDocument.Kind.PASSPORT
+            if t in {"driving_license", "driver_license", "drivers_license"}:
+                return KycDocument.Kind.DRIVING_LICENSE
+            if t in {"id_card", "national_id", "national-id", "nid"}:
+                return KycDocument.Kind.ID_CARD
+            if t in {"bank_statement", "bank-statement"}:
+                return KycDocument.Kind.BANK_STATEMENT
+            if t in {"utility_bill", "utility-bill"}:
+                return KycDocument.Kind.UTILITY_BILL
+            if t in {"business_license", "license", "licence"}:
+                return KycDocument.Kind.BUSINESS_LICENSE
+            if t in {"business_registration", "certificate_of_incorporation", "incorporation"}:
+                return KycDocument.Kind.BUSINESS_REGISTRATION
+            return legacy_kind
+
         uploads = [
-            (KycDocument.Kind.ID_DOC_1, id_doc_1, id_doc_1_type),
-            (KycDocument.Kind.ID_DOC_2, id_doc_2, id_doc_2_type),
-            (KycDocument.Kind.PROOF_OF_ADDRESS, proof, proof_type),
-            (KycDocument.Kind.BUSINESS_DOC_1, biz_1, biz_1_type),
-            (KycDocument.Kind.BUSINESS_DOC_2, biz_2, biz_2_type),
+            (KycDocument.Kind.PASSPORT, passport_file, "passport"),
+            (KycDocument.Kind.DRIVING_LICENSE, driving_license_file, "driving_license"),
+            (KycDocument.Kind.ID_CARD, id_card_file, "id_card"),
+            (KycDocument.Kind.BANK_STATEMENT, bank_statement_file, "bank_statement"),
+            (KycDocument.Kind.UTILITY_BILL, utility_bill_file, "utility_bill"),
+            (KycDocument.Kind.BUSINESS_LICENSE, business_license_file, "business_license"),
+            (KycDocument.Kind.BUSINESS_REGISTRATION, business_registration_file, "business_registration"),
+            (_guess_kind(KycDocument.Kind.ID_DOC_1, id_doc_1_type), id_doc_1, id_doc_1_type),
+            (_guess_kind(KycDocument.Kind.ID_DOC_2, id_doc_2_type), id_doc_2, id_doc_2_type),
+            (_guess_kind(KycDocument.Kind.PROOF_OF_ADDRESS, proof_type), proof, proof_type),
+            (_guess_kind(KycDocument.Kind.BUSINESS_DOC_1, biz_1_type), biz_1, biz_1_type),
+            (_guess_kind(KycDocument.Kind.BUSINESS_DOC_2, biz_2_type), biz_2, biz_2_type),
         ]
         for kind, f, doc_type in uploads:
             if not f:

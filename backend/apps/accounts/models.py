@@ -149,6 +149,15 @@ def _kyc_upload_to(instance: "KycDocument", filename: str) -> str:
 
 class KycDocument(models.Model):
     class Kind(models.TextChoices):
+        PASSPORT = "passport", "Passport"
+        DRIVING_LICENSE = "driving_license", "Driving License"
+        ID_CARD = "id_card", "ID Card"
+        BANK_STATEMENT = "bank_statement", "Bank Statement"
+        BUSINESS_LICENSE = "business_license", "Business License"
+        BUSINESS_REGISTRATION = "business_registration", "Business Registration"
+        UTILITY_BILL = "utility_bill", "Utility Bill"
+
+        # Legacy values (kept for backward compatibility)
         ID_DOC_1 = "id_doc_1", "ID Document 1"
         ID_DOC_2 = "id_doc_2", "ID Document 2"
         PROOF_OF_ADDRESS = "proof_of_address", "Proof of Address"
@@ -302,6 +311,24 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"notification:{self.pk}"
+
+
+class AdminUiNotificationState(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="admin_ui_notification_states")
+    key = models.CharField(max_length=64)
+    seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "key"]),
+            models.Index(fields=["user", "seen_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "key"], name="uniq_admin_ui_notification_state_user_key"),
+        ]
+
+    def __str__(self):
+        return f"admin_ui_notif_state:{self.user_id}:{self.key}"
 
 
 class AuditLog(models.Model):

@@ -10,6 +10,9 @@ from .views import (
     LoginView,
     LogoutView,
     AdminProfileMeView,
+    AdminUiNotificationsMarkAllReadView,
+    AdminUiNotificationsMarkReadView,
+    AdminUiNotificationsView,
     MeView,
     NotificationViewSet,
     RefreshView,
@@ -35,5 +38,8 @@ urlpatterns = [
     path("profiles/admin/me", AdminProfileMeView.as_view()),
     path("profiles/buyer/me", BuyerProfileMeView.as_view()),
     path("profiles/seller/me", SellerProfileMeView.as_view()),
+    path("admin/ui/notifications", AdminUiNotificationsView.as_view()),
+    path("admin/ui/notifications/mark-all-read", AdminUiNotificationsMarkAllReadView.as_view()),
+    path("admin/ui/notifications/<str:key>/mark-read", AdminUiNotificationsMarkReadView.as_view()),
     path("", include(router.urls)),
 ]

@@ -12,9 +12,11 @@ from datetime import timedelta
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
 from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Value, When
+from django.db.models.functions import Coalesce
 
 from .models import (
     AdminProfile,
+    AdminUiNotificationState,
     ChatMessage,
     ChatThread,
     KycDocument,
@@ -41,6 +43,173 @@ from .serializers import (
     UserSerializer,
     VehslTokenObtainPairSerializer,
 )
+
+
+class AdminUiNotificationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        now = timezone.now()
+        items: list[dict] = []
+
+        pending_docs = KycDocument.objects.filter(
+            review_status__in=[KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW]
+        )
+        pending_users = (
+            User.objects.filter(kyc_documents__in=pending_docs)
+            .exclude(status__in=[User.Status.SUSPENDED, User.Status.DELETED])
+            .distinct()
+        )
+        pending_users_count = pending_users.count()
+        if pending_users_count:
+            occurred_at = pending_docs.order_by("-uploaded_at").values_list("uploaded_at", flat=True).first() or now
+            items.append(
+                {
+                    "key": "user_verification_pending",
+                    "title": "User verification pending",
+                    "body": f"{pending_users_count} users need document review",
+                    "occurred_at": occurred_at,
+                    "level": "warning",
+                    "path": "/admin/verification",
+                }
+            )
+
+        try:
+            from apps.orders.models import Order, ReleaseCondition
+
+            orders_qs = (
+                Order.objects.filter(deleted_at__isnull=True)
+                .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
+                .prefetch_related("release_conditions")
+            )
+
+            blocked = 0
+            latest_blocked = None
+            for o in orders_qs.iterator():
+                conds = list(o.release_conditions.all())
+                if not conds:
+                    blocked += 1
+                    if latest_blocked is None or o.created_at > latest_blocked:
+                        latest_blocked = o.created_at
+                    continue
+                all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
+                if all_ok:
+                    continue
+                blocked += 1
+                if latest_blocked is None or o.created_at > latest_blocked:
+                    latest_blocked = o.created_at
+
+            if blocked:
+                items.append(
+                    {
+                        "key": "release_requirements_blocked",
+                        "title": "Release requirements blocked",
+                        "body": f"{blocked} orders need release conditions satisfied",
+                        "occurred_at": latest_blocked or now,
+                        "level": "error",
+                        "path": "/admin/verification",
+                    }
+                )
+        except Exception:
+            pass
+
+        try:
+            from apps.inventory.models import QualityInspection
+
+            start_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            failed_qs = QualityInspection.objects.filter(created_at__gte=start_month, status=QualityInspection.Status.FAILED)
+            failed_count = failed_qs.count()
+            if failed_count:
+                occurred_at = failed_qs.order_by("-created_at").values_list("created_at", flat=True).first() or now
+                items.append(
+                    {
+                        "key": "quality_failed",
+                        "title": "Quality issues detected",
+                        "body": f"{failed_count} inspections failed this month",
+                        "occurred_at": occurred_at,
+                        "level": "warning",
+                        "path": "/admin/quality",
+                    }
+                )
+        except Exception:
+            pass
+
+        try:
+            from apps.catalog.models import Product
+
+            threshold = 50
+            from django.db.models import Sum
+
+            base = Product.objects.filter(deleted_at__isnull=True).annotate(
+                stock_units=Coalesce(Sum("samples__available_quantity"), Value(0), output_field=IntegerField())
+            )
+            low_stock = (
+                base.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE], stock_units__gt=0, stock_units__lt=threshold)
+                .count()
+            )
+            if low_stock:
+                items.append(
+                    {
+                        "key": "products_low_stock",
+                        "title": "Inventory alert",
+                        "body": f"{low_stock} products are low on stock",
+                        "occurred_at": now,
+                        "level": "info",
+                        "path": "/admin/products",
+                    }
+                )
+        except Exception:
+            pass
+
+        items.sort(key=lambda x: x.get("occurred_at") or now, reverse=True)
+
+        keys = [i["key"] for i in items]
+        state_map = {
+            s.key: s.seen_at
+            for s in AdminUiNotificationState.objects.filter(user=request.user, key__in=keys)
+        }
+        for it in items:
+            seen_at = state_map.get(it["key"])
+            occurred = it.get("occurred_at") or now
+            it["unread"] = (seen_at is None) or (occurred and seen_at and occurred > seen_at)
+
+        unread_count = sum(1 for i in items if i.get("unread"))
+        return Response({"unread_count": unread_count, "items": items})
+
+
+class AdminUiNotificationsMarkAllReadView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        now = timezone.now()
+        keys = request.data.get("keys") or []
+        if keys and not isinstance(keys, list):
+            return Response({"detail": "keys must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+        if not keys:
+            return Response({"updated": 0})
+
+        updated = 0
+        for key in keys:
+            if not isinstance(key, str) or not key.strip():
+                continue
+            obj, _ = AdminUiNotificationState.objects.get_or_create(user=request.user, key=key.strip())
+            if obj.seen_at != now:
+                AdminUiNotificationState.objects.filter(id=obj.id).update(seen_at=now)
+            updated += 1
+        return Response({"updated": updated})
+
+
+class AdminUiNotificationsMarkReadView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request, key: str):
+        now = timezone.now()
+        key = (key or "").strip()
+        if not key:
+            return Response({"detail": "Invalid key."}, status=status.HTTP_400_BAD_REQUEST)
+        obj, _ = AdminUiNotificationState.objects.get_or_create(user=request.user, key=key)
+        AdminUiNotificationState.objects.filter(id=obj.id).update(seen_at=now)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -462,8 +631,8 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
 
         avg_trust = qs_annotated.aggregate(v=Avg("trust_score"))["v"] or 0
         kyc_level_3 = qs_annotated.filter(verified_docs__gte=3).count()
-        fingerprint_enrolled = qs.filter(two_factor_enabled=True).count()
-        face_id_enrolled = 0
+        # fingerprint_enrolled = qs.filter(two_factor_enabled=True).count()
+        # face_id_enrolled = 0
 
         return Response(
             {
@@ -473,8 +642,6 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
                 "fully_verified": fully_verified,
                 "pending_review": pending_review,
                 "avg_trust_score": round(float(avg_trust), 0),
-                "fingerprint_enrolled": fingerprint_enrolled,
-                "face_id_enrolled": face_id_enrolled,
                 "kyc_level_3": kyc_level_3,
             }
         )

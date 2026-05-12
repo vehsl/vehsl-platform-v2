@@ -7,7 +7,7 @@ import {
   ChevronRight, X, FileText, Camera, Eye,
   Fingerprint, CreditCard, Building2, Truck as TruckIcon,
   Upload, ThumbsUp, ThumbsDown, ChevronLeft,
-  UserCheck, Users, Star, MapPin, Calendar, Lock, Scan
+  UserCheck, Users, Star, MapPin, Calendar, Lock
 } from "lucide-react";
 import { BounceButton } from "./BounceButton";
 import { StatusPill } from "./StatusPill";
@@ -17,7 +17,15 @@ import { ImageWithFallback } from "./figma/ImageWithFallback";
 // ─── Types ──────────────────────────────────────────────
 
 type UserType = "buyer" | "seller";
-type DocType = "passport" | "driving_license" | "factory_ownership" | "business_registration" | "id_card";
+type DocType =
+  | "passport"
+  | "driving_license"
+  | "id_card"
+  | "bank_statement"
+  | "utility_bill"
+  | "business_license"
+  | "business_registration"
+  | "factory_ownership";
 type VerificationStatus = "pending" | "verified" | "rejected" | "expired" | "under_review";
 
 interface Document {
@@ -154,9 +162,12 @@ const mockReleaseOrders: BuyerReleaseOrder[] = [
 const docTypeConfig: Record<DocType, { icon: React.ReactNode; label: string; color: string }> = {
   passport: { icon: <CreditCard size={16} />, label: "Passport", color: "#3B82F6" },
   driving_license: { icon: <TruckIcon size={16} />, label: "Driving License", color: "#0171E3" },
+  id_card: { icon: <CreditCard size={16} />, label: "ID Card", color: "#8B5CF6" },
+  bank_statement: { icon: <FileText size={16} />, label: "Bank Statement", color: "#30A46C" },
+  utility_bill: { icon: <FileText size={16} />, label: "Utility Bill", color: "#FFB224" },
+  business_license: { icon: <FileText size={16} />, label: "Business License", color: "#30A46C" },
   factory_ownership: { icon: <Building2 size={16} />, label: "Factory Ownership", color: "#D97706" },
   business_registration: { icon: <FileText size={16} />, label: "Business Registration", color: "#30A46C" },
-  id_card: { icon: <CreditCard size={16} />, label: "National ID", color: "#8B5CF6" },
 };
 
 // ─── Mock Profiles ──────────────────────────────────────
@@ -421,6 +432,7 @@ function ProfileDetail({
           </div>
 
           {/* Biometrics */}
+          {/*
           <div>
             <h4 className="text-[0.8125rem] text-muted-foreground mb-3 flex items-center gap-1.5">
               <Fingerprint size={14} />
@@ -468,6 +480,7 @@ function ProfileDetail({
               })}
             </div>
           </div>
+          */}
 
           {/* Documents */}
           <div>
@@ -1061,6 +1074,8 @@ export function VerificationCenter() {
                 index={3}
               />
             </div>
+            {/* Biometric Security */}
+            {/*
             <div className="bg-card rounded-3xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)] border border-border/40">
               <div className="flex items-center gap-3 mb-4"><div className="w-10 h-10 rounded-2xl bg-[#0171E3]/8 flex items-center justify-center"><Fingerprint size={20} className="text-[#0171E3]" /></div><div><h3 className="text-foreground tracking-tight">Biometric Security</h3><p className="text-muted-foreground text-[0.75rem]">Multi-factor identity verification across all users</p></div></div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1103,6 +1118,7 @@ export function VerificationCenter() {
                 ))}
               </div>
             </div>
+            */}
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-1.5 bg-muted/20 rounded-xl p-1">
                 {(["all", "buyer", "seller"] as const).map((type) => (<button key={type} onClick={() => setFilterType(type)} className={`px-3.5 py-2 rounded-lg text-[0.8125rem] transition-all cursor-pointer capitalize ${filterType === type ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{type === "all" ? "All Users" : type === "buyer" ? "Buyers" : "Sellers"}</button>))}
@@ -1130,7 +1146,10 @@ export function VerificationCenter() {
                       <div className="flex items-center gap-2 mb-0.5"><h4 className="text-[0.875rem] text-foreground">{profile.name}</h4><span className={`text-[0.5625rem] px-1.5 py-0.5 rounded capitalize ${profile.type === "buyer" ? "bg-[#3B82F6]/8 text-[#3B82F6]" : "bg-[#D97706]/8 text-[#D97706]"}`}>{profile.type}</span></div>
                       <p className="text-[0.75rem] text-muted-foreground">{profile.companyName ? `${profile.companyName} · ` : ""}{profile.location}</p>
                     </div>
-                    <div className="hidden sm:flex items-center gap-3"><KYCLevel level={profile.kycLevel} /><div className="flex items-center gap-1">{profile.biometrics.map((bio) => (<span key={bio.type} className={`w-6 h-6 rounded-lg flex items-center justify-center ${bio.status === "verified" ? "bg-[#30A46C]/10 text-[#30A46C]" : "bg-muted/30 text-muted-foreground/30"}`}>{bio.type === "fingerprint" ? <Fingerprint size={12} /> : <Scan size={12} />}</span>))}</div></div>
+                    <div className="hidden sm:flex items-center gap-3">
+                      <KYCLevel level={profile.kycLevel} />
+                      {/* {profile.biometrics.map((bio) => (...))} */}
+                    </div>
                     <div className="hidden sm:block"><TrustScore score={profile.trustScore} /></div>
                     <StatusPill status={profile.overallStatus === "verified" ? "success" : profile.overallStatus === "pending" ? "warning" : profile.overallStatus === "under_review" ? "info" : profile.overallStatus === "rejected" ? "error" : "neutral"} label={profile.overallStatus === "under_review" ? "Reviewing" : profile.overallStatus.charAt(0).toUpperCase() + profile.overallStatus.slice(1)} pulse={profile.overallStatus === "pending"} />
                     <ChevronRight size={16} className="text-muted-foreground/30 group-hover:text-muted-foreground flex-shrink-0" />
