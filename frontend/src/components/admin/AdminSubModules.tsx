@@ -1157,29 +1157,122 @@ export function AdminProducts() {
 //  ADMIN → LOGISTICS
 // ════════════════════════════════════════════════════════════
 
-const vehiclesData = [
-  { id: "VH-001", driver: "Mike Torres", type: "Van", plate: "IL-4829-TX", status: "in-transit" as const, location: "I-90 near Elgin", fuel: 72, currentTask: "Delivering to Meridian Corp" },
-  { id: "VH-002", driver: "Sam Wilson", type: "Truck", plate: "IL-7134-KV", status: "loading" as const, location: "Warehouse A", fuel: 85, currentTask: "Loading ORD-4835" },
-  { id: "VH-003", driver: "Nina Patel", type: "Van", plate: "IL-2956-RQ", status: "idle" as const, location: "Depot", fuel: 94, currentTask: "Waiting for assignment" },
-  { id: "VH-004", driver: "Tony Ruiz", type: "Refrigerated", plate: "IL-6281-WP", status: "in-transit" as const, location: "Route 59, Naperville", fuel: 58, currentTask: "Cold chain delivery — FreshPack" },
-  { id: "VH-005", driver: "Aisha Khan", type: "Van", plate: "IL-3847-LM", status: "maintenance" as const, location: "Service Center", fuel: 30, currentTask: "Scheduled oil change" },
-];
-
-const shipmentData = [
-  { month: "Mon", incoming: 28, outgoing: 35 },
-  { month: "Tue", incoming: 32, outgoing: 29 },
-  { month: "Wed", incoming: 45, outgoing: 42 },
-  { month: "Thu", incoming: 38, outgoing: 47 },
-  { month: "Fri", incoming: 52, outgoing: 51 },
-  { month: "Sat", incoming: 24, outgoing: 18 },
-  { month: "Sun", incoming: 12, outgoing: 8 },
-];
-
 const vehicleStatusColor: Record<string, string> = {
   "in-transit": "#3B82F6", loading: "#FFB224", idle: "#30A46C", maintenance: "#E5484D",
 };
 
 export function AdminLogistics() {
+  const apiBase = () => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window !== "undefined") {
+      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }
+    return "http://localhost:8000";
+  };
+
+  const getAccess = () => {
+    try {
+      return window.localStorage.getItem("vehsl.access") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const fetchJson = async (path: string, init?: RequestInit) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+      },
+    });
+    if (res.status === 401) {
+      try {
+        window.location.assign("/?signin=1");
+      } catch {}
+    }
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (data.detail || data.error)) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  };
+
+  const [stats, setStats] = useState<any>(null);
+  const [flow, setFlow] = useState<any[]>([]);
+  const [fleet, setFleet] = useState<any[]>([]);
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+
+  const fmtVehicles = (a: any, t: any) => {
+    const aa = Number(a);
+    const tt = Number(t);
+    if (!Number.isFinite(aa) || !Number.isFinite(tt)) return "—";
+    return `${aa}/${tt}`;
+  };
+
+  const fmtHours = (h: any) => {
+    const n = Number(h);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    return `${n.toFixed(1)}h`;
+  };
+
+  const fmtPct = (p: any) => {
+    const n = Number(p);
+    if (!Number.isFinite(n)) return "—";
+    return `${n.toFixed(1)}%`;
+  };
+
+  const fmtDeltaMin = (m: any) => {
+    const n = Number(m);
+    if (!Number.isFinite(n) || n === 0) return "";
+    const sign = n < 0 ? "−" : "+";
+    return `${sign}${Math.abs(Math.round(n))} min vs last week`;
+  };
+
+  const fmtDeltaPct = (p: any) => {
+    const n = Number(p);
+    if (!Number.isFinite(n) || n === 0) return undefined;
+    const sign = n < 0 ? "" : "+";
+    return `${sign}${n.toFixed(1)}%`;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    setLoading(true);
+    (async () => {
+      try {
+        const [s, f, fl] = await Promise.all([
+          fetchJson("/api/v1/admin/logistics/stats"),
+          fetchJson("/api/v1/admin/logistics/flow?days=7"),
+          fetchJson("/api/v1/admin/logistics/fleet?limit=8"),
+        ]);
+        if (cancelled) return;
+        setStats(s);
+        setFlow(Array.isArray(f) ? f : []);
+        setFleet(Array.isArray(fl) ? fl : []);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load logistics.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item}>
@@ -1187,11 +1280,48 @@ export function AdminLogistics() {
         <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
       </motion.div>
 
+      {error && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+          {error}
+        </motion.div>
+      )}
+
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Active Vehicles" value="4/5" icon={<Truck size={20} className="text-[#3B82F6]" />} iconBg="bg-[#3B82F6]/8" index={0} accentColor="#3B82F6" />
-        <StatCard label="In Transit" value="2" icon={<MapPin size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={1} accentColor="#0171E3" />
-        <StatCard label="Avg Delivery" value="2.4h" icon={<Clock size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={2} accentColor="#30A46C" subtitle="−18 min vs last week" />
-        <StatCard label="On-Time Rate" value="96.2%" icon={<CheckCircle2 size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={3} accentColor="#FFB224" change="+1.4%" changeType="positive" />
+        <StatCard
+          label="Active Vehicles"
+          value={fmtVehicles(stats?.active_vehicles, stats?.total_vehicles)}
+          icon={<Truck size={20} className="text-[#3B82F6]" />}
+          iconBg="bg-[#3B82F6]/8"
+          index={0}
+          accentColor="#3B82F6"
+        />
+        <StatCard
+          label="In Transit"
+          value={typeof stats?.in_transit === "number" ? stats.in_transit : "—"}
+          icon={<MapPin size={20} className="text-[#0171E3]" />}
+          iconBg="bg-[#0171E3]/8"
+          index={1}
+          accentColor="#0171E3"
+        />
+        <StatCard
+          label="Avg Delivery"
+          value={fmtHours(stats?.avg_delivery_hours)}
+          icon={<Clock size={20} className="text-[#30A46C]" />}
+          iconBg="bg-[#30A46C]/8"
+          index={2}
+          accentColor="#30A46C"
+          subtitle={fmtDeltaMin(stats?.avg_delivery_delta_minutes)}
+        />
+        <StatCard
+          label="On-Time Rate"
+          value={fmtPct(stats?.on_time_rate)}
+          icon={<CheckCircle2 size={20} className="text-[#FFB224]" />}
+          iconBg="bg-[#FFB224]/8"
+          index={3}
+          accentColor="#FFB224"
+          change={fmtDeltaPct(stats?.on_time_delta)}
+          changeType={(Number(stats?.on_time_delta) || 0) >= 0 ? "positive" : "negative"}
+        />
       </motion.div>
 
       {/* Shipment Flow Chart */}
@@ -1204,7 +1334,7 @@ export function AdminLogistics() {
             </div>
           </div>
           <CustomAreaChart
-            data={shipmentData}
+            data={flow}
             xKey="month"
             series={[
               { dataKey: "incoming", color: "#3B82F6", label: "Incoming" },
@@ -1220,7 +1350,17 @@ export function AdminLogistics() {
         <SectionCard>
           <h2 className="text-foreground text-[0.9375rem] mb-6">Fleet Status</h2>
           <div className="space-y-2">
-            {vehiclesData.map((v, i) => (
+            {loading && (
+              <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                Loading fleet…
+              </div>
+            )}
+            {!loading && fleet.length === 0 && (
+              <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+                No fleet activity yet.
+              </div>
+            )}
+            {fleet.map((v, i) => (
               <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
               >

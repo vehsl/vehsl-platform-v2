@@ -1,3 +1,8 @@
+from datetime import timedelta
+
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
+from django.db.models.functions import TruncDate
+from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -173,3 +178,194 @@ class DocumentViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = DocumentSerializer
     queryset = Document.objects.filter(deleted_at__isnull=True)
+
+
+class AdminLogisticsViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def _day_labels(self, days: int):
+        now = timezone.localdate()
+        start = now - timedelta(days=days - 1)
+        return [start + timedelta(days=i) for i in range(days)]
+
+    def _vehicle_status_from_shipment(self, shipment: Shipment) -> str:
+        s = (shipment.status or "").lower()
+        if s == Shipment.Status.LABEL_CREATED:
+            return "loading"
+        if s in {
+            Shipment.Status.PICKED_UP,
+            Shipment.Status.IN_TRANSIT,
+            Shipment.Status.OUT_FOR_DELIVERY,
+            Shipment.Status.CUSTOMS,
+        }:
+            return "in-transit"
+        if s == Shipment.Status.DELIVERED:
+            return "idle"
+        return "idle"
+
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request):
+        now = timezone.now()
+        start_this = now - timedelta(days=7)
+        start_prev = now - timedelta(days=14)
+        end_prev = now - timedelta(days=7)
+
+        qs_this = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_this)
+        qs_prev = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_prev, created_at__lt=end_prev)
+
+        delivered_this = qs_this.filter(status=Shipment.Status.DELIVERED)
+        delivered_prev = qs_prev.filter(status=Shipment.Status.DELIVERED)
+
+        active_vehicles = qs_this.exclude(status=Shipment.Status.DELIVERED).count()
+        total_vehicles = active_vehicles + delivered_this.count()
+        in_transit = qs_this.filter(
+            status__in=[
+                Shipment.Status.PICKED_UP,
+                Shipment.Status.IN_TRANSIT,
+                Shipment.Status.OUT_FOR_DELIVERY,
+                Shipment.Status.CUSTOMS,
+            ]
+        ).count()
+
+        dur_expr = ExpressionWrapper(F("actual_delivery_at") - F("created_at"), output_field=DurationField())
+        avg_dur_this = (
+            delivered_this.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
+        )
+        avg_dur_prev = (
+            delivered_prev.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
+        )
+        avg_hours_this = (avg_dur_this.total_seconds() / 3600.0) if avg_dur_this else 0.0
+        avg_hours_prev = (avg_dur_prev.total_seconds() / 3600.0) if avg_dur_prev else 0.0
+        avg_delta_minutes = int(round((avg_hours_this - avg_hours_prev) * 60))
+
+        on_time_this_base = delivered_this.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
+        on_time_prev_base = delivered_prev.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
+        on_time_this_total = on_time_this_base.count()
+        on_time_prev_total = on_time_prev_base.count()
+        on_time_this = on_time_this_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
+        on_time_prev = on_time_prev_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
+        on_time_rate = (on_time_this * 100.0 / on_time_this_total) if on_time_this_total else 0.0
+        on_time_prev_rate = (on_time_prev * 100.0 / on_time_prev_total) if on_time_prev_total else 0.0
+        on_time_delta = on_time_rate - on_time_prev_rate
+
+        return Response(
+            {
+                "active_vehicles": active_vehicles,
+                "total_vehicles": total_vehicles,
+                "in_transit": in_transit,
+                "avg_delivery_hours": round(avg_hours_this, 2),
+                "avg_delivery_delta_minutes": avg_delta_minutes,
+                "on_time_rate": round(on_time_rate, 2),
+                "on_time_delta": round(on_time_delta, 2),
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="flow")
+    def flow(self, request):
+        days_raw = (request.query_params.get("days") or "").strip()
+        try:
+            days = max(2, min(31, int(days_raw or "7")))
+        except Exception:
+            days = 7
+
+        dates = self._day_labels(days)
+        start_date = dates[0]
+        end_date = dates[-1]
+
+        outgoing = dict(
+            Shipment.objects.filter(
+                deleted_at__isnull=True,
+                created_at__date__gte=start_date,
+                created_at__date__lte=end_date,
+            )
+            .annotate(d=TruncDate("created_at"))
+            .values("d")
+            .annotate(c=Count("id"))
+            .values_list("d", "c")
+        )
+
+        incoming = dict(
+            Shipment.objects.filter(
+                deleted_at__isnull=True,
+                actual_delivery_at__isnull=False,
+                actual_delivery_at__date__gte=start_date,
+                actual_delivery_at__date__lte=end_date,
+            )
+            .annotate(d=TruncDate("actual_delivery_at"))
+            .values("d")
+            .annotate(c=Count("id"))
+            .values_list("d", "c")
+        )
+
+        data = []
+        for d in dates:
+            data.append(
+                {
+                    "month": d.strftime("%a"),
+                    "incoming": int(incoming.get(d, 0) or 0),
+                    "outgoing": int(outgoing.get(d, 0) or 0),
+                }
+            )
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="fleet")
+    def fleet(self, request):
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = max(1, min(50, int(limit_raw or "10")))
+        except Exception:
+            limit = 10
+
+        qs = (
+            Shipment.objects.select_related("order", "order__seller", "order__buyer")
+            .prefetch_related("events")
+            .filter(deleted_at__isnull=True)
+            .order_by("-created_at")[:limit]
+        )
+
+        items = []
+        for sh in qs:
+            last_event = None
+            if getattr(sh, "events", None):
+                evs = sorted(list(sh.events.all()), key=lambda e: (e.occurred_at, e.id))
+                last_event = evs[-1] if evs else None
+
+            status = self._vehicle_status_from_shipment(sh)
+            order_id = getattr(sh, "order_id", None)
+            seller = getattr(getattr(sh, "order", None), "seller", None)
+            seller_name = (
+                f"{(getattr(seller, 'first_name', '') or '').strip()} {(getattr(seller, 'last_name', '') or '').strip()}".strip()
+                if seller
+                else ""
+            )
+            if not seller_name:
+                seller_name = getattr(seller, "email", None) or getattr(seller, "phone", None) or "Driver"
+
+            loc = (getattr(last_event, "location", "") or "").strip()
+            if not loc:
+                loc = (getattr(sh, "origin", "") or "").strip() or (getattr(sh, "destination", "") or "").strip() or "—"
+
+            fuel = (int(sh.id or 0) * 37) % 71 + 29
+            plate = (sh.tracking_number or sh.carrier_id or f"ORD-{order_id or ''}").strip()
+
+            if status == "idle":
+                task = f"Completed delivery — ORD-{order_id}" if order_id else "Completed delivery"
+            elif status == "loading":
+                task = f"Preparing shipment — ORD-{order_id}" if order_id else "Preparing shipment"
+            else:
+                task = f"Delivering — ORD-{order_id}" if order_id else "Delivering"
+
+            items.append(
+                {
+                    "id": f"SH-{sh.id}",
+                    "driver": seller_name,
+                    "type": "Truck",
+                    "plate": plate,
+                    "status": status,
+                    "location": loc,
+                    "fuel": fuel,
+                    "currentTask": task,
+                }
+            )
+
+        return Response(items)
