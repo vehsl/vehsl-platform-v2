@@ -107,7 +107,7 @@ function Navbar({
           
           {/* Brand */}
           <Link href="/" className="font-['Urbanist',sans-serif] text-[#19202b] text-[24px] tracking-[-0.5px] relative z-10" style={{ fontWeight: 600 }}>
-            Vehsl
+            Vehslcc
           </Link>
 
           {/* Categories - desktop */}
