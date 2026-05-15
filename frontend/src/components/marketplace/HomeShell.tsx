@@ -13,6 +13,8 @@ import { cn } from "@/components/ui/utils";
 import { MegaMenu } from "@/components/marketplace/MegaMenu";
 import { SearchBar } from "@/components/marketplace/SearchBar";
 import { TopNav } from "@/components/marketplace/TopNav";
+import { SuggestedProducts } from "@/components/marketplace/SuggestedProducts";
+import { TrustSection } from "@/components/marketplace/TrustSection";
 import { useLanguage } from "@/context/language";
 
 export function HomeShell() {
@@ -149,7 +151,7 @@ export function HomeShell() {
             align="center"
             sideOffset={14}
             className={cn(
-              "w-[92vw] max-w-[360px] max-h-[80dvh] overflow-y-auto rounded-[28px] border border-white/60 bg-white/55 p-4 backdrop-blur-2xl shadow-soft",
+              "w-[92vw] max-w-360px max-h-[80dvh] overflow-y-auto rounded-[28px] border border-white/60 bg-white/55 p-4 backdrop-blur-2xl shadow-soft",
             )}
           >
             <div className="rounded-3xl bg-white/65 p-4">
@@ -216,7 +218,7 @@ export function HomeShell() {
           </PopoverContent>
         </Popover>
 
-        <div className="pointer-events-none fixed inset-x-0 top-0 z-30 h-[200px]" />
+        <div className="pointer-events-none fixed inset-x-0 top-0 z-30 h-200px" />
 
         <div className="absolute inset-x-0 top-0 z-40">
           <MegaMenu
@@ -231,7 +233,12 @@ export function HomeShell() {
           <div className="pointer-events-none absolute inset-0 -z-10" />
 
           <div className="flex w-full flex-col items-center">
-            <div className="select-none text-center text-[56px] font-extrabold leading-[0.95] tracking-[-0.04em] text-gradient-brand sm:text-[84px] md:text-[160px]">
+            <div className="select-none text-center text-[56px] font-extrabold leading-[0.95] tracking-[-0.04em] text-gradient-brand sm:text-[60px] md:text-[100px]"
+            style={{
+            fontFamily: "'Urbanist', sans-serif",
+            backgroundImage:
+              "linear-gradient(75.5174deg, rgba(0, 143, 247, 0.8) 9.9891%, rgba(45, 132, 248, 0.8) 20.466%, rgba(90, 121, 249, 0.8) 30.943%, rgba(179, 99, 250, 0.8) 42.629%, rgba(228, 75, 193, 0.8) 55.524%, rgba(235, 72, 131, 0.8) 67.21%, rgba(243, 69, 70, 0.72) 85.423%, rgba(255, 221, 85, 0.8) 93.805%)",
+          }}>
               Vehsl
             </div>
 
@@ -240,6 +247,9 @@ export function HomeShell() {
             </div>
           </div>
         </div>
+
+        <SuggestedProducts />
+        {/* <TrustSection /> */}
       </div>
     </div>
   );

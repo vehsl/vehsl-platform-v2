@@ -19,7 +19,7 @@ export function SearchBar({
   return (
     <div
       className={cn(
-        "mx-auto flex h-14 w-full max-w-[640px] items-center gap-3 rounded-full border border-white/70 bg-white/85 px-4 backdrop-blur-md shadow-soft sm:h-16 sm:px-5",
+        "mx-auto flex h-14 w-full max-w-160 items-center gap-3 rounded-full border border-white/70 bg-white/85 px-4 backdrop-blur-md shadow-soft sm:h-16 sm:px-5",
         "focus-within:ring-2 focus-within:ring-blue-200",
         className,
       )}
@@ -40,7 +40,7 @@ export function SearchBar({
       </button>
       <button
         type="button"
-        className="flex h-11 w-11 items-center justify-center rounded-full bg-blue-600 text-white shadow-soft"
+        className="flex h-10 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-soft"
         aria-label="Voice"
       >
         <Mic className="h-5 w-5" strokeWidth={1.5} />
