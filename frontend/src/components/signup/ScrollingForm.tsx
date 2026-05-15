@@ -44,6 +44,7 @@ import {
   ArrowUp,
   Smile,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { SignupData, SectionId } from "./SignupFlow";
 
@@ -438,6 +439,13 @@ export function ScrollingForm({
         @keyframes spin-slow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         .spin-slow{animation:spin-slow 1s linear infinite}
       `}</style>
+
+      {false && (
+        <>
+          <LivenessCheckModal onComplete={() => {}} onClose={() => {}} />
+          <UploadZone label="" uploaded={false} onUpload={() => {}} />
+        </>
+      )}
 
       {/* ── Mobile progress header (hidden on lg+) ── */}
       <div className="lg:hidden sticky top-0 z-40 px-5 py-3" style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(12px)", borderBottom: "1px solid rgba(134,134,139,0.07)" }}>
@@ -1409,8 +1417,8 @@ function CountrySelect({ value, flag, onChange, placeholder = "Country" }: { val
 }
 
 /* Document option button with inline upload */
-function DocOption({ id, label, hint, icon: Icon, selected, disabled, onSelect, bounce, uploaded, onUpload }: {
-  id: string; label: string; hint: string; icon: any; selected: boolean; disabled: boolean; onSelect: () => void; bounce: number; uploaded?: boolean; onUpload?: (file: File) => void;
+function DocOption({ id: _id, label, hint, icon: Icon, selected, disabled, onSelect, bounce, uploaded, onUpload }: {
+  id: string; label: string; hint: string; icon: LucideIcon; selected: boolean; disabled: boolean; onSelect: () => void; bounce: number; uploaded?: boolean; onUpload?: (file: File) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1506,7 +1514,7 @@ function LivenessCheckModal({ onComplete, onClose }: { onComplete: () => void; o
   const [positionFeedback, setPositionFeedback] = useState<'move-closer' | 'perfect' | 'look-center'>('move-closer');
   const [currentInstruction, setCurrentInstruction] = useState(0);
   const [flashColor, setFlashColor] = useState<'blue' | 'green' | 'red'>('blue');
-  const [instructions, setInstructions] = useState<Array<{ icon: any; text: string; detail: string }>>([]);
+  const [instructions, setInstructions] = useState<Array<{ icon: LucideIcon; text: string; detail: string }>>([]);
   const [stageComplete, setStageComplete] = useState(false);
 
   const allInstructions = useMemo(() => [

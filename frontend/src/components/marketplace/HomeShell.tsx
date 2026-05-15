@@ -151,18 +151,18 @@ export function HomeShell() {
             align="center"
             sideOffset={14}
             className={cn(
-              "w-[92vw] max-w-360px max-h-[80dvh] overflow-y-auto rounded-[28px] border border-white/60 bg-white/55 p-4 backdrop-blur-2xl shadow-soft",
+              "w-[88vw] max-w-[360px] max-h-[80dvh] overflow-y-auto rounded-[22px] border border-white/60 bg-white/55 p-3 backdrop-blur-2xl shadow-soft",
             )}
           >
-            <div className="rounded-3xl bg-white/65 p-4">
-              <div className="text-center text-sm font-semibold text-[#0f1115]">{t("login")}</div>
+            <div className="rounded-[20px] bg-white/65 p-3">
+              <div className="text-center text-[13px] font-semibold text-[#0f1115]">{t("login")}</div>
 
-              <div className="mt-4 space-y-3">
+              <div className="mt-3 space-y-2.5">
                 <Input
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   placeholder={t("emailOrPhone")}
-                  className="h-11 rounded-full bg-white/85"
+                  className="h-10 rounded-full bg-white/85 text-sm"
                 />
 
                 <div className="relative">
@@ -171,7 +171,7 @@ export function HomeShell() {
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder={t("password")}
                     type={showPassword ? "text" : "password"}
-                    className="h-11 rounded-full bg-white/85 pr-12"
+                    className="h-10 rounded-full bg-white/85 pr-10 text-sm"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleSignIn();
                     }}
@@ -188,18 +188,18 @@ export function HomeShell() {
               </div>
 
               <div className="mt-2 flex justify-end">
-                <button type="button" className="text-xs font-medium text-blue-600">
+                <button type="button" className="text-[11px] font-medium text-blue-600">
                   {t("forgotPassword")}
                 </button>
               </div>
 
-              <div className="mt-5 flex justify-center">
+              <div className="mt-4 flex justify-center gap-2">
                 <Button
                   type="button"
                   onClick={handleSignIn}
                   disabled={signingIn}
                   className={cn(
-                    "h-11 rounded-full bg-blue-600 px-6 text-white shadow-soft hover:bg-blue-600/90",
+                    "h-10 rounded-full bg-blue-600 px-5 text-[13px] text-white shadow-soft hover:bg-blue-600/90",
                   )}
                 >
                   {signingIn ? "Signing in..." : t("signIn")}
@@ -207,7 +207,7 @@ export function HomeShell() {
                 <Button
                   asChild
                   className={cn(
-                    "h-11 rounded-full bg-white px-6 text-[#0f1115] shadow-soft",
+                    "h-10 rounded-full bg-white px-5 text-[13px] text-[#0f1115] shadow-soft",
                     "bg-[linear-gradient(white,white),linear-gradient(90deg,#3b82f6,#8b5cf6,#ec4899,#f59e0b)] bg-origin-border bg-clip-padding,border-box border border-transparent",
                   )}
                 >

@@ -3,7 +3,10 @@ import { SectionReveal } from "../ui/section-reveal";
 import trustBlur from "../../assets/trust-blur.png";
 import assuranceSvg from "../../assets/assurance.svg";
 export function TrustSection() {
-  const { t } = useLanguage();
+  const { language } = useLanguage();
+  const t = (en: string, zh: string) => (language === "zh" ? zh : en);
+  const trustBlurSrc = typeof trustBlur === "string" ? trustBlur : trustBlur.src;
+  const assuranceSrc = typeof assuranceSvg === "string" ? assuranceSvg : assuranceSvg.src;
   
   return (
     <section className="relative px-6 overflow-hidden bg-white">
@@ -14,7 +17,7 @@ export function TrustSection() {
               {t("Experience", "体验")}
             </p>
             <div className="relative w-full flex justify-center">
-              <img src={trustBlur} alt="" className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-auto pointer-events-none select-none" aria-hidden />
+              <img src={trustBlurSrc} alt="" className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-auto pointer-events-none select-none" aria-hidden />
               <h2 className="relative font-['Urbanist',sans-serif] text-center text-[clamp(36px,8vw,96px)] leading-[1] tracking-[-1.2px]" style={{ fontWeight: 700, color: "rgba(0, 0, 0, 0.90)" }}>
                 {t("Trust at first sight", "一见即信赖")}
               </h2>
@@ -24,7 +27,7 @@ export function TrustSection() {
 
         <SectionReveal delay={1}>
           <div className="flex justify-center mt-15 md:mt-0">
-            <img src={assuranceSvg} alt="Assurance" className="w-full max-w-[448px] sm:max-w-[560px] h-auto" />
+            <img src={assuranceSrc} alt="Assurance" className="w-full max-w-[448px] sm:max-w-[560px] h-auto" />
           </div>
         </SectionReveal>
       </div>

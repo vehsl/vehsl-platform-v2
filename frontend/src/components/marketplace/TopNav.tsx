@@ -76,15 +76,17 @@ export function TopNav({
             <LanguageToggle />
           </div>
 
-          <button
-            type="button"
-            className={cn(
-              "rounded-full bg-white font-semibold tracking-tight text-[#ec4899] shadow-soft text-[10px] px-2 py-1 sm:text-xs sm:px-4 sm:py-2 hidden xs:block",
-              "bg-[linear-gradient(white,white),linear-gradient(90deg,#3b82f6,#8b5cf6,#ec4899,#f59e0b)] bg-origin-border bg-clip-padding border border-transparent"
-            )}
-          >
-            Sign In
-          </button>
+          {signInSlot ?? (
+            <Link
+              href="/signup"
+              className={cn(
+                "rounded-full bg-white font-semibold tracking-tight text-[#ec4899] shadow-soft text-[10px] px-2 py-1 sm:text-xs sm:px-4 sm:py-2",
+                "bg-[linear-gradient(white,white),linear-gradient(90deg,#3b82f6,#8b5cf6,#ec4899,#f59e0b)] bg-origin-border bg-clip-padding border border-transparent"
+              )}
+            >
+              Sign In
+            </Link>
+          )}
 
           {/* MOBILE TOGGLE */}
           <button
