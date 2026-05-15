@@ -27,7 +27,7 @@ const BUSINESS_DOCS = [
 
 export function VerificationStep({
   accountType,
-  value,
+  value: _value,
   onChange,
   onPrev,
   onComplete,

@@ -202,7 +202,7 @@ function DropdownSelect({
             }}
           >
             <div className="p-2">
-              {options.map((option, index) => (
+              {options.map((option) => (
                 <motion.button
                   key={option}
                   onClick={() => {

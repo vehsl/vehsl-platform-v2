@@ -67,7 +67,7 @@ const SECTION_ENCOURAGEMENTS: Record<string, string> = {
 };
 
 export function SummaryPanel({
-  data,
+  data: _data,
   completedSections,
   applicableSections,
 }: Props) {

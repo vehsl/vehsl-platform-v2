@@ -1,6 +1,6 @@
 export { AliveButton } from "./alive-button";
 export { AliveElement } from "./alive-element";
-export { CategoryNav, getCategoryIcon } from "./category-nav";
+export { CategoryNav } from "./category-nav";
 export { LanguageToggle } from "../common/LanguageToggle";
 export { ProductCard } from "./product-card";
 export { ProfileDropdown } from "./profile-dropdown";

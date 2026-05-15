@@ -18,7 +18,7 @@ export function NameStep({
   lastName,
   onChange,
   onNext,
-  onPrev,
+  onPrev: _onPrev,
 }: NameStepProps) {
   const [focusedField, setFocusedField] = useState<"firstName" | "lastName" | null>(null);
 
