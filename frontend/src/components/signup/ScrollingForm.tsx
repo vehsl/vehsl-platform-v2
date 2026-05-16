@@ -112,21 +112,16 @@ const ID_TYPES = [
   { id: "passport", label: "Passport", icon: FileText, hint: "Photo page of your passport" },
   { id: "id-card", label: "National ID Card", icon: CreditCard, hint: "Front and back of your ID" },
   { id: "drivers-license", label: "Driver's License", icon: FileCheck, hint: "Front side with your photo" },
-  { id: "residence-permit", label: "Residence Permit", icon: Home, hint: "Valid, non-expired permit" },
 ];
 
 const BIZ_DOC_TYPES = [
   { id: "registration", label: "Business Registration", icon: Building2, hint: "Certificate of incorporation or registration" },
-  { id: "tax-certificate", label: "Tax Certificate", icon: FileSignature, hint: "Valid tax registration document" },
-  { id: "ownership-proof", label: "Proof of Ownership", icon: FileText, hint: "Share certificate or partnership deed" },
   { id: "license", label: "Business License", icon: FileCheck, hint: "Operating or trade license" },
 ];
 
 const PROOF_OF_ADDRESS_TYPES = [
   { id: "utility-bill", label: "Utility Bill", icon: Receipt, hint: "Gas, electricity or water — dated within 3 months" },
   { id: "bank-statement", label: "Bank Statement", icon: Landmark, hint: "Official statement showing your address" },
-  { id: "rental-agreement", label: "Rental / Lease Agreement", icon: FileText, hint: "Signed agreement with your current address" },
-  { id: "govt-letter", label: "Government Letter", icon: MailCheck, hint: "Official correspondence from a government body" },
 ];
 
 const ALL_SECTIONS: SectionId[] = [
@@ -339,26 +334,43 @@ export function ScrollingForm({
       fd.append("bank_details", JSON.stringify(bankDetails));
       if (data.pepCheck) fd.append("pep_check", data.pepCheck);
 
+      const idKey = (t: string) => {
+        if (t === "passport") return "passport";
+        if (t === "id-card") return "id_card";
+        if (t === "drivers-license") return "driving_license";
+        return "";
+      };
+      const addressKey = (t: string) => {
+        if (t === "bank-statement") return "bank_statement";
+        if (t === "utility-bill") return "utility_bill";
+        return "";
+      };
+      const bizKey = (t: string) => {
+        if (t === "registration") return "business_registration";
+        if (t === "license") return "business_license";
+        return "";
+      };
+
       if (data.doc1File && data.verificationType) {
-        fd.append("id_doc_1", data.doc1File);
-        fd.append("id_doc_1_type", data.verificationType);
+        const k = idKey(data.verificationType);
+        if (k) fd.append(k, data.doc1File);
       }
       if (data.doc2File && data.verificationType2) {
-        fd.append("id_doc_2", data.doc2File);
-        fd.append("id_doc_2_type", data.verificationType2);
+        const k = idKey(data.verificationType2);
+        if (k) fd.append(k, data.doc2File);
       }
       if (data.proofFile && data.proofOfAddress) {
-        fd.append("proof_of_address", data.proofFile);
-        fd.append("proof_of_address_type", data.proofOfAddress);
+        const k = addressKey(data.proofOfAddress);
+        if (k) fd.append(k, data.proofFile);
       }
       if (data.accountType === "seller") {
         if (data.bizDoc1File && data.businessDoc1) {
-          fd.append("business_doc_1", data.bizDoc1File);
-          fd.append("business_doc_1_type", data.businessDoc1);
+          const k = bizKey(data.businessDoc1);
+          if (k) fd.append(k, data.bizDoc1File);
         }
         if (data.bizDoc2File && data.businessDoc2) {
-          fd.append("business_doc_2", data.bizDoc2File);
-          fd.append("business_doc_2_type", data.businessDoc2);
+          const k = bizKey(data.businessDoc2);
+          if (k) fd.append(k, data.bizDoc2File);
         }
       }
 
