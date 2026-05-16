@@ -84,6 +84,7 @@ export function AdminUsers() {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [success, setSuccess] = useState<string>("");
 
   const [menuUserId, setMenuUserId] = useState<number | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -101,6 +102,12 @@ export function AdminUsers() {
     status: "active",
     password: "",
   });
+
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewMode, setReviewMode] = useState<"approve" | "reject">("approve");
+  const [reviewUser, setReviewUser] = useState<any>(null);
+  const [reviewReason, setReviewReason] = useState("");
+  const [reviewSaving, setReviewSaving] = useState(false);
 
   const formatNumber = (v: any) => {
     const n = Number(v);
@@ -154,13 +161,50 @@ export function AdminUsers() {
     const isJson = (res.headers.get("content-type") || "").includes("application/json");
     const data = isJson ? await res.json().catch(() => null) : null;
     if (!res.ok) {
+      const pickMsg = (x: any): string => {
+        if (!x) return "";
+        if (typeof x === "string") return x;
+        if (typeof x?.detail === "string") return x.detail;
+        if (typeof x?.error === "string") return x.error;
+        if (typeof x === "object") {
+          for (const k of Object.keys(x)) {
+            const v = (x as any)[k];
+            if (typeof v === "string" && v.trim()) return v;
+            if (Array.isArray(v) && v.length && typeof v[0] === "string") return v[0];
+          }
+        }
+        return "";
+      };
       const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
+        pickMsg(data) ||
         `Request failed (${res.status})`;
       throw new Error(msg);
     }
     return data;
+  };
+
+  const buildUsersParams = (opts?: { search?: string; roleFilter?: string; statusFilter?: string }) => {
+    const params = new URLSearchParams();
+    const s = (opts?.search ?? search).trim();
+    const rf = (opts?.roleFilter ?? roleFilter).toString();
+    const sf = (opts?.statusFilter ?? statusFilter).toString();
+    if (s) params.set("q", s);
+    if (rf !== "all") {
+      if (rf === "manager") {
+        params.set("role", "admin");
+        params.set("admin_role", "manager");
+      } else {
+        params.set("role", rf);
+      }
+    }
+    if (sf !== "all") params.set("admin_status", sf);
+    return params;
+  };
+
+  const fetchUsersList = async (opts?: { search?: string; roleFilter?: string; statusFilter?: string }) => {
+    const params = buildUsersParams(opts);
+    const data = await fetchJson(`/api/v1/admin/users?${params.toString()}`);
+    return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
   };
 
   useEffect(() => {
@@ -185,19 +229,7 @@ export function AdminUsers() {
     const t = setTimeout(() => {
       (async () => {
         try {
-          const params = new URLSearchParams();
-          if (search.trim()) params.set("q", search.trim());
-          if (roleFilter !== "all") {
-            if (roleFilter === "manager") {
-              params.set("role", "admin");
-              params.set("admin_role", "manager");
-            } else {
-              params.set("role", roleFilter);
-            }
-          }
-          if (statusFilter !== "all") params.set("admin_status", statusFilter);
-          const data = await fetchJson(`/api/v1/admin/users?${params.toString()}`);
-          const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+          const rows = await fetchUsersList();
           if (!cancelled) setUsers(rows);
         } catch (e: any) {
           if (!cancelled) {
@@ -275,9 +307,12 @@ export function AdminUsers() {
     setSaving(true);
     setFormError("");
     try {
+      setSuccess("");
       const roleRaw = (form.role || "buyer").toString().toLowerCase();
       const isManager = roleRaw === "manager";
       const roleToSend = isManager ? "admin" : roleRaw;
+      const defaultPassword = "Test123!@#";
+      const passwordToSend = (form.password || "").trim() || (formMode === "create" ? defaultPassword : "");
       const payload: any = {
         first_name: form.first_name || "",
         last_name: form.last_name || "",
@@ -286,7 +321,7 @@ export function AdminUsers() {
         role: roleToSend,
         status: (form.status || "active").toString().toLowerCase(),
       };
-      if ((form.password || "").trim()) payload.password = (form.password || "").trim();
+      if (passwordToSend) payload.password = passwordToSend;
       if (isManager) payload.admin_role = (form.admin_role || "logistics").toString().toLowerCase();
 
       const data =
@@ -304,6 +339,10 @@ export function AdminUsers() {
 
       upsertUser(data);
       setFormOpen(false);
+      if (formMode === "create" && !(form.password || "").trim()) {
+        const identifier = ((payload.email as string) || (payload.phone as string) || "").toString();
+        setSuccess(`User created. Login with ${identifier || "the provided email/phone"} and password: ${defaultPassword}`);
+      }
       try {
         const newStats = await fetchJson("/api/v1/admin/users/stats");
         setStats(newStats);
@@ -346,6 +385,50 @@ export function AdminUsers() {
       setMenuUserId(null);
     } catch (e: any) {
       setError(e?.message || "Failed to reset password.");
+    }
+  };
+
+  const openSellerReview = (u: any, mode: "approve" | "reject") => {
+    setReviewUser(u);
+    setReviewMode(mode);
+    setReviewReason("");
+    setReviewOpen(true);
+    setMenuUserId(null);
+  };
+
+  const submitSellerReview = async () => {
+    if (!reviewUser?.id) return;
+    setReviewSaving(true);
+    setError("");
+    try {
+      const mode = reviewMode;
+      const url =
+        mode === "approve"
+          ? `/api/v1/admin/users/${reviewUser.id}/seller-verify/approve/`
+          : `/api/v1/admin/users/${reviewUser.id}/seller-verify/reject/`;
+
+      const init: RequestInit =
+        mode === "approve"
+          ? { method: "POST" }
+          : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: reviewReason || "" }) };
+
+      const data = await fetchJson(url, init);
+      upsertUser(data);
+      setReviewOpen(false);
+      setReviewUser(null);
+      setReviewReason("");
+      try {
+        const newStats = await fetchJson("/api/v1/admin/users/stats");
+        setStats(newStats);
+      } catch {}
+      try {
+        const rows = await fetchUsersList();
+        setUsers(rows);
+      } catch {}
+    } catch (e: any) {
+      setError(e?.message || "Failed to update seller verification.");
+    } finally {
+      setReviewSaving(false);
     }
   };
 
@@ -443,6 +526,11 @@ export function AdminUsers() {
               {error}
             </div>
           )}
+          {success && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-[#30A46C]/8 text-[#1f7a4a] text-[0.8125rem]">
+              {success}
+            </div>
+          )}
 
           <div className="space-y-2">
             {loading && (
@@ -461,6 +549,8 @@ export function AdminUsers() {
               const displayRoleKey = roleKey === "admin" && adminRole && adminRole !== "super_admin" ? "manager" : roleKey;
               const roleColor = roleColors[displayRoleKey] || "#0171E3";
               const pill = statusToPill(user?.admin_status || user?.status);
+              const isSeller = roleKey === "seller" || (user?.account_type || "").toString().toLowerCase() === "seller";
+              const needsSellerReview = isSeller && (pill.label === "pending" || pill.label === "review");
               return (
               <motion.div
                 key={user.id}
@@ -530,6 +620,24 @@ export function AdminUsers() {
                           <Lock size={14} className="text-muted-foreground/60" />
                           Reset Password
                         </button>
+                        {needsSellerReview && (
+                          <>
+                            <button
+                              className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                              onClick={() => openSellerReview(user, "approve")}
+                            >
+                              <CheckCircle2 size={14} className="text-[#30A46C]/80" />
+                              Approve Seller
+                            </button>
+                            <button
+                              className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                              onClick={() => openSellerReview(user, "reject")}
+                            >
+                              <XCircle size={14} className="text-[#E5484D]/80" />
+                              Reject Seller
+                            </button>
+                          </>
+                        )}
                         {(user?.status || "").toString().toLowerCase() === "suspended" ? (
                           <button
                             className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
@@ -682,6 +790,90 @@ export function AdminUsers() {
                   icon={saving ? <Clock size={14} /> : <UserPlus size={14} />}
                 >
                   {saving ? "Saving…" : formMode === "create" ? "Create" : "Save"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {reviewOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => {
+              if (!reviewSaving) setReviewOpen(false);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-5">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">
+                    {reviewMode === "approve" ? "Approve seller account" : "Reject seller account"}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {reviewUser?.display_name || reviewUser?.email || reviewUser?.phone || "Seller"} · Only admins can perform this action.
+                  </p>
+                </div>
+                <button
+                  className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60"
+                  onClick={() => {
+                    if (!reviewSaving) setReviewOpen(false);
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {reviewMode === "reject" && (
+                <div className="mb-5">
+                  <label className="block text-[0.75rem] text-muted-foreground/70 mb-2">Reason (optional)</label>
+                  <textarea
+                    value={reviewReason}
+                    onChange={e => setReviewReason(e.target.value)}
+                    rows={4}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    placeholder="Write a short reason for rejection…"
+                  />
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <BounceButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    if (!reviewSaving) setReviewOpen(false);
+                  }}
+                >
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={reviewSaving ? undefined : submitSellerReview}
+                  className={reviewSaving ? "opacity-70 pointer-events-none" : ""}
+                  icon={
+                    reviewSaving ? (
+                      <Clock size={14} />
+                    ) : reviewMode === "approve" ? (
+                      <CheckCircle2 size={14} />
+                    ) : (
+                      <XCircle size={14} />
+                    )
+                  }
+                >
+                  {reviewSaving ? "Saving…" : reviewMode === "approve" ? "Approve" : "Reject"}
                 </BounceButton>
               </div>
             </motion.div>
