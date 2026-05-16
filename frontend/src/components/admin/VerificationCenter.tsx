@@ -597,6 +597,9 @@ export function VerificationCenter() {
   const [usersLoading, setUsersLoading] = useState(false);
   const [releaseLoading, setReleaseLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [missingGroups, setMissingGroups] = useState<string[] | null>(null);
+  const [missingUserId, setMissingUserId] = useState<string | null>(null);
+  const [requestingUpload, setRequestingUpload] = useState(false);
 
   const apiBase = () => {
     const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
@@ -635,9 +638,22 @@ export function VerificationCenter() {
     const isJson = (res.headers.get("content-type") || "").includes("application/json");
     const data = isJson ? await res.json().catch(() => null) : null;
     if (!res.ok) {
+      const pickMsg = (x: any): string => {
+        if (!x) return "";
+        if (typeof x === "string") return x;
+        if (typeof x?.detail === "string") return x.detail;
+        if (typeof x?.error === "string") return x.error;
+        if (typeof x === "object") {
+          for (const k of Object.keys(x)) {
+            const v = (x as any)[k];
+            if (typeof v === "string" && v.trim()) return v;
+            if (Array.isArray(v) && v.length && typeof v[0] === "string") return v[0];
+          }
+        }
+        return "";
+      };
       const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
+        pickMsg(data) ||
         `Request failed (${res.status})`;
       throw new Error(msg);
     }
@@ -823,14 +839,45 @@ export function VerificationCenter() {
     }
   };
 
+  const postAdminVerificationAction = async (path: string, body?: any) => {
+    const access = getAccess();
+    const res = await fetch(`${apiBase()}${path}`, {
+      method: "POST",
+      headers: {
+        ...(access ? { Authorization: `Bearer ${access}` } : {}),
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : null;
+    if (!res.ok) {
+      const msg =
+        (data && (typeof data.detail === "string" ? data.detail : "")) ||
+        (typeof data === "string" ? data : "") ||
+        `Request failed (${res.status})`;
+      const err: any = new Error(msg);
+      if (data && typeof data === "object") err.data = data;
+      throw err;
+    }
+    return data;
+  };
+
   const approveAll = async () => {
     if (!selectedProfile) return;
     try {
-      await fetchJson(`/api/v1/admin/verification/users/${selectedProfile.id}/approve-all/`, { method: "POST" });
+      await postAdminVerificationAction(`/api/v1/admin/verification/users/${selectedProfile.id}/approve-all/`);
       await openProfile(String(selectedProfile.id));
       await refreshUsers();
       await refreshUserStats();
     } catch (e: any) {
+      const mg = e?.data?.missing_groups;
+      if (Array.isArray(mg) && mg.length) {
+        setMissingGroups(mg.map((x: any) => String(x)));
+        setMissingUserId(String(selectedProfile.id));
+        setError("");
+        return;
+      }
       setError(e?.message || "Failed to approve all.");
     }
   };
@@ -838,12 +885,28 @@ export function VerificationCenter() {
   const requestReverification = async () => {
     if (!selectedProfile) return;
     try {
-      await fetchJson(`/api/v1/admin/verification/users/${selectedProfile.id}/request-reverification/`, { method: "POST" });
+      await postAdminVerificationAction(`/api/v1/admin/verification/users/${selectedProfile.id}/request-reverification/`);
       await openProfile(String(selectedProfile.id));
       await refreshUsers();
       await refreshUserStats();
     } catch (e: any) {
       setError(e?.message || "Failed to request re-verification.");
+    }
+  };
+
+  const requestUploadFromUser = async () => {
+    if (!missingUserId) return;
+    setRequestingUpload(true);
+    setError("");
+    try {
+      await postAdminVerificationAction(`/api/v1/admin/verification/users/${missingUserId}/request-documents/`);
+      setMissingGroups(null);
+      setMissingUserId(null);
+      setError("");
+    } catch (e: any) {
+      setError(e?.message || "Failed to request upload.");
+    } finally {
+      setRequestingUpload(false);
     }
   };
 
@@ -1177,6 +1240,89 @@ export function VerificationCenter() {
             onApproveAll={approveAll}
             onRequestReverification={requestReverification}
           />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {!!missingGroups?.length && (
+          <>
+            <motion.div
+              className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!requestingUpload) {
+                  setMissingGroups(null);
+                  setMissingUserId(null);
+                }
+              }}
+            />
+            <motion.div
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[520px] max-w-[92vw] bg-card rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.12)] z-50 overflow-hidden"
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ type: "spring", stiffness: 420, damping: 30 }}
+            >
+              <div className="px-6 pt-6 pb-4 border-b border-black/[0.04]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-[0.875rem] text-foreground/80">Missing required documents</h3>
+                    <p className="text-[0.75rem] text-muted-foreground/60 mt-1">
+                      Approve is blocked until the user uploads all required documents.
+                    </p>
+                  </div>
+                  <motion.button
+                    onClick={() => {
+                      if (!requestingUpload) {
+                        setMissingGroups(null);
+                        setMissingUserId(null);
+                      }
+                    }}
+                    className="text-muted-foreground/30 hover:text-muted-foreground/60 cursor-pointer p-1"
+                    whileTap={{ scale: 0.9 }}
+                  >
+                    <X size={14} />
+                  </motion.button>
+                </div>
+              </div>
+              <div className="px-6 py-5 space-y-3">
+                <div className="text-[0.75rem] text-muted-foreground/70">Missing:</div>
+                <div className="flex flex-wrap gap-2">
+                  {missingGroups.map((g) => (
+                    <span key={g} className="px-3 py-1.5 rounded-full bg-muted/20 text-[0.75rem] text-foreground/70">
+                      {g}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="px-6 py-4 border-t border-black/[0.04] flex justify-end gap-2">
+                <motion.button
+                  onClick={() => {
+                    if (!requestingUpload) {
+                      setMissingGroups(null);
+                      setMissingUserId(null);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl text-[0.75rem] text-muted-foreground/50 hover:text-foreground/60 hover:bg-muted/15 transition-colors cursor-pointer"
+                  whileTap={{ scale: 0.95 }}
+                >
+                  Cancel
+                </motion.button>
+                <motion.button
+                  onClick={requestingUpload ? undefined : requestUploadFromUser}
+                  className={`flex items-center gap-1.5 px-5 py-2 rounded-xl bg-[#0171E3] text-white text-[0.75rem] shadow-[0_1px_8px_rgba(1,113,227,0.22)] cursor-pointer ${
+                    requestingUpload ? "opacity-70 pointer-events-none" : ""
+                  }`}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  <Upload size={13} />
+                  {requestingUpload ? "Requesting…" : "Request Upload"}
+                </motion.button>
+              </div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
 

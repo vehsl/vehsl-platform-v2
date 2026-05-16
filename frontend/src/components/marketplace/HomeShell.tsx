@@ -123,7 +123,22 @@ export function HomeShell() {
       setSignInOpen(false);
       toast.success("Signed in.");
       const role = (tokens?.user?.role || "").toString().toLowerCase();
-      router.push(role === "admin" ? "/admin/admin" : "/orders/1");
+      if (role === "admin") {
+        router.push("/admin/admin");
+        return;
+      }
+
+      try {
+        const access = tokens?.access || "";
+        const reqRes = await fetch(`${base}/api/v1/kyc/requirements`, {
+          headers: access ? { Authorization: `Bearer ${access}` } : {},
+        });
+        const reqData = await reqRes.json().catch(() => null);
+        const needsUpload = !!reqData && reqRes.ok && reqData.all_required_uploaded === false;
+        router.push(needsUpload ? "/kyc" : "/orders/1");
+      } catch {
+        router.push("/orders/1");
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error.";
       toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);

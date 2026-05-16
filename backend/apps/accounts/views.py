@@ -6,6 +6,8 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.conf import settings as django_settings
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from django.db.models import CharField, Count, DecimalField, Q, Sum
 from django.utils import timezone
 from datetime import timedelta
@@ -37,6 +39,8 @@ from .serializers import (
     BuyerProfileSerializer,
     ChatMessageSerializer,
     ChatThreadSerializer,
+    KycDocumentSelfSerializer,
+    KycDocumentUploadSerializer,
     NotificationSerializer,
     MeUpdateSerializer,
     RegisterSerializer,
@@ -933,6 +937,150 @@ class MeView(APIView):
         return Response(UserSerializer(user).data)
 
 
+def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
+    role = (getattr(user, "account_type", "") or getattr(user, "role", "") or "").lower()
+    is_seller = role == User.AccountType.SELLER or role == User.Role.SELLER
+
+    def opt(kind: str, label: str):
+        return {"kind": kind, "label": label}
+
+    groups = [
+        {
+            "key": "identity",
+            "label": "Identity Document",
+            "required": True,
+            "required_count": 2,
+            "options": [
+                opt(KycDocument.Kind.PASSPORT, "Passport"),
+                opt(KycDocument.Kind.ID_CARD, "National ID"),
+                opt(KycDocument.Kind.DRIVING_LICENSE, "Driving License"),
+            ],
+        },
+        {
+            "key": "address",
+            "label": "Proof of Address",
+            "required": True,
+            "required_count": 1,
+            "options": [
+                opt(KycDocument.Kind.BANK_STATEMENT, "Bank Statement"),
+                opt(KycDocument.Kind.UTILITY_BILL, "Utility Bill"),
+            ],
+        },
+    ]
+
+    if is_seller:
+        groups.append(
+            {
+                "key": "business",
+                "label": "Business Document",
+                "required": True,
+                "required_count": 2,
+                "options": [
+                    opt(KycDocument.Kind.BUSINESS_REGISTRATION, "Business Registration"),
+                    opt(KycDocument.Kind.BUSINESS_LICENSE, "Business License"),
+                ],
+            }
+        )
+
+    return groups
+
+
+def _kyc_requirements_payload(user: User, request) -> dict:
+    groups = _kyc_requirement_groups_for_user(user)
+    docs = list(KycDocument.objects.filter(user=user).select_related("reviewed_by").order_by("-uploaded_at"))
+
+    def docs_for_group(g: dict) -> list[KycDocument]:
+        kinds = [o["kind"] for o in (g.get("options") or [])]
+        kinds_set = set(kinds)
+        return [d for d in docs if (d.kind or "") in kinds_set]
+
+    out_groups: list[dict] = []
+    missing_groups: list[str] = []
+
+    for g in groups:
+        gdocs = docs_for_group(g)
+        required_count = int(g.get("required_count") or (1 if g.get("required") else 0))
+        uploaded_count = len(gdocs)
+        has_enough = uploaded_count >= required_count
+        if g.get("required") and not has_enough:
+            missing_groups.append(g["key"])
+
+        out_groups.append(
+            {
+                "key": g["key"],
+                "label": g["label"],
+                "required": bool(g.get("required")),
+                "required_count": required_count,
+                "uploaded_count": uploaded_count,
+                "options": g.get("options") or [],
+                "documents": KycDocumentSelfSerializer(gdocs, many=True, context={"request": request}).data,
+                "status": (
+                    "missing"
+                    if not has_enough
+                    else "rejected"
+                    if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
+                    else "pending"
+                    if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
+                    else "verified"
+                    if all(d.review_status == KycDocument.ReviewStatus.VERIFIED for d in gdocs)
+                    else "pending"
+                ),
+            }
+        )
+
+    all_required_uploaded = len(missing_groups) == 0
+    return {
+        "role": (getattr(user, "role", "") or "").lower(),
+        "account_type": (getattr(user, "account_type", "") or "").lower(),
+        "groups": out_groups,
+        "missing_groups": missing_groups,
+        "all_required_uploaded": all_required_uploaded,
+    }
+
+
+class KycRequirementsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(_kyc_requirements_payload(request.user, request))
+
+
+class KycDocumentsMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        qs = KycDocument.objects.filter(user=request.user).select_related("reviewed_by").order_by("-uploaded_at")
+        return Response(KycDocumentSelfSerializer(qs, many=True, context={"request": request}).data)
+
+    def post(self, request):
+        ser = KycDocumentUploadSerializer(data=request.data, context={"user": request.user})
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        f = data.get("file")
+
+        doc = KycDocument(
+            user=request.user,
+            kind=data["kind"],
+            doc_type=(data.get("doc_type") or "").strip(),
+            file=f,
+            original_name=getattr(f, "name", "") or "",
+            content_type=getattr(f, "content_type", "") or "",
+            size_bytes=int(getattr(f, "size", 0) or 0),
+            review_status=KycDocument.ReviewStatus.PENDING,
+            expires_at=data.get("expires_at"),
+        )
+        doc.full_clean()
+        doc.save()
+
+        role = (getattr(request.user, "account_type", "") or getattr(request.user, "role", "") or "").lower()
+        if role == User.AccountType.SELLER or role == User.Role.SELLER:
+            SellerProfile.objects.get_or_create(user=request.user)
+            SellerProfile.objects.filter(user=request.user).update(verification_status=SellerProfile.VerificationStatus.PENDING)
+
+        return Response(KycDocumentSelfSerializer(doc, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
 class BuyerProfileMeView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsBuyer]
     serializer_class = BuyerProfileSerializer
@@ -1097,6 +1245,11 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         admin_role = (data.get("admin_role") or "").strip()
         department = (data.get("department") or "").strip()
 
+        if email and User.objects.filter(email__iexact=email).exists():
+            return Response({"email": ["A user with this email already exists."]}, status=status.HTTP_400_BAD_REQUEST)
+        if phone and User.objects.filter(phone=phone).exists():
+            return Response({"phone": ["A user with this phone already exists."]}, status=status.HTTP_400_BAD_REQUEST)
+
         user = User(
             email=email,
             phone=phone,
@@ -1108,8 +1261,15 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             is_active=True,
         )
         user.set_password(password or "Test123!@#")
-        user.full_clean()
-        user.save()
+        try:
+            with transaction.atomic():
+                user.full_clean()
+                user.save()
+        except DjangoValidationError as e:
+            payload = getattr(e, "message_dict", None) or {"detail": e.messages[0] if getattr(e, "messages", None) else "Invalid data."}
+            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError:
+            return Response({"detail": "A user with these credentials already exists."}, status=status.HTTP_400_BAD_REQUEST)
 
         UserProfile.objects.get_or_create(user=user)
         if role == User.Role.SELLER:
@@ -1140,13 +1300,17 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
+        email_in = None
+        phone_in = None
         for f in ["first_name", "last_name"]:
             if f in data:
                 setattr(user, f, (data.get(f) or "").strip())
         if "email" in data:
-            user.email = (data.get("email") or "").strip() or None
+            email_in = (data.get("email") or "").strip() or None
+            user.email = email_in
         if "phone" in data:
-            user.phone = (data.get("phone") or "").strip() or None
+            phone_in = (data.get("phone") or "").strip() or None
+            user.phone = phone_in
         if "role" in data:
             user.role = data.get("role")
         if "account_type" in data:
@@ -1156,8 +1320,20 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         if "password" in data and (data.get("password") or "").strip():
             user.set_password((data.get("password") or "").strip())
 
-        user.full_clean()
-        user.save()
+        if email_in and User.objects.filter(email__iexact=email_in).exclude(id=user.id).exists():
+            return Response({"email": ["A user with this email already exists."]}, status=status.HTTP_400_BAD_REQUEST)
+        if phone_in and User.objects.filter(phone=phone_in).exclude(id=user.id).exists():
+            return Response({"phone": ["A user with this phone already exists."]}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                user.full_clean()
+                user.save()
+        except DjangoValidationError as e:
+            payload = getattr(e, "message_dict", None) or {"detail": e.messages[0] if getattr(e, "messages", None) else "Invalid data."}
+            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError:
+            return Response({"detail": "Update violates a unique constraint."}, status=status.HTTP_400_BAD_REQUEST)
 
         UserProfile.objects.get_or_create(user=user)
         if user.role == User.Role.ADMIN:
@@ -1171,6 +1347,55 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
                 updates["department"] = (data.get("department") or "").strip()
             if updates:
                 AdminProfile.objects.filter(id=prof.id).update(**updates)
+        out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
+        return Response(out)
+
+    @action(detail=True, methods=["post"], url_path="seller-verify/approve")
+    def seller_verify_approve(self, request, pk=None):
+        user = self.get_object()
+        seller_prof = getattr(user, "seller_profile", None)
+        if not seller_prof:
+            return Response({"detail": "This user is not a seller."}, status=status.HTTP_400_BAD_REQUEST)
+
+        SellerProfile.objects.filter(id=seller_prof.id).update(verification_status=SellerProfile.VerificationStatus.APPROVED)
+
+        try:
+            Notification.objects.create(
+                user=user,
+                channel=Notification.Channel.IN_APP,
+                event_type="seller_verification_approved",
+                payload={"approved_by": request.user.id},
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        user.refresh_from_db()
+        out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
+        return Response(out)
+
+    @action(detail=True, methods=["post"], url_path="seller-verify/reject")
+    def seller_verify_reject(self, request, pk=None):
+        user = self.get_object()
+        seller_prof = getattr(user, "seller_profile", None)
+        if not seller_prof:
+            return Response({"detail": "This user is not a seller."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = (request.data.get("reason") or "").strip()
+        SellerProfile.objects.filter(id=seller_prof.id).update(verification_status=SellerProfile.VerificationStatus.REJECTED)
+
+        try:
+            Notification.objects.create(
+                user=user,
+                channel=Notification.Channel.IN_APP,
+                event_type="seller_verification_rejected",
+                payload={"rejected_by": request.user.id, "reason": reason},
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        user.refresh_from_db()
         out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
         return Response(out)
 
@@ -1215,11 +1440,26 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
         status_q = (self.request.query_params.get("status") or "").strip().lower()
         if status_q in {"pending", "under_review", "verified", "rejected"}:
             if status_q == "verified":
-                qs = qs.exclude(kyc_documents__review_status__in=["pending", "under_review", "rejected"]).filter(
-                    kyc_documents__review_status="verified"
+                qs = qs.filter(
+                    Q(seller_profile__verification_status=SellerProfile.VerificationStatus.APPROVED)
+                    | (
+                        Q(kyc_documents__review_status="verified")
+                        & ~Q(kyc_documents__review_status__in=["pending", "under_review", "rejected"])
+                    )
                 )
             else:
-                qs = qs.filter(kyc_documents__review_status=status_q)
+                if status_q == "pending":
+                    qs = qs.filter(
+                        Q(seller_profile__verification_status=SellerProfile.VerificationStatus.PENDING)
+                        | Q(kyc_documents__review_status__in=["pending", "under_review"])
+                    )
+                elif status_q == "rejected":
+                    qs = qs.filter(
+                        Q(seller_profile__verification_status=SellerProfile.VerificationStatus.REJECTED)
+                        | Q(kyc_documents__review_status="rejected")
+                    )
+                else:
+                    qs = qs.filter(kyc_documents__review_status=status_q)
 
         return qs.distinct()
 
@@ -1248,13 +1488,18 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
         sellers = qs.filter(is_seller).count()
         buyers = qs.exclude(is_seller).count()
 
-        pending_review = qs.filter(kyc_documents__review_status__in=["pending", "under_review"]).distinct().count()
-        fully_verified = (
-            qs.exclude(kyc_documents__review_status__in=["pending", "under_review", "rejected"])
-            .filter(kyc_documents__review_status="verified")
-            .distinct()
-            .count()
-        )
+        pending_review = qs.filter(
+            Q(seller_profile__verification_status=SellerProfile.VerificationStatus.PENDING)
+            | Q(kyc_documents__review_status__in=["pending", "under_review"])
+        ).distinct().count()
+
+        fully_verified = qs.filter(
+            Q(seller_profile__verification_status=SellerProfile.VerificationStatus.APPROVED)
+            | (
+                Q(kyc_documents__review_status="verified")
+                & ~Q(kyc_documents__review_status__in=["pending", "under_review", "rejected"])
+            )
+        ).distinct().count()
 
         qs_annotated = qs.annotate(
             verified_docs=Count("kyc_documents", filter=Q(kyc_documents__review_status="verified"), distinct=True),
@@ -1300,6 +1545,11 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
     @action(detail=True, methods=["post"], url_path="approve-all")
     def approve_all(self, request, pk=None):
         user = self.get_object()
+        reqs = _kyc_requirements_payload(user, request)
+        if reqs.get("missing_groups"):
+            return Response(
+                {"detail": "Missing required documents.", "missing_groups": reqs.get("missing_groups")}, status=status.HTTP_400_BAD_REQUEST
+            )
         now = timezone.now()
         KycDocument.objects.filter(user=user, review_status__in=["pending", "under_review"]).update(
             review_status=KycDocument.ReviewStatus.VERIFIED,
@@ -1309,8 +1559,9 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
         )
         if (user.account_type or user.role) == User.AccountType.SELLER or user.role == User.Role.SELLER:
             prof = getattr(user, "seller_profile", None)
-            if prof:
-                SellerProfile.objects.filter(id=prof.id).update(verification_status=SellerProfile.VerificationStatus.APPROVED)
+            if prof is None:
+                prof = SellerProfile.objects.create(user=user)
+            SellerProfile.objects.filter(id=prof.id).update(verification_status=SellerProfile.VerificationStatus.APPROVED)
         user = User.objects.select_related("profile", "seller_profile").prefetch_related(
             Prefetch("kyc_documents", queryset=KycDocument.objects.select_related("reviewed_by").order_by("-uploaded_at"))
         ).get(id=user.id)
@@ -1325,10 +1576,58 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
             reviewed_by=None,
             rejection_reason="",
         )
+        if (user.account_type or user.role) == User.AccountType.SELLER or user.role == User.Role.SELLER:
+            prof = getattr(user, "seller_profile", None)
+            if prof is None:
+                prof = SellerProfile.objects.create(user=user)
+            SellerProfile.objects.filter(id=prof.id).update(verification_status=SellerProfile.VerificationStatus.PENDING)
+
+        reqs = _kyc_requirements_payload(user, request)
+        try:
+            Notification.objects.create(
+                user=user,
+                channel=Notification.Channel.IN_APP,
+                event_type="kyc_documents_requested",
+                payload={
+                    "requested_by": request.user.id,
+                    "missing_groups": reqs.get("missing_groups") or [],
+                    "path": "/kyc",
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
         user = User.objects.select_related("profile", "seller_profile").prefetch_related(
             Prefetch("kyc_documents", queryset=KycDocument.objects.select_related("reviewed_by").order_by("-uploaded_at"))
         ).get(id=user.id)
         return Response(AdminVerificationUserSerializer(user, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="request-documents")
+    def request_documents(self, request, pk=None):
+        user = self.get_object()
+        reqs = _kyc_requirements_payload(user, request)
+        missing = reqs.get("missing_groups") or []
+        try:
+            Notification.objects.create(
+                user=user,
+                channel=Notification.Channel.IN_APP,
+                event_type="kyc_documents_requested",
+                payload={
+                    "requested_by": request.user.id,
+                    "missing_groups": missing,
+                    "path": "/kyc",
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        if (user.account_type or user.role) == User.AccountType.SELLER or user.role == User.Role.SELLER:
+            SellerProfile.objects.get_or_create(user=user)
+            SellerProfile.objects.filter(user=user).update(verification_status=SellerProfile.VerificationStatus.PENDING)
+
+        return Response({"requested": True, "missing_groups": missing})
 
 
 class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
