@@ -38,10 +38,7 @@ export function TopNav({
         </div>
 
         {/* DESKTOP */}
-        <div
-          className="hidden lg:flex items-center gap-2"
-          onMouseLeave={onCategoryLeave}
-        >
+        <div className="hidden lg:flex items-center gap-2">
           {navCategories.map((c) => {
             const Icon = c!.icon;
             const isActive = c!.id === activeCategoryId;
@@ -50,10 +47,12 @@ export function TopNav({
               <button
                 key={c!.id}
                 type="button"
-                onMouseEnter={() => onCategoryEnter(c!.id)}
+                onClick={() =>
+                  isActive ? onCategoryLeave() : onCategoryEnter(c!.id)
+                }
                 className={cn(
                   "flex h-11 w-11 items-center justify-center rounded-full bg-white/70 backdrop-blur-md transition hover:scale-[1.05]",
-                  isActive ? "ring-2 ring-blue-200" : "ring-1 ring-white/60"
+                  isActive ? "ring-2 ring-blue-200 bg-blue-50" : "ring-1 ring-white/60"
                 )}
               >
                 <Icon className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
@@ -105,7 +104,7 @@ export function TopNav({
       {/* MOBILE MENU */}
       {mobileMenuOpen && (
         <>
-          {/* Overlay (CLICK OUTSIDE CLOSE FIX) */}
+          {/* Overlay */}
           <div
             className="fixed inset-0 z-40"
             onClick={() => setMobileMenuOpen(false)}
@@ -146,162 +145,3 @@ export function TopNav({
     </div>
   );
 }
-
-// "use client";
-
-// import Link from "next/link";
-// import { Menu, X } from "lucide-react";
-// import type React from "react";
-// import { useState } from "react";
-
-// import { cn } from "@/components/ui/utils";
-// import { LanguageToggle } from "@/components/common/LanguageToggle";
-// import { categories, homeNavOrder } from "@/lib/categories";
-
-// export function TopNav({
-//   activeCategoryId,
-//   onCategoryEnter,
-//   onCategoryLeave,
-//   signInSlot,
-// }: {
-//   activeCategoryId: string | null;
-//   onCategoryEnter: (categoryId: string) => void;
-//   onCategoryLeave: () => void;
-//   signInSlot?: React.ReactNode;
-// }) {
-//   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
-//   const navCategories = homeNavOrder
-//     .map((id) => categories.find((c) => c.id === id))
-//     .filter(Boolean);
-
-//   return (
-//     <div className="pointer-events-auto fixed left-3 right-3 top-3 z-50 mx-auto max-w-6xl sm:left-6 sm:right-6 sm:top-5">
-//       <div className="flex items-center justify-between rounded-full border border-white/60 bg-white/55 px-4 py-2.5 backdrop-blur-xl shadow-soft sm:px-6 sm:py-3">
-        
-//         {/* Logo */}
-//         <div className="text-lg font-semibold tracking-tight text-[#0f1115] sm:text-xl">
-//           Vehsl
-//         </div>
-         
-//         {/* Desktop Menu */}
-//         <div
-//           className="hidden items-center gap-2 lg:flex"
-//           onMouseLeave={onCategoryLeave}
-//         >
-//           {navCategories.map((c) => {
-//             const Icon = c!.icon;
-//             const isActive = c!.id === activeCategoryId;
-
-//             return (
-//               <button
-//                 key={c!.id}
-//                 type="button"
-//                 onMouseEnter={() => onCategoryEnter(c!.id)}
-//                 className={cn(
-//                   "flex h-11 w-11 items-center justify-center rounded-full bg-white/70 backdrop-blur-md transition",
-//                   "hover:scale-[1.05]",
-//                   isActive
-//                     ? "ring-2 ring-blue-200"
-//                     : "ring-1 ring-white/60"
-//                 )}
-//                 aria-label={c!.name}
-//               >
-//                 <Icon className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
-//               </button>
-//             );
-//           })}
-//            <Link
-//               href="/explore"
-//               className="flex h-11 w-11 items-center justify-center rounded-full bg-white ring-1 ring-white/60"
-//             >
-//               <Menu className="h-5 w-5 text-[#1f2330]" />
-//             </Link>
-//         </div>
-
-//         {/* Right Side */}
-//         <div className="flex items-center gap-3">
-//           <LanguageToggle />
-
-//           {signInSlot ?? (
-//             <button
-//               type="button"
-//               className={cn(
-//                 "hidden lg:block rounded-full bg-white px-4 py-2 text-xs font-semibold tracking-tight text-[#ec4899] shadow-soft",
-//                 "bg-[linear-gradient(white,white),linear-gradient(90deg,#3b82f6,#8b5cf6,#ec4899,#f59e0b)] bg-origin-border bg-clip-padding,border-box border border-transparent"
-//               )}
-//             >
-//               sign in
-//             </button>
-//           )}
-
-//           {/* Mobile + Tablet Toggle Button */}
-//           <button
-//             className="flex h-11 w-11 items-center justify-center rounded-full border border-white/60 bg-white/70 lg:hidden"
-//             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-//           >
-//             {mobileMenuOpen ? (
-//               <X className="h-5 w-5 text-[#1f2330]" />
-//             ) : (
-//               <Menu className="h-5 w-5 text-[#1f2330]" />
-//             )}
-//           </button>
-//         </div>
-//       </div>
-
-//       {/* Mobile + Tablet Dropdown */}
-//       {mobileMenuOpen && (
-//         <div className="mt-3 rounded-3xl border border-white/60 bg-white/70 p-4 backdrop-blur-xl shadow-soft lg:hidden">
-          
-//           <div className="grid grid-cols-4 gap-3 sm:grid-cols-5">
-//             {navCategories.map((c) => {
-//               const Icon = c!.icon;
-
-//               return (
-//                 <button
-//                   key={c!.id}
-//                   type="button"
-//                   onClick={() => {
-//                     onCategoryEnter(c!.id);
-//                     setMobileMenuOpen(false);
-//                   }}
-//                   className="flex h-12 w-12 items-center justify-center rounded-full bg-white ring-1 ring-white/60 transition hover:scale-105"
-//                 >
-//                   <Icon
-//                     className="h-5 w-5 text-[#1f2330]"
-//                     strokeWidth={1.5}
-//                   />
-//                 </button>
-//               );
-//             })}
-
-//             <Link
-//               href="/explore"
-//               className="flex h-12 w-12 items-center justify-center rounded-full bg-white ring-1 ring-white/60 transition hover:scale-105"
-//             >
-//               <Menu className="h-5 w-5 text-[#1f2330]" />
-//             </Link>
-//           </div>
-
-//           {/* Tablet Sign In */}
-//           <div className="mt-4 sm:hidden md:hidden lg:hidden">
-//              <Link
-//               href="/explore"
-//               className="flex items-center justify-center
-//               bg-black text-white
-//               px-6 py-4
-//               w-full sm:w-auto md:w-50
-//               rounded-md
-//               ring-1 ring-white/60
-//               transition duration-300
-//               hover:scale-105
-//               text-sm sm:text-base"
-//             >
-//               Explore All
-//             </Link>
-//           </div>
-//         </div>
-//       )}
-//     </div>
-//   );
-// }

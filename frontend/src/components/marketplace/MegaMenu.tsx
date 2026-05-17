@@ -1,11 +1,16 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Sparkles } from "lucide-react";
-
 import { cn } from "@/components/ui/utils";
 import { categories } from "@/lib/categories";
+import { useLanguage } from "@/context/language";
+
+function toSlug(name: string) {
+  return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+}
 
 export function MegaMenu({
   activeCategoryId,
@@ -16,8 +21,9 @@ export function MegaMenu({
   activeCategoryId: string | null;
   open: boolean;
   onClose: () => void;
-  onKeepOpen?: () => void;
+  onKeepOpen: () => void;
 }) {
+  const { language } = useLanguage();
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   const category = useMemo(
@@ -26,22 +32,18 @@ export function MegaMenu({
   );
 
   const [activeSubIndex, setActiveSubIndex] = useState(0);
-
   const activeSub = category?.subcategories[activeSubIndex] ?? null;
 
-  // ✅ CLICK OUTSIDE CLOSE FIX
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         onClose();
       }
     }
-
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [onClose]);
 
-  // reset subcategory when category changes
   useEffect(() => {
     setActiveSubIndex(0);
   }, [activeCategoryId]);
@@ -55,68 +57,69 @@ export function MegaMenu({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }}
           transition={{ duration: 0.25, ease: "easeOut" }}
-          className="pointer-events-auto absolute left-1/2 top-92px z-40 w-[min(1100px,calc(100vw-48px))] -translate-x-1/2"
           onMouseEnter={onKeepOpen}
-          onMouseLeave={onClose}
+          className="pointer-events-auto fixed left-1/2 top-[68px] sm:top-[76px] z-40 w-[min(1100px,calc(100vw-24px))] sm:w-[min(1100px,calc(100vw-48px))] -translate-x-1/2"
         >
           <div
             className={cn(
-              "relative overflow-hidden rounded-[28px] border border-white/50 bg-white/40 p-6 backdrop-blur-2xl shadow-soft " ,
+              "relative overflow-hidden rounded-2xl sm:rounded-[28px] border border-white/50 bg-white/40 p-3 sm:p-4 lg:p-6 backdrop-blur-2xl shadow-soft",
               "bg-[radial-gradient(900px_420px_at_20%_0%,rgba(59,130,246,0.16),transparent_55%),radial-gradient(900px_420px_at_80%_0%,rgba(236,72,153,0.12),transparent_55%)]"
             )}
           >
-            {/* background text */}
-            <div className="pointer-events-none absolute inset-0">
-              <div className="absolute bottom-60px left-1/2 -translate-x-1/2 text-[160px] font-extrabold text-black opacity-[0.08]">
+            {/* background text — hide on small screens */}
+            <div className="pointer-events-none absolute inset-0 hidden lg:block">
+              <div className="absolute bottom-[60px] left-1/2 -translate-x-1/2 text-[160px] font-extrabold text-black opacity-[0.08]">
                 Vehsl
               </div>
             </div>
 
-            {/* SUBCATEGORIES */}
-            <div className="relative grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-8">
-              {category.subcategories.slice(0, 8).map((s, idx) => {
+            {/* SUBCATEGORIES — show ALL, no slice */}
+            <div className="relative grid grid-cols-4 gap-1.5 sm:grid-cols-5 sm:gap-2 lg:grid-cols-8 lg:gap-3">
+              {category.subcategories.map((s, idx) => {
                 const Icon = s.icon;
                 const isActive = idx === activeSubIndex;
 
                 return (
-                  <button
+                  <Link
                     key={s.name}
-                    type="button"
+                    href={`/explore/${activeCategoryId}/${toSlug(s.name)}`}
                     onMouseEnter={() => setActiveSubIndex(idx)}
-                    className="group flex flex-col items-center gap-2 rounded-2xl p-3 transition hover:bg-white/35"
+                    onClick={onClose}
+                    className="group flex flex-col items-center gap-1 sm:gap-2 rounded-xl sm:rounded-2xl p-1.5 sm:p-2 lg:p-3 transition hover:bg-white/35"
                   >
                     <div
                       className={cn(
-                        "relative flex h-14 w-14 items-center justify-center rounded-2xl bg-white/70 backdrop-blur-md",
+                        "relative flex h-9 w-9 sm:h-11 sm:w-11 lg:h-14 lg:w-14 items-center justify-center rounded-xl sm:rounded-2xl bg-white/70 backdrop-blur-md",
                         isActive && "ring-1 ring-blue-200 bg-blue-50"
                       )}
                     >
-                      <Icon className="h-6 w-6 text-[#1f2330]" strokeWidth={1.5} />
+                      <Icon className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6 text-[#1f2330]" strokeWidth={1.5} />
                     </div>
 
                     <div
                       className={cn(
-                        "max-w-72px text-center text-xs",
-                        isActive
-                          ? "font-semibold text-[#0f1115]"
-                          : "text-gray-700"
+                        "w-full text-center text-[10px] sm:text-xs leading-tight",
+                        isActive ? "font-semibold text-[#0f1115]" : "text-gray-700"
                       )}
                     >
-                      {s.name}
+                      {language === "zh" && s.nameZh ? s.nameZh : s.name}
                     </div>
-                  </button>
+                  </Link>
                 );
               })}
             </div>
 
-            {/* ITEMS */}
-            <div className="relative mt-5 grid grid-cols-2 gap-3 opacity-60 md:grid-cols-4 lg:grid-cols-8">
-              {(activeSub?.items ?? []).slice(0, 8).map((name) => (
-                <div key={name} className="flex flex-col items-center gap-2 rounded-2xl p-3">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/70 backdrop-blur-md">
-                    <Sparkles className="h-6 w-6 text-[#1f2330]" />
+            {/* ITEMS — show ALL, no slice */}
+            <div className="relative mt-2 sm:mt-4 lg:mt-5 grid grid-cols-4 gap-1.5 sm:grid-cols-5 sm:gap-2 lg:grid-cols-8 lg:gap-3 opacity-60">
+              {((language === "zh" && activeSub?.itemsZh ? activeSub.itemsZh : activeSub?.items) ?? []).map((name) => (
+                <div
+                  key={name}
+                  className="flex flex-col items-center gap-1 sm:gap-2 rounded-xl sm:rounded-2xl p-1.5 sm:p-2 lg:p-3"
+                >
+                  <div className="flex h-9 w-9 sm:h-11 sm:w-11 lg:h-14 lg:w-14 items-center justify-center rounded-xl sm:rounded-2xl bg-white/70 backdrop-blur-md">
+                    <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6 text-[#1f2330]" />
                   </div>
-                  <div className="text-center text-xs text-gray-700">
+                  <div className="w-full text-center text-[10px] sm:text-xs leading-tight text-gray-700">
                     {name}
                   </div>
                 </div>
@@ -128,3 +131,4 @@ export function MegaMenu({
     </AnimatePresence>
   );
 }
+
