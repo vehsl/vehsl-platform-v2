@@ -110,9 +110,19 @@ function CertRow({ label, description, doc, expiry, onUpload, required = false }
 /* ═══════════════════════════════════════════════
    SELLER BUSINESS TAB
    ═══════════════════════════════════════════════ */
-export function SellerBusinessTab({ display, setDisplay }: { display: any; setDisplay: any }) {
-    const [businesses, setBusinesses] = useState(SELLER_BUSINESSES_INIT);
-    const [activeBizId, setActiveBizId] = useState('novatech');
+export function SellerBusinessTab({ display, setDisplay, business, setBusiness }: { display: any; setDisplay: any; business: any; setBusiness: any }) {
+    const businesses = (business?.businesses && Array.isArray(business.businesses) && business.businesses.length)
+        ? business.businesses
+        : SELLER_BUSINESSES_INIT;
+    const activeBizId = (business?.activeBizId || businesses?.[0]?.id || 'novatech') as string;
+    const setBusinesses = (updater: any) => {
+        setBusiness((prev: any) => {
+            const cur = (prev?.businesses && Array.isArray(prev.businesses) && prev.businesses.length) ? prev.businesses : businesses;
+            const next = typeof updater === 'function' ? updater(cur) : updater;
+            return { ...(prev || {}), businesses: next };
+        });
+    };
+    const setActiveBizId = (id: string) => setBusiness((prev: any) => ({ ...(prev || {}), activeBizId: id }));
     const [langOpen, setLangOpen] = useState(false);
     const [currOpen, setCurrOpen] = useState(false);
 

@@ -40,6 +40,26 @@ class CartItem(models.Model):
         return f"cart_item:{self.pk}"
 
 
+class WishlistItem(models.Model):
+    buyer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="wishlist_items")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="wishlisted_by")
+    created_at = models.DateTimeField(auto_now_add=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["buyer", "created_at"]),
+            models.Index(fields=["product", "created_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["buyer", "product"], name="uniq_wishlist_buyer_product"),
+        ]
+
+    def __str__(self):
+        return f"wishlist_item:{self.pk}"
+
+
 class Order(models.Model):
     class Status(models.TextChoices):
         CREATED = "created", "Created"

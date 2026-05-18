@@ -21,6 +21,7 @@ type FullStep = 'welcome' | StepId | 'done';
 
 interface ProductDraft {
     photo: string | null;
+    photoFile: File | null;
     uploading: boolean;
     name: string;
     price: string;
@@ -193,7 +194,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
 
     // Product / request draft
     const [product, setProduct] = useState<ProductDraft>({
-        photo: null, uploading: false, name: '', price: '', qty: 50,
+        photo: null, photoFile: null, uploading: false, name: '', price: '', qty: 50,
         category: '', description: '', companyName: '', monthlyCapacity: '',
     });
     const [detailsOpen, setDetailsOpen] = useState(false);
@@ -211,7 +212,89 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
     const [verifyPhase, setVerifyPhase] = useState(0);
 
     // Assigned rating (shown in live step)
-    const ASSIGNED_RATING = 4.8;
+    const [assignedRating, setAssignedRating] = useState<number>(4.8);
+
+    const [listingId, setListingId] = useState<number | null>(null);
+    const [submittingRequest, setSubmittingRequest] = useState(false);
+    const [savingSample, setSavingSample] = useState(false);
+    const [advancing, setAdvancing] = useState(false);
+    const [publishing, setPublishing] = useState(false);
+
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+    const apiBase = useCallback(() => {
+        const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
+        const normalize = (u: string) => u.replace(/\/$/, '');
+        if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
+        return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    }, []);
+
+    const readAuth = useCallback(() => {
+        try {
+            return {
+                access: window.localStorage.getItem('vehsl.access') || '',
+                refresh: window.localStorage.getItem('vehsl.refresh') || '',
+            };
+        } catch {
+            return { access: '', refresh: '' };
+        }
+    }, []);
+
+    useEffect(() => {
+        const { access } = readAuth();
+        if (!access) return;
+        (async () => {
+            try {
+                const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/`, {
+                    headers: { Authorization: `Bearer ${access}` },
+                });
+                if (!res.ok) return;
+                const list = await res.json().catch(() => null);
+                if (!Array.isArray(list) || list.length === 0) return;
+                const active = (list.find((x: any) => x && x.stage !== 'done') || list[0]) as any;
+                if (!active || typeof active.id !== 'number') return;
+
+                setListingId(active.id);
+                setAssignedRating(typeof active.rating === 'number' ? active.rating : Number(active.rating || 4.8));
+
+                const firstPhoto = Array.isArray(active.photos) && active.photos[0] ? active.photos[0] : null;
+                setProduct(p => ({
+                    ...p,
+                    photo: (firstPhoto?.file_url || p.photo),
+                    photoFile: null,
+                    name: (active.product_name || p.name),
+                    companyName: (active.company_name || p.companyName),
+                    price: (active.unit_price != null ? String(active.unit_price) : p.price),
+                    qty: (active.moq != null ? Number(active.moq) : p.qty),
+                    category: (active.category_label || p.category),
+                    description: (active.description || p.description),
+                    monthlyCapacity: (active.monthly_capacity || p.monthlyCapacity),
+                }));
+                setSample(s => ({
+                    ...s,
+                    type: (active.pickup_type as any) || s.type,
+                    address: active.pickup_address || s.address,
+                    contactName: active.pickup_contact_name || s.contactName,
+                    phone: active.pickup_phone || s.phone,
+                }));
+
+                const stage = (active.stage || '').toString().toLowerCase();
+                if (stage === 'samples') {
+                    setCompleted(new Set(['request']));
+                    setStep('samples');
+                } else if (stage === 'inspection') {
+                    setCompleted(new Set(['request', 'samples']));
+                    setStep('inspection');
+                } else if (stage === 'live') {
+                    setCompleted(new Set(['request', 'samples', 'inspection']));
+                    setStep('live');
+                } else if (stage === 'done') {
+                    setCompleted(new Set(['request', 'samples', 'inspection', 'live']));
+                    setStep('done');
+                }
+            } catch { }
+        })();
+    }, [apiBase, readAuth]);
 
     // Help panel
     const [helpOpen, setHelpOpen] = useState(false);
@@ -229,18 +312,20 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
         setTimeout(() => setStep(next), 380);
     }, []);
 
-    const handlePhotoSimulate = useCallback(() => {
-        setProduct(p => ({ ...p, uploading: true }));
-        const photo = DEMO_PHOTOS[Math.floor(Math.random() * DEMO_PHOTOS.length)];
-        setTimeout(() => {
-            setProduct(p => ({ ...p, photo, uploading: false }));
-            toast.success('Photo added!', { description: 'Tap the photo to change it anytime' });
-        }, 750);
+    const handlePickPhoto = useCallback(() => {
+        fileInputRef.current?.click();
     }, []);
 
-    const handleSubmitRequest = useCallback((el: HTMLElement | null) => {
+    const handlePhotoChange = useCallback((file: File | null) => {
+        if (!file) return;
+        const url = URL.createObjectURL(file);
+        setProduct(p => ({ ...p, photo: url, photoFile: file, uploading: false }));
+        toast.success('Photo added!', { description: 'Tap the photo to change it anytime' });
+    }, []);
+
+    const handleSubmitRequest = useCallback(async (el: HTMLElement | null) => {
         let hasErr = false;
-        if (!product.photo) {
+        if (!product.photo || !product.photoFile) {
             toast('Add a product photo first', { description: 'Our review team needs to see what you make' });
             return;
         }
@@ -252,32 +337,117 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
             return;
         }
         wBounce(el);
-        completeStep(
-            'request', 'samples',
-            'Listing request submitted \u2713',
-            'Our team will review your details within 24\u00A0hours'
-        );
-    }, [product, wBounce, completeStep]);
+        const { access } = readAuth();
+        if (!access) {
+            toast.error('Please sign in again.');
+            return;
+        }
+        if (submittingRequest) return;
+        try {
+            setSubmittingRequest(true);
+            const fd = new FormData();
+            fd.set('product_name', product.name.trim());
+            fd.set('company_name', product.companyName.trim());
+            fd.set('unit_price', product.price.trim());
+            fd.set('moq', String(product.qty || 1));
+            if (product.category.trim()) fd.set('category', product.category.trim());
+            if (product.description.trim()) fd.set('description', product.description.trim());
+            if (product.monthlyCapacity.trim()) fd.set('monthly_capacity', product.monthlyCapacity.trim());
+            fd.set('photo', product.photoFile);
+            const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}` },
+                body: fd,
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data && (data.detail || data.error)) || `Request failed (${res.status})`;
+                toast.error(typeof msg === 'string' ? msg : `Request failed (${res.status})`);
+                return;
+            }
+            setListingId(data?.id ?? null);
+            if (Array.isArray(data?.photos) && data.photos[0]?.file_url) {
+                setProduct(p => ({ ...p, photo: data.photos[0].file_url, photoFile: null }));
+            }
+            completeStep(
+                'request', 'samples',
+                'Listing request submitted \u2713',
+                'Our team will review your details within 24\u00A0hours'
+            );
+        } finally {
+            setSubmittingRequest(false);
+        }
+    }, [apiBase, completeStep, product, readAuth, submittingRequest, wBounce]);
 
-    const handleSaveSampleAddress = useCallback((el: HTMLElement | null) => {
+    const handleSaveSampleAddress = useCallback(async (el: HTMLElement | null) => {
         if (!canSaveSampleAddress) {
             toast('Add your pickup details', { description: 'We need an address and contact name to schedule sample collection' });
             return;
         }
+        if (!listingId) {
+            toast('Submit your listing request first', { description: 'We need your request before scheduling sample pickup' });
+            return;
+        }
         wBounce(el);
-        completeStep(
-            'samples', 'inspection',
-            'Sample address saved \u2713',
-            'We\u2019ll contact you to arrange pickup timing'
-        );
-    }, [canSaveSampleAddress, wBounce, completeStep]);
+        const { access } = readAuth();
+        if (!access) {
+            toast.error('Please sign in again.');
+            return;
+        }
+        if (savingSample) return;
+        try {
+            setSavingSample(true);
+            const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/${listingId}/sample/`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: sample.type,
+                    address: sample.address,
+                    contact_name: sample.contactName,
+                    phone: sample.phone,
+                }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data && (data.detail || data.error)) || `Request failed (${res.status})`;
+                toast.error(typeof msg === 'string' ? msg : `Request failed (${res.status})`);
+                return;
+            }
+            completeStep(
+                'samples', 'inspection',
+                'Sample address saved \u2713',
+                'We\u2019ll contact you to arrange pickup timing'
+            );
+        } finally {
+            setSavingSample(false);
+        }
+    }, [apiBase, canSaveSampleAddress, completeStep, listingId, readAuth, sample, savingSample, wBounce]);
 
-    const handleAdvanceVerify = useCallback((el: HTMLElement | null) => {
+    const handleAdvanceVerify = useCallback(async (el: HTMLElement | null) => {
         wBounce(el);
         if (verifyPhase < VERIFICATION_PHASES.length - 1) {
             setVerifyPhase(t => t + 1);
         } else {
             const allPrior = completed.has('request') && completed.has('samples');
+            if (allPrior && listingId) {
+                const { access } = readAuth();
+                if (access && !advancing) {
+                    try {
+                        setAdvancing(true);
+                        const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/${listingId}/advance/`, {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ rating: assignedRating }),
+                        });
+                        const data = await res.json().catch(() => null);
+                        if (res.ok) {
+                            const r = typeof data?.rating === 'number' ? data.rating : Number(data?.rating || assignedRating);
+                            if (Number.isFinite(r)) setAssignedRating(r);
+                        }
+                    } catch { }
+                    setAdvancing(false);
+                }
+            }
             completeStep(
                 'inspection',
                 allPrior ? 'live' : 'request',
@@ -285,18 +455,43 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                 allPrior ? 'Ready for your rating and listing' : 'Let\u2019s start with your request'
             );
         }
-    }, [verifyPhase, completed, wBounce, completeStep]);
+    }, [advancing, apiBase, assignedRating, completeStep, completed, listingId, readAuth, verifyPhase, wBounce]);
 
-    const handleGoLive = useCallback((el: HTMLElement | null) => {
+    const handleGoLive = useCallback(async (el: HTMLElement | null) => {
         wBounce(el);
+        if (!listingId) {
+            toast('Missing listing request', { description: 'Please submit your listing request first.' });
+            return;
+        }
+        const { access } = readAuth();
+        if (!access) {
+            toast.error('Please sign in again.');
+            return;
+        }
+        if (publishing) return;
+        try {
+            setPublishing(true);
+            const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/${listingId}/publish/`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data && (data.detail || data.error)) || `Request failed (${res.status})`;
+                toast.error(typeof msg === 'string' ? msg : `Request failed (${res.status})`);
+                return;
+            }
+        } finally {
+            setPublishing(false);
+        }
         setCelebrating(true);
         completeStep(
             'live', 'done',
             "You\u2019re live! \uD83C\uDF89",
-            `Your verified rating of ${ASSIGNED_RATING}\u2605 is now visible to buyers`
+            `Your verified rating of ${assignedRating}\u2605 is now visible to buyers`
         );
-        setTimeout(() => onComplete(), 2400);
-    }, [wBounce, completeStep, onComplete]);
+    }, [apiBase, completeStep, listingId, publishing, readAuth, assignedRating, wBounce]);
 
     // Clear field errors when user types
     useEffect(() => { if (product.name.trim()) setNameError(false); }, [product.name]);
@@ -533,6 +728,13 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                     {/* ── Photo ── */}
                     <div>
                         <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">PRODUCT PHOTO</p>
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => handlePhotoChange(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                        />
                         {product.photo ? (
                             <div className="relative group">
                                 <div
@@ -546,7 +748,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                                     />
                                 </div>
                                 <button
-                                    onClick={handlePhotoSimulate}
+                                    onClick={handlePickPhoto}
                                     className="absolute top-3 right-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm border-none cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
                                     style={{ color: 'white' }}
                                 >
@@ -565,7 +767,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                             <motion.button
                                 whileHover={{ scale: 1.008 }}
                                 whileTap={{ scale: 0.995 }}
-                                onClick={handlePhotoSimulate}
+                                onClick={handlePickPhoto}
                                 disabled={product.uploading}
                                 className="w-full rounded-[18px] py-10 flex flex-col items-center gap-3.5 cursor-pointer border-none transition-all duration-300"
                                 style={{
@@ -1203,8 +1405,8 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                                     <div className="flex items-center justify-between">
                                         <p className="text-[13px] font-bold text-[#1A1A1A]/72">Overall rating</p>
                                         <div className="flex items-center gap-1.5">
-                                            <RatingStars rating={ASSIGNED_RATING} size={12} />
-                                            <span className="text-[15px] font-black text-[#e67e22]">{ASSIGNED_RATING}</span>
+                                            <RatingStars rating={assignedRating} size={12} />
+                                            <span className="text-[15px] font-black text-[#e67e22]">{assignedRating}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1221,8 +1423,8 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                                         <div>
                                             <p className="text-[13px] font-bold text-[#1A1A1A]/80">Verified Seller Badge</p>
                                             <div className="flex items-center gap-1 mt-0.5">
-                                                <RatingStars rating={ASSIGNED_RATING} size={10} />
-                                                <span className="text-[11px] font-bold text-[#e67e22] ml-1">{ASSIGNED_RATING} \u2022 Verified</span>
+                                                <RatingStars rating={assignedRating} size={10} />
+                                                <span className="text-[11px] font-bold text-[#e67e22] ml-1">{assignedRating} \u2022 Verified</span>
                                             </div>
                                         </div>
                                     </div>
@@ -1313,10 +1515,10 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                             transition={{ type: 'spring', stiffness: 360, damping: 20, delay: 0.1 }}
                             className="text-[64px] font-black text-[#e67e22] leading-none tabular-nums"
                         >
-                            {ASSIGNED_RATING}
+                            {assignedRating}
                         </motion.div>
                         <div className="flex items-center gap-1 mt-2">
-                            <RatingStars rating={ASSIGNED_RATING} size={18} />
+                            <RatingStars rating={assignedRating} size={18} />
                         </div>
                         <p className="text-[12px] font-semibold text-[#1A1A1A]/35 mt-3">
                             Based on factory inspection, lab tests, and spec verification
@@ -1347,7 +1549,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                             },
                             {
                                 Icon: Award,
-                                label: `Quality rating: ${ASSIGNED_RATING}\u2605`,
+                                label: `Quality rating: ${assignedRating}\u2605`,
                                 sub: 'Assigned after lab testing',
                                 done: true,
                             },
@@ -1382,7 +1584,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                             Accept your rating and go live?
                         </p>
                         <p className="text-[13px] font-medium text-[#1A1A1A]/38 mb-7 max-w-[280px] mx-auto leading-relaxed">
-                            Your listing publishes with a <span className="font-bold text-[#e67e22]">{ASSIGNED_RATING}\u2605 verified badge</span>. You can pause from Settings anytime.
+                            Your listing publishes with a <span className="font-bold text-[#e67e22]">{assignedRating}\u2605 verified badge</span>. You can pause from Settings anytime.
                         </p>
                         <motion.button
                             whileHover={{ scale: 1.02 }}
@@ -1436,14 +1638,14 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.35, duration: 0.5, ease: EASE }}
             >
-                <h2 className="text-[34px] font-black text-[#1A1A1A]/90 tracking-tight">You&apos;re live! \uD83C\uDF89</h2>
+                <h2 className="text-[34px] font-black text-[#1A1A1A]/90 tracking-tight">You&apos;re verified \u2713</h2>
                 <div className="flex items-center justify-center gap-1.5 mt-3 mb-2">
-                    <RatingStars rating={ASSIGNED_RATING} size={16} />
-                    <span className="text-[18px] font-black text-[#e67e22]">{ASSIGNED_RATING}</span>
+                    <RatingStars rating={assignedRating} size={16} />
+                    <span className="text-[18px] font-black text-[#e67e22]">{assignedRating}</span>
                     <span className="text-[13px] font-semibold text-[#1A1A1A]/35 ml-1">Verified Seller</span>
                 </div>
-                <p className="text-[15px] font-medium text-[#1A1A1A]/42 mt-2 max-w-[310px] leading-relaxed">
-                    Real buyers can discover you right now with your quality badge. Loading your dashboard\u2026
+                <p className="text-[15px] font-medium text-[#1A1A1A]/42 mt-2 max-w-[340px] leading-relaxed">
+                    List your next product now. Each product becomes a listing request that we review before it goes live.
                 </p>
             </motion.div>
 
@@ -1451,10 +1653,56 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.65, duration: 0.5, ease: EASE }}
-                className="mt-10 flex items-center gap-2.5"
+                className="mt-10 w-full max-w-[360px]"
             >
-                <div className="w-4 h-4 rounded-full border-2 border-[#0171E3]/20 border-t-[#0171E3] animate-spin" />
-                <p className="text-[13px] font-medium text-[#1A1A1A]/28">Setting up your dashboard\u2026</p>
+                <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.96 }}
+                    onClick={() => {
+                        setListingId(null);
+                        setAssignedRating(4.8);
+                        setVerifyPhase(0);
+                        setCelebrating(false);
+                        setShowPreview(false);
+                        setDetailsOpen(false);
+                        setProduct({
+                            photo: null,
+                            photoFile: null,
+                            uploading: false,
+                            name: '',
+                            price: '',
+                            qty: 50,
+                            category: '',
+                            description: '',
+                            companyName: '',
+                            monthlyCapacity: '',
+                        });
+                        setSample({ type: 'factory', address: '', contactName: '', phone: '' });
+                        setCompleted(new Set());
+                        setStep('request');
+                    }}
+                    className="w-full py-4 rounded-full text-[15px] font-black border-none cursor-pointer flex items-center justify-center gap-2.5 relative overflow-hidden"
+                    style={{
+                        background: 'linear-gradient(135deg, #0171E3 0%, #0150C0 100%)',
+                        color: 'white',
+                        boxShadow: '0 8px 34px rgba(1,113,227,0.32), 0 2px 8px rgba(1,113,227,0.18)',
+                    }}
+                >
+                    <FileText size={18} strokeWidth={2.5} />
+                    List a new product
+                </motion.button>
+
+                <button
+                    onClick={onComplete}
+                    className="mt-3 w-full py-3.5 rounded-full text-[13px] font-bold cursor-pointer border"
+                    style={{
+                        background: 'rgba(255,255,255,0.78)',
+                        borderColor: 'rgba(0,0,0,0.08)',
+                        color: 'rgba(26,26,26,0.55)',
+                    }}
+                >
+                    Go to dashboard
+                </button>
             </motion.div>
         </motion.div>
     );

@@ -11,6 +11,11 @@ from django.db import IntegrityError, transaction
 from django.db.models import CharField, Count, DecimalField, Q, Sum
 from django.utils import timezone
 from datetime import timedelta
+import os
+import uuid
+
+from django.core.files.storage import default_storage
+from django.contrib.auth.hashers import make_password
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
@@ -21,6 +26,7 @@ from .models import (
     AdminProfile,
     AdminPlatformSettings,
     AdminUiNotificationState,
+    BuyerProfile,
     ChatMessage,
     ChatThread,
     KycDocument,
@@ -29,6 +35,7 @@ from .models import (
     Subscription,
     User,
     UserProfile,
+    UserSettings,
 )
 from .serializers import (
     AdminProfileUpdateSerializer,
@@ -39,6 +46,7 @@ from .serializers import (
     BuyerProfileSerializer,
     ChatMessageSerializer,
     ChatThreadSerializer,
+    ChatThreadListSerializer,
     KycDocumentSelfSerializer,
     KycDocumentUploadSerializer,
     NotificationSerializer,
@@ -47,6 +55,7 @@ from .serializers import (
     SellerProfileSerializer,
     SubscriptionSerializer,
     UserSerializer,
+    UserSettingsSerializer,
     VehslTokenObtainPairSerializer,
 )
 
@@ -937,6 +946,231 @@ class MeView(APIView):
         return Response(UserSerializer(user).data)
 
 
+def _compact_relative_time(dt):
+    if not dt:
+        return ""
+    now = timezone.now()
+    try:
+        delta = now - dt
+    except Exception:
+        return ""
+
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        seconds = 0
+    if seconds < 60:
+        return "Just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    if seconds < 86400 * 7:
+        return f"{seconds // 86400}d"
+    return dt.strftime("%b %d")
+
+
+def _title_from_event_type(event_type: str) -> str:
+    base = (event_type or "").strip().replace("_", " ").replace("-", " ")
+    base = " ".join(w.capitalize() for w in base.split())
+    return base or "Update"
+
+
+class MeMenuView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user: User = request.user
+        role = (getattr(user, "role", "") or "").lower()
+        account_type = (getattr(user, "account_type", "") or "").lower()
+
+        active_account_type = account_type if account_type in {"buyer", "seller"} else (role if role in {"buyer", "seller"} else "buyer")
+
+        if role == User.Role.SELLER:
+            allowed_account_types = ["buyer", "seller"]
+        elif role == User.Role.BUYER:
+            allowed_account_types = ["buyer"]
+        else:
+            allowed_account_types = [active_account_type]
+
+        uid = user.id
+        threads_qs = ChatThread.objects.filter(deleted_at__isnull=True, participants__contains=[uid])
+        unread_messages_qs = (
+            ChatMessage.objects.filter(thread__in=threads_qs, deleted_at__isnull=True)
+            .exclude(sender=user)
+            .exclude(read_by__contains=[uid])
+        )
+        unread_messages_count = unread_messages_qs.count()
+        latest_unread_message = unread_messages_qs.select_related("sender").order_by("-sent_at").first()
+
+        notif_qs = (
+            Notification.objects.filter(user=user, channel=Notification.Channel.IN_APP)
+            .exclude(status=Notification.Status.READ)
+            .order_by("-created_at")
+        )
+        unread_notifications_count = notif_qs.count()
+        latest_notification = notif_qs.first()
+
+        orders_on_the_way_count = 0
+        wishlist_items_count = 0
+        latest_shipped_order = None
+        latest_shipment = None
+        try:
+            from apps.orders.models import Order, Shipment
+
+            shipped_qs = Order.objects.filter(deleted_at__isnull=True, status=Order.Status.SHIPPED)
+            shipped_qs = shipped_qs.filter(seller=user) if active_account_type == "seller" else shipped_qs.filter(buyer=user)
+            orders_on_the_way_count = shipped_qs.count()
+            latest_shipped_order = shipped_qs.order_by("-updated_at").first()
+            if latest_shipped_order:
+                latest_shipment = (
+                    Shipment.objects.filter(order=latest_shipped_order, deleted_at__isnull=True)
+                    .order_by("-created_at")
+                    .first()
+                )
+        except Exception:
+            pass
+
+        try:
+            from apps.orders.models import WishlistItem
+            wishlist_items_count = WishlistItem.objects.filter(buyer=user, deleted_at__isnull=True).count()
+        except Exception:
+            pass
+
+        updates: list[dict] = []
+
+        if latest_shipped_order:
+            progress = None
+            stages = None
+            eta = None
+            if latest_shipment:
+                stages = ["Packed", "Shipped", "Delivered"]
+                status_key = (latest_shipment.status or "").lower()
+                progress_map = {
+                    "label_created": 0.12,
+                    "picked_up": 0.35,
+                    "in_transit": 0.62,
+                    "customs": 0.72,
+                    "out_for_delivery": 0.86,
+                    "delivered": 1.0,
+                }
+                progress = progress_map.get(status_key, 0.6)
+                if getattr(latest_shipment, "estimated_delivery_at", None):
+                    eta = latest_shipment.estimated_delivery_at
+
+            updates.append(
+                {
+                    "id": f"order-{latest_shipped_order.id}",
+                    "kind": "shipping",
+                    "headline": "On its way to you" if active_account_type == "buyer" else "Order shipped",
+                    "detail": (f"Arriving {eta.strftime('%A')}" if eta else "Tracking updated"),
+                    "meta": _compact_relative_time(getattr(latest_shipped_order, "updated_at", None) or getattr(latest_shipped_order, "created_at", None)),
+                    "tint": "#34c759",
+                    "action": "orders",
+                    "progress": progress,
+                    "stages": stages,
+                }
+            )
+
+        if latest_unread_message:
+            sender = getattr(latest_unread_message, "sender", None)
+            sender_name = ""
+            if sender:
+                sender_name = f"{(sender.first_name or '').strip()} {(sender.last_name or '').strip()}".strip() or (sender.email or sender.phone or "")
+            headline = f"{sender_name or 'Someone'} replied to you"
+            detail = (latest_unread_message.content or "").strip()
+            if len(detail) > 80:
+                detail = detail[:77].rstrip() + "..."
+            initial = ((sender_name or "M").strip()[:1] or "M").upper()
+            updates.append(
+                {
+                    "id": f"msg-{latest_unread_message.id}",
+                    "kind": "message",
+                    "headline": headline,
+                    "detail": detail or "New message",
+                    "meta": _compact_relative_time(getattr(latest_unread_message, "sent_at", None)),
+                    "tint": "#0071e3",
+                    "action": "messages",
+                    "personInitial": initial,
+                    "personColor": "#0071e3",
+                }
+            )
+
+        if latest_notification:
+            payload = latest_notification.payload or {}
+            event_type = (latest_notification.event_type or "").lower()
+            title = (payload.get("title") or payload.get("headline") or "").strip() or _title_from_event_type(latest_notification.event_type)
+            body = (payload.get("body") or payload.get("detail") or payload.get("message") or "").strip()
+            if len(body) > 90:
+                body = body[:87].rstrip() + "..."
+
+            if "order" in event_type or "shipment" in event_type:
+                kind = "shipping"
+                tint = "#34c759"
+                action = "orders"
+            elif "message" in event_type or "chat" in event_type:
+                kind = "message"
+                tint = "#0071e3"
+                action = "messages"
+            else:
+                kind = "deal"
+                tint = "#ff9500"
+                action = (payload.get("action") or "settings") if isinstance(payload, dict) else "settings"
+
+            updates.append(
+                {
+                    "id": f"notif-{latest_notification.id}",
+                    "kind": kind,
+                    "headline": title,
+                    "detail": body or "You have a new update",
+                    "meta": _compact_relative_time(getattr(latest_notification, "created_at", None)),
+                    "tint": tint,
+                    "action": action,
+                }
+            )
+
+        return Response(
+            {
+                "user": UserSerializer(user, context={"request": request}).data,
+                "active_account_type": active_account_type,
+                "allowed_account_types": allowed_account_types,
+                "counts": {
+                    "orders_on_the_way": orders_on_the_way_count,
+                    "unread_messages": unread_messages_count,
+                    "unread_updates": unread_notifications_count,
+                    "wishlist_items": wishlist_items_count,
+                },
+                "updates": updates[:3],
+            }
+        )
+
+
+class MeSwitchAccountTypeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user: User = request.user
+        role = (getattr(user, "role", "") or "").lower()
+        desired = (request.data.get("account_type") or request.data.get("role") or "").strip().lower()
+        if desired not in {"buyer", "seller"}:
+            return Response({"detail": "account_type must be buyer or seller."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if role == User.Role.BUYER and desired != "buyer":
+            return Response({"detail": "This account cannot switch to seller."}, status=status.HTTP_403_FORBIDDEN)
+        if role not in {User.Role.BUYER, User.Role.SELLER}:
+            return Response({"detail": "This account cannot switch roles."}, status=status.HTTP_403_FORBIDDEN)
+
+        user.account_type = desired
+        user.save(update_fields=["account_type"])
+
+        if desired == "buyer":
+            BuyerProfile.objects.get_or_create(user=user)
+        elif desired == "seller":
+            SellerProfile.objects.get_or_create(user=user)
+
+        user.refresh_from_db()
+        return Response(UserSerializer(user, context={"request": request}).data)
+
+
 def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
     role = (getattr(user, "account_type", "") or getattr(user, "role", "") or "").lower()
     is_seller = role == User.AccountType.SELLER or role == User.Role.SELLER
@@ -1097,6 +1331,246 @@ class SellerProfileMeView(generics.RetrieveUpdateAPIView):
         return self.request.user.seller_profile
 
 
+def _is_seller_account(user: User) -> bool:
+    role = (getattr(user, "account_type", "") or getattr(user, "role", "") or "").lower()
+    return role == "seller"
+
+
+def _settings_defaults(user: User) -> dict:
+    is_seller = _is_seller_account(user)
+    display = {"compactView": False, "theme": "system", "currency": "USD"}
+    notifications = {
+        "orderConfirmed": True,
+        "orderProcessing": True,
+        "orderModified": True,
+        "orderCancelled": True,
+        "paymentConfirmed": True,
+        "shipmentDispatched": True,
+        "containerTracking": True,
+        "deliveryScheduleChanges": True,
+        "partialDeliveries": True,
+        "proofOfDelivery": True,
+        "customsClearance": False,
+        "goodsReceived": True,
+        "storageCapacity": True,
+        "demurrageWarnings": True,
+        "conditionMonitoring": False,
+        "notifyHandler": True,
+        "handlerConfirmation": True,
+        "shareTrackingWithHandler": True,
+        "paymentDueReminders": True,
+        "creditLimitAlerts": True,
+        "priceChangeAlerts": False,
+        "invoiceGenerated": True,
+        "emailNotifications": True,
+        "pushNotifications": True,
+        "smsNotifications": False,
+        "whatsappNotifications": False,
+        "sound": True,
+        "quietHours": False,
+        "quietFrom": "22:00",
+        "quietTo": "07:00",
+        "quietDays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    }
+    order_settings = {
+        "defaultSort": "newest",
+        "autoArchive": True,
+        "autoArchiveDays": 30,
+        "compactOrderCards": False,
+        "trackingUpdates": "realtime",
+        "shareTrackingLink": False,
+        "defaultCurrency": "USD",
+        "emailReceipts": True,
+        "autoAccept": False,
+        "autoAcceptThreshold": "5,000",
+        "minOrderQty": 50,
+        "responseDeadline": "24h",
+        "defaultLeadTime": 14,
+        "weeklyCapacity": "2,000",
+        "qcCheckpoint": True,
+        "sampleApproval": True,
+        "preferredCarrier": "DHL Express",
+        "autoInvoice": True,
+        "exportDocs": True,
+        "payoutSchedule": "Weekly",
+    }
+    security = {
+        "twoFactor": bool(getattr(user, "two_factor_enabled", False)),
+        "sessionTimeout": "30min",
+        "smsEnabled": True,
+        "authAppEnabled": False,
+        "recoveryGenerated": False,
+        "payoutPinEnabled": True,
+        "listingLockEnabled": True,
+        "cancelVerifyEnabled": True,
+        "payoutPinSet": False,
+    }
+
+    business = {}
+    if is_seller:
+        sp = getattr(user, "seller_profile", None)
+        name = (getattr(sp, "business_name", "") or "").strip()
+        tax_id = (getattr(sp, "tax_id", "") or "").strip()
+        email = (getattr(user, "email", "") or "").strip()
+        full = f"{(getattr(user, 'first_name', '') or '').strip()} {(getattr(user, 'last_name', '') or '').strip()}".strip()
+        business = {
+            "activeBizId": "default",
+            "businesses": [
+                {
+                    "id": "default",
+                    "name": name or "My Business",
+                    "regNo": "",
+                    "vat": tax_id,
+                    "address": "",
+                    "rep": full or "Owner",
+                    "email": email,
+                    "emailVerified": True,
+                    "payoutAccounts": [],
+                    "factoryAddress": "",
+                    "pickupAddress": "",
+                    "productionCapacity": "",
+                    "leadTime": "",
+                    "moq": "",
+                    "certifications": {
+                        "iso9001": {"name": "", "status": "none", "expiry": ""},
+                        "gmp": {"name": "", "status": "none", "expiry": ""},
+                        "exportLicense": {"name": "", "status": "none", "expiry": ""},
+                        "productSafety": {"name": "", "status": "none", "expiry": ""},
+                    },
+                }
+            ],
+        }
+    else:
+        bp = getattr(user, "buyer_profile", None)
+        business = {
+            "activeBizId": "default",
+            "businesses": [
+                {
+                    "id": "default",
+                    "name": (getattr(bp, "name", "") or "").strip() or "My Company",
+                    "business_type": (getattr(bp, "business_type", "") or "").strip(),
+                }
+            ],
+        }
+
+    return {
+        "display": display,
+        "notifications": notifications,
+        "order_settings": order_settings,
+        "security": security,
+        "business": business,
+    }
+
+
+def _merged_settings_payload(user: User, settings: UserSettings) -> dict:
+    defaults = _settings_defaults(user)
+
+    def merge(base: dict, override: dict) -> dict:
+        out = dict(base or {})
+        for k, v in (override or {}).items():
+            out[k] = v
+        return out
+
+    display = merge(defaults["display"], settings.display or {})
+    notifications = merge(defaults["notifications"], settings.notifications or {})
+    order_settings = merge(defaults["order_settings"], settings.order_settings or {})
+    security = merge(defaults["security"], settings.security or {})
+    business = merge(defaults["business"], settings.business or {})
+    security["twoFactor"] = bool(getattr(user, "two_factor_enabled", False))
+
+    return {
+        "display": display,
+        "notifications": notifications,
+        "order_settings": order_settings,
+        "security": security,
+        "business": business,
+        "updated_at": settings.updated_at,
+    }
+
+
+class UserSettingsMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        return Response({"user": UserSerializer(request.user, context={"request": request}).data, "settings": _merged_settings_payload(request.user, obj)})
+
+    def patch(self, request):
+        obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        data = request.data if isinstance(request.data, dict) else {}
+
+        user = request.user
+
+        if "two_factor_enabled" in data:
+            user.two_factor_enabled = bool(data.get("two_factor_enabled"))
+            user.save(update_fields=["two_factor_enabled"])
+
+        display = data.get("display")
+        if isinstance(display, dict):
+            obj.display = {**(obj.display or {}), **display}
+
+        notifications = data.get("notifications")
+        if isinstance(notifications, dict):
+            obj.notifications = {**(obj.notifications or {}), **notifications}
+
+        order_settings = data.get("order_settings") or data.get("orderSettings")
+        if isinstance(order_settings, dict):
+            obj.order_settings = {**(obj.order_settings or {}), **order_settings}
+
+        security = data.get("security") or data.get("privacy")
+        if isinstance(security, dict):
+            sec = {**(obj.security or {}), **security}
+            if "payoutPin" in sec:
+                pin = str(sec.get("payoutPin") or "").strip()
+                if pin:
+                    sec["payoutPinHash"] = make_password(pin)
+                    sec["payoutPinSet"] = True
+                sec.pop("payoutPin", None)
+            if "twoFactor" in sec:
+                user.two_factor_enabled = bool(sec.get("twoFactor"))
+                user.save(update_fields=["two_factor_enabled"])
+            obj.security = sec
+
+        business = data.get("business")
+        if isinstance(business, dict):
+            obj.business = business
+
+        seller_profile = data.get("seller_profile")
+        if isinstance(seller_profile, dict):
+            try:
+                sp = getattr(user, "seller_profile", None)
+                if sp is None:
+                    sp = SellerProfile.objects.create(user=user)
+                updates = {}
+                for f in ["business_name", "business_license_url", "tax_id", "country", "region", "sample_low_threshold"]:
+                    if f in seller_profile:
+                        updates[f] = seller_profile.get(f) or ""
+                if updates:
+                    SellerProfile.objects.filter(id=sp.id).update(**updates)
+            except Exception:
+                pass
+
+        buyer_profile = data.get("buyer_profile")
+        if isinstance(buyer_profile, dict):
+            try:
+                bp = getattr(user, "buyer_profile", None)
+                if bp is None:
+                    bp = BuyerProfile.objects.create(user=user)
+                updates = {}
+                for f in ["name", "business_type", "default_location", "currency_preference", "language_preference"]:
+                    if f in buyer_profile:
+                        updates[f] = buyer_profile.get(f)
+                if updates:
+                    BuyerProfile.objects.filter(id=bp.id).update(**updates)
+            except Exception:
+                pass
+
+        obj.save()
+        user.refresh_from_db()
+        obj.refresh_from_db()
+        return Response({"user": UserSerializer(user, context={"request": request}).data, "settings": _merged_settings_payload(user, obj)})
+
+
 class AdminProfileMeView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminProfileUpdateSerializer
@@ -1135,11 +1609,45 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 class ChatThreadViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ChatThreadSerializer
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
         uid = self.request.user.id
-        qs = ChatThread.objects.all().order_by("-updated_at")
+        qs = ChatThread.objects.filter(deleted_at__isnull=True).order_by("-updated_at")
         return qs.filter(participants__contains=[uid])
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ChatThreadListSerializer
+        return ChatThreadSerializer
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        uid = request.user.id
+
+        threads = list(qs[:200])
+        thread_ids = [t.id for t in threads]
+
+        last_map = {}
+        unread_map = {}
+        if thread_ids:
+            msg_qs = (
+                ChatMessage.objects.filter(thread_id__in=thread_ids, deleted_at__isnull=True)
+                .select_related("sender")
+                .order_by("-sent_at")
+            )
+            for m in msg_qs:
+                if m.thread_id not in last_map:
+                    last_map[m.thread_id] = m
+                if m.sender_id != uid and uid not in (m.read_by or []):
+                    unread_map[m.thread_id] = unread_map.get(m.thread_id, 0) + 1
+
+        for t in threads:
+            t._last_message_obj = last_map.get(t.id)
+            t._unread_count = unread_map.get(t.id, 0)
+
+        ser = self.get_serializer(threads, many=True, context={"request": request})
+        return Response(ser.data)
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
@@ -1147,13 +1655,128 @@ class ChatThreadViewSet(viewsets.ModelViewSet):
         if not isinstance(participants, list):
             return Response({"detail": "participants must be a list of user ids."}, status=status.HTTP_400_BAD_REQUEST)
         uid = request.user.id
+        participants = [int(p) for p in participants if isinstance(p, int) or (isinstance(p, str) and str(p).isdigit())]
         if uid not in participants:
             participants = [uid, *participants]
-        data["participants"] = participants
-        ser = self.get_serializer(data=data)
-        ser.is_valid(raise_exception=True)
-        thread = ser.save()
-        return Response(self.get_serializer(thread).data, status=status.HTTP_201_CREATED)
+        participants = list(dict.fromkeys(participants))
+
+        thread_type = (data.get("type") or "").strip() or None
+        if thread_type not in {ChatThread.ThreadType.BUYER_SELLER, ChatThread.ThreadType.BUYER_VEHSL, ChatThread.ThreadType.SELLER_VEHSL}:
+            thread_type = ChatThread.ThreadType.BUYER_SELLER
+
+        other_ids = [p for p in participants if p != uid]
+        other_user = User.objects.filter(id=other_ids[0]).first() if other_ids else None
+        if other_user and (getattr(other_user, "role", None) == User.Role.ADMIN or getattr(other_user, "is_staff", False) or getattr(other_user, "is_superuser", False)):
+            acct = (getattr(request.user, "account_type", "") or getattr(request.user, "role", "") or "").lower()
+            thread_type = ChatThread.ThreadType.SELLER_VEHSL if acct == "seller" else ChatThread.ThreadType.BUYER_VEHSL
+        elif other_user:
+            thread_type = ChatThread.ThreadType.BUYER_SELLER
+
+        existing = None
+        if len(participants) == 2 and other_ids:
+            existing = (
+                ChatThread.objects.filter(
+                    Q(deleted_at__isnull=True),
+                    Q(type=thread_type),
+                    Q(participants__contains=[uid]),
+                    Q(participants__contains=[other_ids[0]]),
+                )
+                .order_by("-updated_at")
+                .first()
+            )
+        if existing:
+            return Response(ChatThreadSerializer(existing).data, status=status.HTTP_200_OK)
+
+        thread = ChatThread.objects.create(type=thread_type, participants=participants)
+        return Response(ChatThreadSerializer(thread).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="support")
+    def support(self, request):
+        user: User = request.user
+        uid = user.id
+        acct = (getattr(user, "account_type", "") or getattr(user, "role", "") or "").lower()
+        thread_type = ChatThread.ThreadType.SELLER_VEHSL if acct == "seller" else ChatThread.ThreadType.BUYER_VEHSL
+
+        support_user = (
+            User.objects.filter(
+                role=User.Role.ADMIN,
+                status=User.Status.ACTIVE,
+                admin_profile__admin_role=AdminProfile.AdminRole.SUPPORT,
+            )
+            .order_by("-date_joined")
+            .first()
+        )
+        if not support_user:
+            support_user = User.objects.filter(role=User.Role.ADMIN, status=User.Status.ACTIVE).order_by("-date_joined").first()
+        if not support_user or support_user.id == uid:
+            return Response({"detail": "No support agent available."}, status=status.HTTP_404_NOT_FOUND)
+
+        other_id = support_user.id
+        existing = (
+            ChatThread.objects.filter(
+                Q(deleted_at__isnull=True),
+                Q(type=thread_type),
+                Q(participants__contains=[uid]),
+                Q(participants__contains=[other_id]),
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+        if existing:
+            return Response(ChatThreadSerializer(existing).data, status=status.HTTP_200_OK)
+
+        thread = ChatThread.objects.create(type=thread_type, participants=[uid, other_id])
+        return Response(ChatThreadSerializer(thread).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["get"], url_path="users")
+    def users(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        try:
+            limit = int(request.query_params.get("limit") or 50)
+        except Exception:
+            limit = 50
+        try:
+            offset = int(request.query_params.get("offset") or 0)
+        except Exception:
+            offset = 0
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        qs = (
+            User.objects.exclude(id=request.user.id)
+            .exclude(status__in=[User.Status.SUSPENDED, User.Status.DELETED])
+            .annotate(
+                is_manager=Case(When(role=User.Role.ADMIN, then=Value(1)), default=Value(0), output_field=IntegerField()),
+            )
+            .order_by("-is_manager", "-date_joined")
+        )
+        if q:
+            qs = qs.filter(
+                Q(email__icontains=q)
+                | Q(phone__icontains=q)
+                | Q(first_name__icontains=q)
+                | Q(last_name__icontains=q)
+            )
+        total = qs.count()
+        users = list(
+            qs[offset : offset + limit].only("id", "first_name", "last_name", "email", "phone", "role", "account_type")
+        )
+        out = []
+        for u in users:
+            full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+            out.append(
+                {
+                    "id": u.id,
+                    "name": full or (u.email or "") or (u.phone or ""),
+                    "role": getattr(u, "role", None),
+                    "account_type": getattr(u, "account_type", None),
+                    "email": u.email,
+                    "phone": u.phone,
+                    "is_manager": bool(getattr(u, "role", None) == User.Role.ADMIN),
+                }
+            )
+        next_offset = offset + len(users)
+        return Response({"results": out, "total": total, "next_offset": next_offset, "has_more": next_offset < total})
 
     @action(detail=True, methods=["get", "post"], url_path="messages")
     def messages(self, request, pk=None):
@@ -1163,17 +1786,116 @@ class ChatThreadViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
 
         if request.method == "GET":
-            qs = ChatMessage.objects.filter(thread=thread).order_by("sent_at")
-            return Response(ChatMessageSerializer(qs, many=True).data)
+            try:
+                limit = int(request.query_params.get("limit") or 60)
+            except Exception:
+                limit = 60
+            limit = max(1, min(limit, 200))
+            qs = ChatMessage.objects.filter(thread=thread, deleted_at__isnull=True).select_related("sender").order_by("-sent_at")[:limit]
+            msgs = list(reversed(list(qs)))
+
+            updated_any = False
+            for m in msgs:
+                if m.sender_id != uid and uid not in (m.read_by or []):
+                    m.read_by = list(dict.fromkeys([*(m.read_by or []), uid]))
+                    updated_any = True
+            if updated_any:
+                ChatMessage.objects.bulk_update([m for m in msgs if m.sender_id != uid], ["read_by"])
+
+            return Response(ChatMessageSerializer(msgs, many=True, context={"request": request}).data)
+
+        content = (request.data.get("content") or "").strip()
+        attachments = request.data.get("attachments") or []
+        if not isinstance(attachments, list):
+            attachments = []
+
+        files = []
+        try:
+            files = request.FILES.getlist("files")
+        except Exception:
+            files = []
+
+        uploaded = []
+        for f in files[:10]:
+            ext = os.path.splitext(getattr(f, "name", "") or "")[1]
+            safe_ext = ext[:12] if ext else ""
+            key = f"chat/{thread.id}/{uuid.uuid4().hex}{safe_ext}"
+            path = default_storage.save(key, f)
+            url = default_storage.url(path)
+            if isinstance(url, str) and url.startswith("/"):
+                url = request.build_absolute_uri(url)
+            uploaded.append(
+                {
+                    "name": getattr(f, "name", "") or "file",
+                    "url": url,
+                    "content_type": getattr(f, "content_type", "") or "",
+                    "size": int(getattr(f, "size", 0) or 0),
+                }
+            )
 
         msg = ChatMessage.objects.create(
             thread=thread,
             sender=request.user,
-            content=(request.data.get("content") or ""),
-            attachments=request.data.get("attachments") or [],
+            content=content,
+            attachments=[*attachments, *uploaded],
+            read_by=[uid],
         )
         ChatThread.objects.filter(id=thread.id).update(updated_at=msg.sent_at)
-        return Response(ChatMessageSerializer(msg).data, status=status.HTTP_201_CREATED)
+        return Response(ChatMessageSerializer(msg, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="mark-read")
+    def mark_read(self, request, pk=None):
+        thread = self.get_object()
+        uid = request.user.id
+        if uid not in (thread.participants or []):
+            return Response({"detail": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
+
+        msgs = list(
+            ChatMessage.objects.filter(thread=thread, deleted_at__isnull=True)
+            .exclude(sender_id=uid)
+            .exclude(read_by__contains=[uid])
+            .order_by("-sent_at")[:500]
+        )
+        if not msgs:
+            return Response({"updated": 0})
+        for m in msgs:
+            m.read_by = list(dict.fromkeys([*(m.read_by or []), uid]))
+        ChatMessage.objects.bulk_update(msgs, ["read_by"])
+        return Response({"updated": len(msgs)})
+
+
+class ChatMessageViewSet(mixins.UpdateModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ChatMessageSerializer
+
+    def get_queryset(self):
+        uid = self.request.user.id
+        threads = ChatThread.objects.filter(deleted_at__isnull=True, participants__contains=[uid]).values_list("id", flat=True)
+        return ChatMessage.objects.filter(thread_id__in=threads, deleted_at__isnull=True).select_related("sender", "thread")
+
+    def partial_update(self, request, *args, **kwargs):
+        msg: ChatMessage = self.get_object()
+        if msg.sender_id != request.user.id:
+            return Response({"detail": "Only the sender can edit this message."}, status=status.HTTP_403_FORBIDDEN)
+        content = request.data.get("content")
+        if content is not None:
+            msg.content = str(content)
+        if "attachments" in request.data:
+            attachments = request.data.get("attachments")
+            if isinstance(attachments, list):
+                msg.attachments = attachments
+        msg.save(update_fields=["content", "attachments"])
+        return Response(ChatMessageSerializer(msg, context={"request": request}).data)
+
+    def destroy(self, request, *args, **kwargs):
+        msg: ChatMessage = self.get_object()
+        if msg.sender_id != request.user.id:
+            return Response({"detail": "Only the sender can delete this message."}, status=status.HTTP_403_FORBIDDEN)
+        msg.deleted_at = timezone.now()
+        msg.content = ""
+        msg.attachments = []
+        msg.save(update_fields=["deleted_at", "content", "attachments"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):

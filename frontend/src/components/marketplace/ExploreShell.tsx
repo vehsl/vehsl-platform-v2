@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { ArrowLeft, ChevronRight, Search } from "lucide-react";
@@ -245,19 +244,35 @@ export function ExploreShell() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const goDashboard = () => {
+    try {
+      const raw = window.localStorage.getItem("vehsl.user");
+      const user = raw ? (JSON.parse(raw) as { account_type?: string; role?: string } | null) : null;
+      const acct = (user?.account_type || user?.role || "").toString().toLowerCase();
+      if (acct === "seller") {
+        window.location.href = "/orders/1?tab=orders";
+        return;
+      }
+      window.location.href = "/orders/1?tab=orders";
+    } catch {
+      window.location.href = "/orders/1?tab=orders";
+    }
+  };
+
   return (
     <div className="bg-vehsl-watercolor-explore font-inter min-h-dvh w-full overflow-x-hidden">
       <StickyNav visible={stickyVisible} activeId={activeId} onJump={jumpTo} />
 
       <div className="mx-auto max-w-6xl px-4 pt-6 sm:px-6">
         <div className="flex items-center justify-between">
-          <Link
-            href="/"
+          <button
+            type="button"
+            onClick={goDashboard}
             className="inline-flex items-center gap-2 rounded-full bg-white/70 px-4 py-2 backdrop-blur shadow-soft"
           >
             <ArrowLeft className="h-4 w-4 text-[#1f2330]" strokeWidth={1.5} />
             <span className="text-sm font-medium text-[#0f1115]">Home</span>
-          </Link>
+          </button>
           <LanguageToggle />
         </div>
 

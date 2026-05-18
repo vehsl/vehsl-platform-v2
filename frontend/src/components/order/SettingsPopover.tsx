@@ -63,6 +63,23 @@ function readVehslUser() {
     }
 }
 
+function apiBase() {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
+    const normalize = (u: string) => u.replace(/\/$/, '');
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
+    return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+}
+
+function readAuthTokens() {
+    try {
+        const access = window.localStorage.getItem('vehsl.access') || '';
+        const refresh = window.localStorage.getItem('vehsl.refresh') || '';
+        return { access, refresh };
+    } catch {
+        return { access: '', refresh: '' };
+    }
+}
+
 function getUserDisplay(user: any) {
     const first = (user?.first_name || '').toString().trim();
     const last = (user?.last_name || '').toString().trim();
@@ -74,6 +91,44 @@ function getUserDisplay(user: any) {
     const initial = (initialFrom[0] || 'A').toUpperCase();
     const accountType = (user?.account_type || '').toString().trim().toLowerCase();
     return { name, secondary: shownSecondary, initial, accountType };
+}
+
+function buildHistoryGroups(notifications: any[]) {
+    const now = Date.now();
+    const buckets: Record<string, any[]> = { Today: [], Yesterday: [], 'Last week': [], Earlier: [] };
+    for (const n of notifications || []) {
+        const createdAt = n?.created_at ? new Date(n.created_at).getTime() : 0;
+        const days = createdAt ? (now - createdAt) / 86400000 : 999;
+        const period = days < 1 ? 'Today' : days < 2 ? 'Yesterday' : days < 7 ? 'Last week' : 'Earlier';
+        const eventType = ((n?.event_type || '') as string).toLowerCase();
+        const payload = (n?.payload && typeof n.payload === 'object') ? n.payload : {};
+        const sentence = (payload.title || payload.headline || payload.body || payload.detail || '').toString().trim()
+            || (n?.event_type || '').toString().replace(/[_-]+/g, ' ').trim()
+            || 'Update';
+        const moment = (payload.moment || payload.meta || '').toString().trim()
+            || (createdAt ? new Date(createdAt).toLocaleString() : '');
+
+        let kind: 'shipping' | 'message' | 'deal' = 'deal';
+        let tint = '#ff9500';
+        let icon = '✨';
+        if (eventType.includes('order') || eventType.includes('shipment')) {
+            kind = 'shipping';
+            tint = '#34c759';
+            icon = '📦';
+        } else if (eventType.includes('message') || eventType.includes('chat')) {
+            kind = 'message';
+            tint = '#0071e3';
+            icon = '💬';
+        }
+
+        buckets[period].push({ id: `n-${n?.id || sentence}`, rawId: n?.id, kind, sentence, moment, tint, icon });
+    }
+
+    const out: any[] = [];
+    for (const key of ['Today', 'Yesterday', 'Last week', 'Earlier']) {
+        if (buckets[key].length) out.push({ period: key, items: buckets[key] });
+    }
+    return out;
 }
 
 /* ── Figma SVG icons ── */
@@ -396,19 +451,173 @@ function ProfilePopover({
     const [showHistory, setShowHistory] = useState(false);
     const { isSeller, setIsSeller } = useRole();
     const [authUser, setAuthUser] = useState<any | null>(null);
+    const [menuSummary, setMenuSummary] = useState<any | null>(null);
+    const [historyNotifications, setHistoryNotifications] = useState<any[] | null>(null);
+    const [markingHistoryRead, setMarkingHistoryRead] = useState(false);
 
     useEffect(() => {
         setAuthUser(readVehslUser());
     }, []);
 
     const userDisplay = useMemo(() => getUserDisplay(authUser), [authUser]);
-    const lockedRole = userDisplay.accountType === 'buyer' || userDisplay.accountType === 'seller' ? userDisplay.accountType : null;
+    const allowedAccountTypes = useMemo(() => {
+        const raw = menuSummary?.allowed_account_types;
+        return Array.isArray(raw) ? raw.filter((x: any) => x === 'buyer' || x === 'seller') : [];
+    }, [menuSummary]);
+    const lockedRole = allowedAccountTypes.length === 1 ? allowedAccountTypes[0] : null;
 
     useEffect(() => {
-        if (lockedRole) setIsSeller(lockedRole === 'seller');
-    }, [lockedRole, setIsSeller]);
+        if (menuSummary?.active_account_type === 'buyer' || menuSummary?.active_account_type === 'seller') {
+            setIsSeller(menuSummary.active_account_type === 'seller');
+        } else if (lockedRole) {
+            setIsSeller(lockedRole === 'seller');
+        }
+    }, [lockedRole, menuSummary, setIsSeller]);
 
-    const handleNotifPress = (notif: typeof NOTIFICATIONS[number], index: number) => {
+    const fetchMenuSummary = useCallback(async () => {
+        const { access } = readAuthTokens();
+        if (!access) return;
+        try {
+            const res = await fetch(`${apiBase()}/api/v1/me/menu`, {
+                headers: { Authorization: `Bearer ${access}` },
+            });
+            if (res.status === 401) return;
+            const data = await res.json().catch(() => null);
+            if (!res.ok) return;
+            setMenuSummary(data);
+            if (data?.user) {
+                setAuthUser(data.user);
+                try {
+                    window.localStorage.setItem('vehsl.user', JSON.stringify(data.user));
+                } catch { }
+            }
+        } catch { }
+    }, []);
+
+    const switchAccountType = useCallback(async (nextType: 'buyer' | 'seller') => {
+        const { access } = readAuthTokens();
+        if (!access) return false;
+        try {
+            const res = await fetch(`${apiBase()}/api/v1/me/switch-account-type`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_type: nextType }),
+            });
+            if (res.status === 401) return false;
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data && (data.detail || data.error)) || 'Could not switch role.';
+                toast.error(typeof msg === 'string' ? msg : 'Could not switch role.');
+                return false;
+            }
+            setAuthUser(data);
+            try {
+                window.localStorage.setItem('vehsl.user', JSON.stringify(data));
+            } catch { }
+            await fetchMenuSummary();
+            return true;
+        } catch {
+            toast.error('Network error.');
+            return false;
+        }
+    }, [fetchMenuSummary]);
+
+    useEffect(() => {
+        fetchMenuSummary();
+    }, [fetchMenuSummary]);
+
+    useEffect(() => {
+        if (!showHistory) return;
+        const { access } = readAuthTokens();
+        if (!access) return;
+        (async () => {
+            try {
+                const res = await fetch(`${apiBase()}/api/v1/notifications`, {
+                    headers: { Authorization: `Bearer ${access}` },
+                });
+                if (res.status === 401) return;
+                const data = await res.json().catch(() => null);
+                if (!res.ok) return;
+                const list = Array.isArray(data) ? data.slice(0, 40) : [];
+                setHistoryNotifications(list);
+            } catch { }
+        })();
+    }, [showHistory]);
+
+    const currentNotifs: NotifType[] = useMemo(() => {
+        const updates = menuSummary?.updates;
+        const list = Array.isArray(updates) ? updates : null;
+        if (!list || list.length === 0) return isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS;
+
+        const ids = isSeller ? ['sn1', 'sn2', 'sn3'] : ['n1', 'n2', 'n3'];
+        return list.slice(0, 3).map((u: any, idx: number) => ({
+            id: ids[idx] || `u-${idx}`,
+            kind: (u?.kind === 'shipping' || u?.kind === 'message' || u?.kind === 'deal') ? u.kind : 'deal',
+            headline: (u?.headline || 'Update').toString(),
+            detail: (u?.detail || '').toString(),
+            meta: (u?.meta || '').toString(),
+            tint: (u?.tint || '#0071e3').toString(),
+            action: (u?.action || 'settings').toString(),
+            progress: typeof u?.progress === 'number' ? u.progress : undefined,
+            stages: Array.isArray(u?.stages) ? u.stages : undefined,
+            personInitial: (u?.personInitial || '').toString() || undefined,
+            personColor: (u?.personColor || '').toString() || undefined,
+            savings: (u?.savings || '').toString() || undefined,
+        }));
+    }, [isSeller, menuSummary]);
+
+    const menuItems = useMemo(() => {
+        const counts = menuSummary?.counts || {};
+        return MENU_ITEMS.map((it) => {
+            if (it.key === 'orders') return { ...it, badge: Number(counts.orders_on_the_way || 0) };
+            if (it.key === 'messages') return { ...it, badge: Number(counts.unread_messages || 0) };
+            if (it.key === 'wishlist') return { ...it, badge: Number(counts.wishlist_items || 0) };
+            return it;
+        });
+    }, [menuSummary]);
+
+    const historyGroups = useMemo(() => {
+        const built = historyNotifications ? buildHistoryGroups(historyNotifications) : [];
+        if (built && built.length) return built;
+        return isSeller ? SELLER_HISTORY_GROUPS : NOTIF_HISTORY_GROUPS;
+    }, [historyNotifications, isSeller]);
+
+    const historyNotificationIds = useMemo(() => {
+        const ids: any[] = [];
+        for (const g of historyGroups || []) {
+            for (const it of (g?.items || [])) {
+                if (it?.rawId) ids.push(it.rawId);
+            }
+        }
+        return ids;
+    }, [historyGroups]);
+
+    const clearAllHistory = useCallback(async () => {
+        if (!historyNotificationIds.length) {
+            setShowHistory(false);
+            return;
+        }
+        const { access } = readAuthTokens();
+        if (!access) {
+            setShowHistory(false);
+            return;
+        }
+        if (markingHistoryRead) return;
+        try {
+            setMarkingHistoryRead(true);
+            await fetch(`${apiBase()}/api/v1/notifications/mark-read/`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: historyNotificationIds }),
+            });
+        } catch { }
+        setShowHistory(false);
+        setHistoryNotifications(null);
+        await fetchMenuSummary();
+        setMarkingHistoryRead(false);
+    }, [fetchMenuSummary, historyNotificationIds, markingHistoryRead]);
+
+    const handleNotifPress = (notif: NotifType, index: number) => {
         momentumRef.current.value = Math.min(1, momentumRef.current.value + 0.12);
         const card = cardRef.current;
         if (card) {
@@ -431,11 +640,36 @@ function ProfilePopover({
                 { transform: `scale(${1 + 0.002 * m})` }, { transform: 'scale(1)' },
             ], { duration: 360, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' });
         }
+        if (item.key === 'orders') {
+            onClose();
+            window.location.href = '/orders';
+            return;
+        }
+        if (item.key === 'wishlist') {
+            onClose();
+            window.location.href = '/wishlist';
+            return;
+        }
+        if (item.key === 'messages') {
+            onClose();
+            window.location.href = '/messages';
+            return;
+        }
         if (item.action === 'settings') onOpenSettings();
         else toast(`Opening ${item.label}...`, { description: 'Coming soon.' });
     };
-    const handleLogout = () => {
+    const handleLogout = async () => {
         momentumRef.current.value = Math.min(1, momentumRef.current.value + 0.25);
+        const { access, refresh } = readAuthTokens();
+        if (access) {
+            try {
+                await fetch(`${apiBase()}/api/v1/auth/logout`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refresh }),
+                });
+            } catch { }
+        }
         try {
             window.localStorage.removeItem('vehsl.access');
             window.localStorage.removeItem('vehsl.refresh');
@@ -471,7 +705,7 @@ function ProfilePopover({
                             transition={{ delay: 0.03, duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
                             className="flex flex-col items-center mb-5">
                             <div className="relative mb-3">
-                                {(isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS).length > 0 && (
+                                {currentNotifs.length > 0 && (
                                     <motion.div
                                         className="absolute rounded-full"
                                         style={{
@@ -510,7 +744,7 @@ function ProfilePopover({
                                         const active = tab.id === 'seller' ? isSeller : !isSeller;
                                         return (
                                             <button key={tab.id}
-                                                onClick={(e) => {
+                                                onClick={async (e) => {
                                                     if (active) return;
                                                     if (lockedRole) {
                                                         e.stopPropagation();
@@ -518,9 +752,15 @@ function ProfilePopover({
                                                         return;
                                                     }
                                                     e.stopPropagation();
-                                                    setIsSeller(tab.id === 'seller');
                                                     setExpandedNotif(null);
                                                     setShowHistory(false);
+                                                    if (!allowedAccountTypes.includes(tab.id)) {
+                                                        toast('Role is not available for this account');
+                                                        return;
+                                                    }
+                                                    const ok = await switchAccountType(tab.id);
+                                                    if (!ok) return;
+                                                    setIsSeller(tab.id === 'seller');
                                                     const m = momentumRef.current.value;
                                                     e.currentTarget.parentElement?.animate([
                                                         { transform: 'scale(1)' },
@@ -562,254 +802,113 @@ function ProfilePopover({
                         </motion.div>
 
                         {/* ── The Sentence + expandable detail ── */}
-                        {(isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS).length > 0 && (
+                        {currentNotifs.length > 0 && (
                             <motion.div
                                 ref={notifRef as React.RefObject<HTMLDivElement>}
                                 initial={{ opacity: 0, y: 6 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ delay: 0.15, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
                                 className="mb-4">
-                                {isSeller ? (
-                                    /* ── SELLER SENTENCE ── */
-                                    <p className="text-center px-2"
-                                        style={{ color: B[600], fontFamily: FONT, fontSize: '13.5px', lineHeight: 1.55 }}>
-                                        {'Inspector arrives '}
-                                        <motion.span id="hero-sn1" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#0071e3', textShadow: '0 0 18px rgba(0,113,227,0.2)', transition: 'text-shadow 0.3s ease', borderBottom: expandedNotif === 'sn1' ? '1.5px solid rgba(0,113,227,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'sn1' ? null : 'sn1'); document.getElementById('hero-sn1')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(0,113,227,0.45), 0 0 56px rgba(0,113,227,0.12)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(0,113,227,0.2)'; }}>
-                                            tomorrow</motion.span>
-                                        {'. '}
-                                        <motion.span id="hero-sn2" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#34c759', textShadow: '0 0 18px rgba(52,199,89,0.18)', transition: 'text-shadow 0.3s ease', borderBottom: expandedNotif === 'sn2' ? '1.5px solid rgba(52,199,89,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'sn2' ? null : 'sn2'); document.getElementById('hero-sn2')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(52,199,89,0.4), 0 0 56px rgba(52,199,89,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(52,199,89,0.18)'; }}>
-                                            $12,912 deposited</motion.span>
-                                        {'. Certificate '}
-                                        <motion.span id="hero-sn3" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#ff9500', textShadow: '0 0 18px rgba(255,149,0,0.18)', transition: 'text-shadow 0.3s ease', borderBottom: expandedNotif === 'sn3' ? '1.5px solid rgba(255,149,0,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'sn3' ? null : 'sn3'); document.getElementById('hero-sn3')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(255,149,0,0.4), 0 0 56px rgba(255,149,0,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(255,149,0,0.18)'; }}>
-                                            expiring</motion.span>
-                                        .
-                                    </p>
-                                ) : (
-                                    /* ── BUYER SENTENCE ── */
-                                    <p className="text-center px-2"
-                                        style={{ color: B[600], fontFamily: FONT, fontSize: '13.5px', lineHeight: 1.55 }}>
-                                        {'Your sweater arrives '}
-                                        <motion.span id="hero-n1" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#34c759', textShadow: '0 0 18px rgba(52,199,89,0.2)', transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)', borderBottom: expandedNotif === 'n1' ? '1.5px solid rgba(52,199,89,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'n1' ? null : 'n1'); document.getElementById('hero-n1')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(52,199,89,0.45), 0 0 56px rgba(52,199,89,0.12)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(52,199,89,0.2)'; }}>
-                                            Thursday</motion.span>
-                                        {'. '}
-                                        <motion.span id="hero-n2" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#0071e3', textShadow: '0 0 18px rgba(0,113,227,0.18)', transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)', borderBottom: expandedNotif === 'n2' ? '1.5px solid rgba(0,113,227,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'n2' ? null : 'n2'); document.getElementById('hero-n2')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(0,113,227,0.4), 0 0 56px rgba(0,113,227,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(0,113,227,0.18)'; }}>
-                                            Priya replied</motion.span>
-                                        {'. '}
-                                        {"You\u2019re saving "}
-                                        <motion.span id="hero-n3" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#ff9500', textShadow: '0 0 18px rgba(255,149,0,0.18)', transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)', borderBottom: expandedNotif === 'n3' ? '1.5px solid rgba(255,149,0,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'n3' ? null : 'n3'); document.getElementById('hero-n3')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(255,149,0,0.4), 0 0 56px rgba(255,149,0,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(255,149,0,0.18)'; }}>
-                                            $24</motion.span>
-                                        .
-                                    </p>
-                                )}
+                                <p className="text-center px-2"
+                                    style={{ color: B[600], fontFamily: FONT, fontSize: '13.5px', lineHeight: 1.55 }}>
+                                    {currentNotifs.map((n, idx) => (
+                                        <span key={n.id}>
+                                            <motion.span
+                                                id={`hero-${n.id}`}
+                                                className="font-semibold cursor-pointer inline-block"
+                                                style={{
+                                                    color: n.tint,
+                                                    textShadow: `0 0 18px ${n.tint}22`,
+                                                    transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)',
+                                                    borderBottom: expandedNotif === n.id ? `1.5px solid ${n.tint}55` : '1.5px solid transparent',
+                                                }}
+                                                onClick={() => {
+                                                    setExpandedNotif(expandedNotif === n.id ? null : n.id);
+                                                    document.getElementById(`hero-${n.id}`)?.animate(
+                                                        [{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }],
+                                                        { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }
+                                                    );
+                                                }}
+                                                onMouseEnter={(e) => { e.currentTarget.style.textShadow = `0 0 28px ${n.tint}55, 0 0 56px ${n.tint}22`; }}
+                                                onMouseLeave={(e) => { e.currentTarget.style.textShadow = `0 0 18px ${n.tint}22`; }}
+                                            >
+                                                {n.headline}
+                                            </motion.span>
+                                            {idx < currentNotifs.length - 1 ? '. ' : ''}
+                                        </span>
+                                    ))}
+                                </p>
 
-                                {/* ── Expandable detail — the sentence opens up ── */}
                                 <AnimatePresence mode="wait">
-                                    {/* SELLER expandable details */}
-                                    {expandedNotif === 'sn1' && (
-                                        <motion.div key="d-sn1"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(0,113,227,0.04)' }}>
-                                            <div className="flex items-center gap-2.5 mb-2.5">
-                                                <Eye size={14} strokeWidth={1.8} style={{ color: '#0071e3' }} />
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Quality Inspection</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-1.5" style={{ color: B[600], fontFamily: FONT }}>Tomorrow at 9:00 AM · Your warehouse</p>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[100], fontFamily: FONT }}>Covering order #4KNW280R — 24x Wireless NC Headphones</p>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(0,113,227,0.08)', color: '#0071e3', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Inspection details', { description: 'Tomorrow 9:00 AM · Order #4KNW280R' }); }}>
-                                                View inspection details
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'sn2' && (
-                                        <motion.div key="d-sn2"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(52,199,89,0.05)' }}>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Payment cleared</span>
-                                                <span className="text-[15px] font-semibold" style={{ color: '#34c759', fontFamily: FONT }}>+$12,912</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-1" style={{ color: B[600], fontFamily: FONT }}>
-                                                48x Wireless NC Headphones · Order #7RKT441P
-                                            </p>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[100], fontFamily: FONT }}>
-                                                Deposited to your account within 2 business days
-                                            </p>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(52,199,89,0.08)', color: '#34c759', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening earnings...', { description: 'View full payment history' }); }}>
-                                                View earnings
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'sn3' && (
-                                        <motion.div key="d-sn3"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(255,149,0,0.04)' }}>
-                                            <div className="flex items-center gap-2.5 mb-2.5">
-                                                <AlertTriangle size={14} strokeWidth={1.8} style={{ color: '#ff9500' }} />
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Export certificate expiring</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-1" style={{ color: B[600], fontFamily: FONT }}>
-                                                Ceramic Vase (HS 6913.10) — expires in 14 days
-                                            </p>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[100], fontFamily: FONT }}>
-                                                Upload renewed certificate to avoid listing suspension
-                                            </p>
-                                            <button className="w-full text-[11.5px] font-semibold py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: '#ff9500', color: 'white', fontFamily: FONT, transition: 'opacity 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening file picker...', { description: 'Upload renewed export certificate' }); }}>
-                                                Upload certificate
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {/* BUYER expandable details */}
-                                    {expandedNotif === 'n1' && (
-                                        <motion.div key="d-n1"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(52,199,89,0.05)' }}>
-                                            <div className="flex items-center gap-2.5 mb-3">
-                                                <Truck size={14} strokeWidth={1.8} style={{ color: '#34c759' }} />
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Merino Crew Neck Sweater</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-2.5" style={{ color: B[600], fontFamily: FONT }}>Left New Jersey warehouse at 2:14pm</p>
-                                            <div className="relative h-[3px] rounded-full overflow-hidden mb-2" style={{ backgroundColor: 'rgba(52,199,89,0.12)' }}>
-                                                <motion.div className="absolute inset-y-0 left-0 rounded-full"
-                                                    initial={{ width: '0%' }} animate={{ width: '72%' }}
-                                                    transition={{ delay: 0.15, duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                                    style={{ background: 'linear-gradient(90deg, #34c759, #30d158)', boxShadow: '0 0 8px rgba(52,199,89,0.3)' }} />
-                                            </div>
-                                            <div className="flex justify-between mb-3">
-                                                {['Packed', 'Shipped', 'Delivered'].map((s, si) => (
-                                                    <span key={s} className="text-[9.5px] font-medium" style={{ color: si <= 1 ? '#34c759' : B[100], fontFamily: FONT }}>{s}</span>
-                                                ))}
-                                            </div>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(52,199,89,0.08)', color: '#34c759', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening tracking...', { description: 'Full shipment details' }); }}>
-                                                Track shipment
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'n2' && (
-                                        <motion.div key="d-n2"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(0,113,227,0.04)' }}>
-                                            <div className="flex items-center gap-2.5 mb-2.5">
-                                                <div className="w-[24px] h-[24px] rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(0,113,227,0.1)' }}>
-                                                    <span className="text-[10px] font-semibold" style={{ color: '#0071e3' }}>P</span>
+                                    {(() => {
+                                        const n = currentNotifs.find(x => x.id === expandedNotif);
+                                        if (!n) return null;
+                                        const bg = `${n.tint}0A`;
+                                        const soft = `${n.tint}14`;
+                                        const primary = n.tint;
+                                        const label =
+                                            n.action === 'orders' ? 'Open orders' :
+                                            n.action === 'messages' ? 'Open messages' :
+                                            n.action === 'wishlist' ? 'Open wishlist' :
+                                            n.action === 'settings' ? 'Open settings' : 'Open';
+                                        const onAction = (e: any) => {
+                                            e.stopPropagation();
+                                            if (n.action === 'orders') window.location.href = '/orders';
+                                            else if (n.action === 'settings') onOpenSettings();
+                                            else toast(`Opening ${n.action}...`, { description: 'Coming soon.' });
+                                        };
+                                        return (
+                                            <motion.div
+                                                key={`d-${n.id}`}
+                                                initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                                                animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
+                                                exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                                                transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+                                                className="overflow-hidden rounded-[14px] px-4 py-3.5"
+                                                style={{ background: bg }}
+                                            >
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>{n.headline}</span>
+                                                    <span className="text-[10px]" style={{ color: B[600], fontFamily: FONT }}>{n.meta}</span>
                                                 </div>
-                                                <span className="text-[12.5px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Priya Sharma</span>
-                                                <span className="text-[10.5px]" style={{ color: B[100], fontFamily: FONT }}>2h ago</span>
-                                            </div>
-                                            <p className="text-[12.5px] leading-relaxed rounded-[10px] px-3 py-2.5 mb-3"
-                                                style={{ color: B[700], fontFamily: FONT, background: 'rgba(0,113,227,0.04)', fontStyle: 'italic' }}>
-                                                "Hey! I checked with the warehouse — your delivery should definitely arrive by Thursday afternoon. I'll keep an eye on it!"
-                                            </p>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(0,113,227,0.08)', color: '#0071e3', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening messages...', { description: 'Conversation with Priya' }); }}>
-                                                Reply to Priya
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'n3' && (
-                                        <motion.div key="d-n3"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(255,149,0,0.04)' }}>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Merino Crew Neck</span>
-                                                <div className="flex items-baseline gap-1.5">
-                                                    <span className="text-[11px] line-through" style={{ color: B[100], fontFamily: FONT }}>$89</span>
-                                                    <span className="text-[14px] font-semibold" style={{ color: '#ff9500', fontFamily: FONT }}>$65</span>
-                                                </div>
-                                            </div>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[600], fontFamily: FONT }}>
-                                                Price dropped on your wishlist item. Lowest in 30 days.
-                                            </p>
-                                            <div className="flex gap-2">
-                                                <button className="flex-1 text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                    style={{ background: 'rgba(255,149,0,0.08)', color: '#ff9500', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,149,0,0.14)'; }}
-                                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,149,0,0.08)'; }}
-                                                    onClick={(e) => { e.stopPropagation(); toast('Opening wishlist...'); }}>
-                                                    View item
-                                                </button>
-                                                <button className="flex-1 text-[11.5px] font-semibold py-2 rounded-[10px] cursor-pointer border-none"
-                                                    style={{ background: '#ff9500', color: 'white', fontFamily: FONT, transition: 'opacity 0.2s' }}
+                                                {n.kind === 'shipping' && typeof n.progress === 'number' && (
+                                                    <>
+                                                        <div className="w-full h-[6px] rounded-full overflow-hidden mb-3"
+                                                            style={{ background: soft }}>
+                                                            <motion.div initial={{ width: 0 }} animate={{ width: `${Math.round(n.progress * 100)}%` }}
+                                                                transition={{ duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94] }}
+                                                                className="h-full rounded-full"
+                                                                style={{ background: primary }} />
+                                                        </div>
+                                                        {Array.isArray(n.stages) && n.stages.length >= 2 && (
+                                                            <div className="flex items-center justify-between text-[10px] mb-3"
+                                                                style={{ color: B[600], fontFamily: FONT }}>
+                                                                {n.stages.slice(0, 3).map((s) => <span key={s}>{s}</span>)}
+                                                            </div>
+                                                        )}
+                                                    </>
+                                                )}
+                                                <p className="text-[11.5px] mb-3" style={{ color: B[600], fontFamily: FONT }}>
+                                                    {n.detail || '—'}
+                                                </p>
+                                                <button
+                                                    className="w-full text-[11.5px] font-semibold py-2 rounded-[10px] cursor-pointer border-none"
+                                                    style={{ background: primary, color: 'white', fontFamily: FONT, transition: 'opacity 0.2s' }}
                                                     onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
                                                     onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-                                                    onClick={(e) => { e.stopPropagation(); toast('Added to cart!', { description: 'Merino Crew Neck — $65' }); }}>
-                                                    Add to cart
+                                                    onClick={onAction}
+                                                >
+                                                    {label}
                                                 </button>
-                                            </div>
-                                        </motion.div>
-                                    )}
+                                            </motion.div>
+                                        );
+                                    })()}
                                 </AnimatePresence>
                             </motion.div>
                         )}
 
                         {/* ── See all / History toggle ── */}
-                        {(isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS).length > 0 && (
+                        {currentNotifs.length > 0 && (
                             <motion.div
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
@@ -849,8 +948,8 @@ function ProfilePopover({
                                     <div className="relative">
                                         {/* Scrollable memory stream */}
                                         <div className="max-h-[280px] overflow-y-auto" style={{ scrollbarWidth: 'none' }}>
-                                            {(isSeller ? SELLER_HISTORY_GROUPS : NOTIF_HISTORY_GROUPS).map((group, gi) => {
-                                                const histGroups = isSeller ? SELLER_HISTORY_GROUPS : NOTIF_HISTORY_GROUPS;
+                                            {historyGroups.map((group, gi) => {
+                                                const histGroups = historyGroups;
                                                 let itemCounter = 0;
                                                 for (let g = 0; g < gi; g++) itemCounter += histGroups[g].items.length;
                                                 return (
@@ -972,7 +1071,7 @@ function ProfilePopover({
                                                 style={{ color: B[600], fontFamily: FONT, transition: 'all 0.25s ease' }}
                                                 onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.03)'; e.currentTarget.style.color = C.text; }}
                                                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = B[600]; }}
-                                                onClick={() => { toast('History cleared', { description: 'All past notifications removed' }); setShowHistory(false); }}>
+                                                onClick={clearAllHistory}>
                                                 <span style={{ fontSize: '9px', opacity: 0.5 }}>{'×'}</span>
                                                 Clear all history
                                             </button>
@@ -984,7 +1083,7 @@ function ProfilePopover({
 
                         <div className="h-px mb-1 rounded-full" style={{ backgroundColor: 'rgba(0,0,0,0.04)' }} />
                         <div ref={menuRef as React.RefObject<HTMLDivElement>}>
-                            {MENU_ITEMS.filter(item => item.key !== 'seller').map((item, i) => (
+                            {menuItems.filter(item => item.key !== 'seller').map((item, i) => (
                                     <MenuItem key={item.key} item={item} index={i}
                                         momentum={momentumRef.current.value}
                                         onPress={() => handleItemPress(item, i)}
@@ -1249,6 +1348,8 @@ function SidebarContent({ title, lines }: { title: string; lines: { label: strin
 function FullSettingsModal({ onClose }: { onClose: () => void }) {
     const { isSeller } = useRole();
     const [tab, setTab] = useState<SettingsTab>('profile');
+    const [loaded, setLoaded] = useState(false);
+    const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [notifications, setNotifications] = useState({
         /* Order lifecycle */
         orderConfirmed: true, orderProcessing: true, orderModified: true,
@@ -1272,11 +1373,15 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
         sound: true,
         /* Quiet hours */
         quietHours: false,
+        quietFrom: '22:00',
+        quietTo: '07:00',
+        quietDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
     });
     const [display, setDisplay] = useState({
         compactView: false, theme: 'system' as 'light' | 'dark' | 'system',
         currency: 'USD' as 'USD' | 'EUR' | 'GBP',
     });
+    const [business, setBusiness] = useState<any>({ activeBizId: 'default', businesses: [] });
     const [orderSettings, setOrderSettings] = useState({
         defaultSort: 'newest' as 'newest' | 'oldest' | 'amount',
         autoArchive: true, autoArchiveDays: 30,
@@ -1290,6 +1395,13 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
     });
     const [privacy, setPrivacy] = useState({
         twoFactor: false, sessionTimeout: '30min' as '15min' | '30min' | '1hr' | 'never',
+        smsEnabled: true,
+        authAppEnabled: false,
+        recoveryGenerated: false,
+        payoutPinEnabled: true,
+        listingLockEnabled: true,
+        cancelVerifyEnabled: true,
+        payoutPinSet: false,
     });
 
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -1374,6 +1486,97 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
         return () => { document.body.style.overflow = ''; };
     }, []);
 
+    const refreshAccess = useCallback(async () => {
+        const { refresh } = readAuthTokens();
+        if (!refresh) return '';
+        try {
+            const res = await fetch(`${apiBase()}/api/v1/auth/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refresh }),
+            });
+            const data = await res.json().catch(() => null);
+            const nextAccess = (data?.access || '').toString();
+            if (!res.ok || !nextAccess) return '';
+            try { window.localStorage.setItem('vehsl.access', nextAccess); } catch { }
+            return nextAccess;
+        } catch {
+            return '';
+        }
+    }, []);
+
+    const authedFetch = useCallback(async (path: string, init?: RequestInit) => {
+        const doFetch = async (access: string) => fetch(`${apiBase()}${path}`, {
+            ...init,
+            headers: {
+                ...(init?.headers || {}),
+                ...(access ? { Authorization: `Bearer ${access}` } : {}),
+            },
+            cache: 'no-store',
+        });
+
+        let access = readAuthTokens().access;
+        let res = await doFetch(access);
+        if (res.status !== 401) return res;
+
+        const nextAccess = await refreshAccess();
+        if (!nextAccess) {
+            try {
+                window.localStorage.removeItem('vehsl.access');
+                window.localStorage.removeItem('vehsl.refresh');
+                window.localStorage.removeItem('vehsl.user');
+            } catch { }
+            try { window.location.assign('/?signin=1'); } catch { }
+            return res;
+        }
+
+        access = nextAccess;
+        res = await doFetch(access);
+        return res;
+    }, [refreshAccess]);
+
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const res = await authedFetch('/api/v1/settings/me');
+                if (!alive) return;
+                if (!res.ok) { setLoaded(true); return; }
+                const data = await res.json().catch(() => null);
+                const s = data?.settings || {};
+                if (s?.notifications && typeof s.notifications === 'object') setNotifications((p: any) => ({ ...p, ...(s.notifications || {}) }));
+                if (s?.display && typeof s.display === 'object') setDisplay((p: any) => ({ ...p, ...(s.display || {}) }));
+                if (s?.order_settings && typeof s.order_settings === 'object') setOrderSettings((p: any) => ({ ...p, ...(s.order_settings || {}) }));
+                if (s?.security && typeof s.security === 'object') setPrivacy((p: any) => ({ ...p, ...(s.security || {}) }));
+                if (s?.business && typeof s.business === 'object') setBusiness((p: any) => ({ ...p, ...(s.business || {}) }));
+            } catch { }
+            if (alive) setLoaded(true);
+        })();
+        return () => { alive = false; };
+    }, [authedFetch]);
+
+    useEffect(() => {
+        if (!loaded) return;
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => {
+            const body = {
+                display,
+                notifications,
+                order_settings: orderSettings,
+                security: privacy,
+                business,
+            };
+            void authedFetch('/api/v1/settings/me', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        }, 650);
+        return () => {
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        };
+    }, [loaded, display, notifications, orderSettings, privacy, business, authedFetch]);
+
     return createPortal(
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
@@ -1457,7 +1660,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                             exit={{ opacity: 0 }}
                                             transition={{ duration: 0.15 }}>
                                             {tab === 'profile' && (isSeller
-                                                ? <SellerBusinessTab display={display} setDisplay={setDisplay} />
+                                                ? <SellerBusinessTab display={display} setDisplay={setDisplay} business={business} setBusiness={setBusiness} />
                                                 : <ProfileTab display={display} setDisplay={setDisplay} />
                                             )}
                                             {tab === 'alerts' && (isSeller
@@ -1473,8 +1676,28 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                                 : <SecurityTab privacy={privacy} setPrivacy={setPrivacy} />
                                             )}
                                             {tab === 'help' && (isSeller
-                                                ? <SellerHelpTab />
-                                                : <HelpTab />
+                                                ? <SellerHelpTab openSupportChat={async () => {
+                                                    try {
+                                                        const res = await authedFetch('/api/v1/chat/threads/support/', { method: 'POST' });
+                                                        const data = await res.json().catch(() => null);
+                                                        const id = Number(data?.id || 0);
+                                                        if (id) window.location.href = `/messages?thread=${id}`;
+                                                        else window.location.href = '/messages';
+                                                    } catch {
+                                                        window.location.href = '/messages';
+                                                    }
+                                                }} />
+                                                : <HelpTab openSupportChat={async () => {
+                                                    try {
+                                                        const res = await authedFetch('/api/v1/chat/threads/support/', { method: 'POST' });
+                                                        const data = await res.json().catch(() => null);
+                                                        const id = Number(data?.id || 0);
+                                                        if (id) window.location.href = `/messages?thread=${id}`;
+                                                        else window.location.href = '/messages';
+                                                    } catch {
+                                                        window.location.href = '/messages';
+                                                    }
+                                                }} />
                                             )}
                                         </motion.div>
                                     </AnimatePresence>

@@ -11,6 +11,7 @@ from .views import (
     OrderViewSet,
     ReviewViewSet,
     ShipmentViewSet,
+    WishlistViewSet,
 )
 
 router = DefaultRouter()
@@ -22,6 +23,7 @@ router.register(r"admin/verification/release/conditions", AdminReleaseConditionV
 router.register(r"disputes", DisputeViewSet, basename="dispute")
 router.register(r"reviews", ReviewViewSet, basename="review")
 router.register(r"documents", DocumentViewSet, basename="document")
+router.register(r"wishlist", WishlistViewSet, basename="wishlist")
 
 urlpatterns = [
     path("cart", CartMeView.as_view()),

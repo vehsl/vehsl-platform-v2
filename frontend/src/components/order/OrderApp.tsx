@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { mockOrders } from "./data/mockOrders";
 import { OrderDetailsView } from "./OrderDetailsView";
 import { OrderHistoryList } from "./OrderHistoryList";
@@ -19,6 +19,23 @@ function AppInner() {
   const [orders, setOrders] = useState(mockOrders);
   const [selectedOrderId, setSelectedOrderId] = useState(mockOrders[0].id);
   const [activeTab, setActiveTab] = useState<Tab>("orders");
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const tab = (params.get("tab") || "").toLowerCase();
+      if (tab === "warehouse") setActiveTab("warehouse");
+      if (tab === "orders") setActiveTab("orders");
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", activeTab);
+      window.history.replaceState(null, "", url.toString());
+    } catch {}
+  }, [activeTab]);
 
   const selectedOrder = orders.find((o) => o.id === selectedOrderId) || orders[0];
 

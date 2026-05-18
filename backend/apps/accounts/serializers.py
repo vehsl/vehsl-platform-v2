@@ -18,6 +18,7 @@ from .models import (
     Subscription,
     User,
     UserProfile,
+    UserSettings,
 )
 
 
@@ -131,6 +132,12 @@ class SellerProfileSerializer(serializers.ModelSerializer):
             "vehsl_rating",
             "sample_low_threshold",
         ]
+
+
+class UserSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserSettings
+        fields = ["display", "notifications", "order_settings", "security", "business", "updated_at"]
 
 
 class AdminProfileSerializer(serializers.ModelSerializer):
@@ -523,10 +530,87 @@ class ChatThreadSerializer(serializers.ModelSerializer):
 
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(read_only=True)
+    sender_name = serializers.SerializerMethodField()
+    deleted_at = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = ChatMessage
-        fields = ["id", "thread", "sender_id", "content", "attachments", "sent_at", "read_by"]
+        fields = ["id", "thread", "sender_id", "sender_name", "content", "attachments", "sent_at", "read_by", "deleted_at"]
+
+    def get_sender_name(self, obj: ChatMessage):
+        sender = getattr(obj, "sender", None)
+        if not sender:
+            return ""
+        full = f"{(sender.first_name or '').strip()} {(sender.last_name or '').strip()}".strip()
+        return full or (sender.email or "") or (sender.phone or "")
+
+
+class ChatThreadListSerializer(serializers.ModelSerializer):
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+    other_participants = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChatThread
+        fields = ["id", "type", "participants", "created_at", "updated_at", "last_message", "unread_count", "other_participants"]
+
+    def _uid(self):
+        req = self.context.get("request")
+        u = getattr(req, "user", None) if req else None
+        return getattr(u, "id", None)
+
+    def get_last_message(self, obj: ChatThread):
+        msg = getattr(obj, "_last_message_obj", None)
+        if msg is None:
+            try:
+                msg = obj.messages.filter(deleted_at__isnull=True).select_related("sender").order_by("-sent_at").first()
+            except Exception:
+                msg = None
+        if not msg:
+            return None
+        return ChatMessageSerializer(msg, context=self.context).data
+
+    def get_unread_count(self, obj: ChatThread):
+        uid = self._uid()
+        try:
+            return int(getattr(obj, "_unread_count", None) or 0)
+        except Exception:
+            pass
+        if not uid:
+            return 0
+        try:
+            return (
+                obj.messages.filter(deleted_at__isnull=True)
+                .exclude(sender_id=uid)
+                .exclude(read_by__contains=[uid])
+                .count()
+            )
+        except Exception:
+            return 0
+
+    def get_other_participants(self, obj: ChatThread):
+        uid = self._uid()
+        ids = [int(x) for x in (obj.participants or []) if isinstance(x, int) or (isinstance(x, str) and str(x).isdigit())]
+        if uid:
+            ids = [i for i in ids if i != uid]
+        from .models import User
+
+        users = list(User.objects.filter(id__in=ids).only("id", "first_name", "last_name", "email", "phone", "role", "account_type"))
+        out = []
+        for u in users:
+            full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+            out.append(
+                {
+                    "id": u.id,
+                    "name": full or (u.email or "") or (u.phone or ""),
+                    "role": getattr(u, "role", None),
+                    "account_type": getattr(u, "account_type", None),
+                    "email": u.email,
+                    "phone": u.phone,
+                }
+            )
+        return out
+
 
 
 class RegisterSerializer(serializers.Serializer):

@@ -459,7 +459,7 @@ type HelpView =
     | { type: 'topic'; topicIndex: number }
     | { type: 'article'; topicIndex: number; article: Article };
 
-export function HelpTab() {
+export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Promise<void> }) {
     const [view, setView] = useState<HelpView>({ type: 'settings' });
     const [showPhone, setShowPhone] = useState(false);
 
@@ -558,7 +558,10 @@ export function HelpTab() {
                         )}
                     </AnimatePresence>
                 </motion.button>
-                <button onClick={() => setView({ type: 'chat' })}
+                <button onClick={() => {
+                    if (openSupportChat) { void openSupportChat(); return; }
+                    try { window.location.href = '/messages'; } catch { }
+                }}
                     className="flex items-center justify-center gap-2 py-[10px] px-5 rounded-full text-[13px] font-semibold cursor-pointer border-none"
                     style={{ backgroundColor: '#1d1d1f', color: 'white' }}>
                     <MessageSquare size={14} strokeWidth={1.5} />

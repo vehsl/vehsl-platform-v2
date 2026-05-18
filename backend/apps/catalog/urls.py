@@ -9,12 +9,14 @@ from .views import (
     ProductMediaViewSet,
     ProductVariationViewSet,
     ProductViewSet,
+    SellerListingRequestViewSet,
     TrademarkViewSet,
 )
 
 router = DefaultRouter()
 router.register(r"categories", CategoryViewSet, basename="category")
 router.register(r"products", ProductViewSet, basename="product")
+router.register(r"seller/listing-requests", SellerListingRequestViewSet, basename="seller-listing-request")
 router.register(r"admin/products", AdminProductViewSet, basename="admin-product")
 router.register(r"product-variations", ProductVariationViewSet, basename="product-variation")
 router.register(r"pricing-tiers", PricingTierViewSet, basename="pricing-tier")

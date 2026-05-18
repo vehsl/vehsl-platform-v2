@@ -237,6 +237,19 @@ class SellerProfile(models.Model):
         return f"seller_profile:{self.user_id}"
 
 
+class UserSettings(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="settings")
+    display = models.JSONField(default=dict, blank=True)
+    notifications = models.JSONField(default=dict, blank=True)
+    order_settings = models.JSONField(default=dict, blank=True)
+    security = models.JSONField(default=dict, blank=True)
+    business = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"settings:{self.user_id}"
+
+
 class AdminProfile(models.Model):
     class AdminRole(models.TextChoices):
         SUPER_ADMIN = "super_admin", "Super Admin"

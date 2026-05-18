@@ -282,7 +282,7 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
 /* ═══════════════════════════════════════════════
    SELLER HELP TAB
    ═══════════════════════════════════════════════ */
-export function SellerHelpTab() {
+export function SellerHelpTab({ openSupportChat }: { openSupportChat?: () => void | Promise<void> }) {
     const [view, setView] = useState<'home' | 'topic' | 'article' | 'chat' | 'conversations' | 'conversation'>('home');
     const [activeTopic, setActiveTopic] = useState<Topic | null>(null);
     const [activeArticle, setActiveArticle] = useState<Article | null>(null);
@@ -345,7 +345,10 @@ export function SellerHelpTab() {
 
                         {/* Quick actions */}
                         <div className="flex gap-2.5 mb-6">
-                            <button onClick={() => setView('chat')}
+                            <button onClick={() => {
+                                if (openSupportChat) { void openSupportChat(); return; }
+                                try { window.location.href = '/messages'; } catch { }
+                            }}
                                 className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-[16px] text-[13px] font-medium border-none cursor-pointer transition-all duration-150 hover:opacity-85"
                                 style={{ backgroundColor: C.accent, color: 'white' }}>
                                 <MessageSquare size={15} strokeWidth={1.8} />

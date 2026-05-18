@@ -8,6 +8,7 @@ from .views import (
     AdminUserViewSet,
     AdminVerificationUserViewSet,
     BuyerProfileMeView,
+    ChatMessageViewSet,
     ChatThreadViewSet,
     KycDocumentsMeView,
     KycRequirementsView,
@@ -18,10 +19,13 @@ from .views import (
     AdminUiNotificationsMarkReadView,
     AdminUiNotificationsView,
     MeView,
+    MeMenuView,
+    MeSwitchAccountTypeView,
     NotificationViewSet,
     RefreshView,
     RegisterView,
     SellerProfileMeView,
+    UserSettingsMeView,
     SubscriptionViewSet,
 )
 
@@ -30,6 +34,7 @@ router.register(r"admin/users", AdminUserViewSet, basename="admin-user")
 router.register(r"admin/verification/users", AdminVerificationUserViewSet, basename="admin-verification-user")
 router.register(r"admin/verification/kyc-documents", AdminKycDocumentViewSet, basename="admin-kyc-document")
 router.register(r"chat/threads", ChatThreadViewSet, basename="chat-thread")
+router.register(r"chat/messages", ChatMessageViewSet, basename="chat-message")
 router.register(r"notifications", NotificationViewSet, basename="notification")
 router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")
 
@@ -39,11 +44,14 @@ urlpatterns = [
     path("auth/logout", LogoutView.as_view()),
     path("auth/refresh", RefreshView.as_view()),
     path("auth/me", MeView.as_view()),
+    path("me/menu", MeMenuView.as_view()),
+    path("me/switch-account-type", MeSwitchAccountTypeView.as_view()),
     path("kyc/requirements", KycRequirementsView.as_view()),
     path("kyc/documents", KycDocumentsMeView.as_view()),
     path("profiles/admin/me", AdminProfileMeView.as_view()),
     path("profiles/buyer/me", BuyerProfileMeView.as_view()),
     path("profiles/seller/me", SellerProfileMeView.as_view()),
+    path("settings/me", UserSettingsMeView.as_view()),
     path("admin/overview", AdminPlatformOverviewView.as_view()),
     path("admin/settings", AdminPlatformSettingsView.as_view()),
     path("admin/ui/notifications", AdminUiNotificationsView.as_view()),

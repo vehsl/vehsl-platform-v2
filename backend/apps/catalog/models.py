@@ -2,6 +2,7 @@ from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils.text import slugify
+from uuid import uuid4
 
 
 class Category(models.Model):
@@ -83,6 +84,72 @@ class Product(models.Model):
         if self.name and not self.title:
             self.title = self.name
         super().save(*args, **kwargs)
+
+
+def _listing_request_upload_to(instance, filename: str) -> str:
+    folder = getattr(getattr(instance, "listing_request", None), "folder_uuid", None) or getattr(instance, "folder_uuid", None) or uuid4()
+    return f"listing_requests/{folder}/{filename}"
+
+
+class ListingRequest(models.Model):
+    class Stage(models.TextChoices):
+        SAMPLES = "samples", "Samples"
+        INSPECTION = "inspection", "Inspection"
+        LIVE = "live", "Live"
+        DONE = "done", "Done"
+
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="listing_requests")
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, null=True, blank=True, related_name="listing_requests")
+    category_label = models.CharField(max_length=80, blank=True)
+
+    product_name = models.CharField(max_length=160)
+    company_name = models.CharField(max_length=160, blank=True)
+    description = models.TextField(blank=True)
+    monthly_capacity = models.CharField(max_length=64, blank=True)
+
+    currency = models.CharField(max_length=3, default="USD")
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
+    moq = models.PositiveIntegerField(default=1)
+
+    pickup_type = models.CharField(max_length=16, blank=True)
+    pickup_address = models.CharField(max_length=300, blank=True)
+    pickup_contact_name = models.CharField(max_length=160, blank=True)
+    pickup_phone = models.CharField(max_length=32, blank=True)
+
+    stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.SAMPLES)
+    rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+    created_product = models.ForeignKey("Product", on_delete=models.SET_NULL, null=True, blank=True, related_name="created_from_listing_requests")
+
+    folder_uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["seller", "stage", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"listing_request:{self.pk}:{self.seller_id}"
+
+
+class ListingRequestPhoto(models.Model):
+    listing_request = models.ForeignKey(ListingRequest, on_delete=models.CASCADE, related_name="photos")
+    file = models.FileField(upload_to=_listing_request_upload_to)
+    original_name = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=128, blank=True)
+    size_bytes = models.BigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        indexes = [
+            models.Index(fields=["listing_request", "id"]),
+        ]
+
+    def __str__(self):
+        return f"listing_request_photo:{self.pk}"
 
 
 class ProductVariation(models.Model):

@@ -17,9 +17,9 @@ import { SectionTitle, Sep, Toggle, SettingRow } from './shared';
    SELLER SECURITY TAB
    ═══════════════════════════════════════════════ */
 export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPrivacy: any }) {
-    const [smsEnabled, setSmsEnabled] = useState(true);
-    const [authAppEnabled, setAuthAppEnabled] = useState(false);
-    const [recoveryGenerated, setRecoveryGenerated] = useState(false);
+    const smsEnabled = privacy?.smsEnabled ?? true;
+    const authAppEnabled = privacy?.authAppEnabled ?? false;
+    const recoveryGenerated = privacy?.recoveryGenerated ?? false;
     const [showCodes, setShowCodes] = useState(false);
     const [passkeys, setPasskeys] = useState([
         { id: '1', name: 'MacBook Air', deviceType: 'laptop' as const, addedDate: 'Dec 2025' },
@@ -27,9 +27,9 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
     ]);
 
     /* ── Seller-specific verification ── */
-    const [payoutPinEnabled, setPayoutPinEnabled] = useState(true);
-    const [listingLockEnabled, setListingLockEnabled] = useState(true);
-    const [cancelVerifyEnabled, setCancelVerifyEnabled] = useState(true);
+    const payoutPinEnabled = privacy?.payoutPinEnabled ?? true;
+    const listingLockEnabled = privacy?.listingLockEnabled ?? true;
+    const cancelVerifyEnabled = privacy?.cancelVerifyEnabled ?? true;
     const [showPayoutPinSetup, setShowPayoutPinSetup] = useState(false);
     const [payoutPin, setPayoutPin] = useState(['', '', '', '']);
     const payoutPinRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -71,7 +71,8 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
         if (v) {
             toast.success('Two-factor authentication enabled', { description: 'Choose a verification method below.' });
         } else {
-            setAuthAppEnabled(false); setRecoveryGenerated(false); setShowCodes(false);
+            setPrivacy((p: any) => ({ ...p, authAppEnabled: false, recoveryGenerated: false }));
+            setShowCodes(false);
             toast('Two-factor authentication disabled');
         }
     };
@@ -156,7 +157,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                         <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Required before changing payout accounts or withdrawing</span>
                     </div>
                     <Toggle checked={payoutPinEnabled} onChange={(v) => {
-                        setPayoutPinEnabled(v);
+                        setPrivacy((p: any) => ({ ...p, payoutPinEnabled: v }));
                         if (v) { setShowPayoutPinSetup(true); toast.success('Set your 4-digit payout PIN'); }
                         else { setShowPayoutPinSetup(false); toast('Payout PIN disabled'); }
                     }} />
@@ -197,6 +198,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                     onClick={() => {
                                         if (payoutPin.every(d => d)) {
                                             setShowPayoutPinSetup(false);
+                                            setPrivacy((p: any) => ({ ...p, payoutPinSet: true }));
                                             toast.success('Payout PIN set successfully');
                                         } else {
                                             toast.error('Please enter all 4 digits');
@@ -221,7 +223,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                         <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Require password before editing live product listings</span>
                     </div>
                     <Toggle checked={listingLockEnabled} onChange={(v) => {
-                        setListingLockEnabled(v);
+                        setPrivacy((p: any) => ({ ...p, listingLockEnabled: v }));
                         toast(v ? 'Listing lock enabled' : 'Listing lock disabled');
                     }} />
                 </div>
@@ -236,7 +238,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                         <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Password required to cancel accepted orders</span>
                     </div>
                     <Toggle checked={cancelVerifyEnabled} onChange={(v) => {
-                        setCancelVerifyEnabled(v);
+                        setPrivacy((p: any) => ({ ...p, cancelVerifyEnabled: v }));
                         toast(v ? 'Cancellation verification on' : 'Cancellation verification off');
                     }} />
                 </div>
@@ -264,7 +266,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                 <span className="text-[14px] font-medium block" style={{ color: C.text }}>SMS verification</span>
                                 <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Text message codes to +1 •••• 4892</span>
                             </div>
-                            <Toggle checked={smsEnabled} onChange={(v) => { setSmsEnabled(v); toast(v ? 'SMS verification enabled' : 'SMS verification disabled'); }} />
+                            <Toggle checked={smsEnabled} onChange={(v) => { setPrivacy((p: any) => ({ ...p, smsEnabled: v })); toast(v ? 'SMS verification enabled' : 'SMS verification disabled'); }} />
                         </div>
 
                         <Sep />
@@ -277,7 +279,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                     {authAppEnabled ? 'Connected — Google Authenticator' : 'More secure than SMS'}
                                 </span>
                             </div>
-                            <Toggle checked={authAppEnabled} onChange={(v) => { setAuthAppEnabled(v); toast(v ? 'Authenticator app enabled' : 'Authenticator app disabled'); }} />
+                            <Toggle checked={authAppEnabled} onChange={(v) => { setPrivacy((p: any) => ({ ...p, authAppEnabled: v })); toast(v ? 'Authenticator app enabled' : 'Authenticator app disabled'); }} />
                         </div>
 
                         <Sep />
@@ -287,7 +289,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                             <div
                                 role="button" tabIndex={0}
                                 onClick={() => {
-                                    if (!recoveryGenerated) { setRecoveryGenerated(true); setShowCodes(true); toast.success('Recovery codes generated'); }
+                                    if (!recoveryGenerated) { setPrivacy((p: any) => ({ ...p, recoveryGenerated: true })); setShowCodes(true); toast.success('Recovery codes generated'); }
                                     else { setShowCodes(!showCodes); }
                                 }}
                                 className="w-full flex items-center gap-4 py-4 text-left cursor-pointer transition-opacity duration-150 hover:opacity-100 outline-none"

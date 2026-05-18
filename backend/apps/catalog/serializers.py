@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
-from .models import Category, ComplianceRule, PricingTier, Product, ProductMedia, ProductVariation, Trademark
+from django.db.models import Q
+
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -75,6 +77,109 @@ class ProductSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError("Price must be >= 0.")
         return value
+
+
+class ListingRequestPhotoSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ListingRequestPhoto
+        fields = ["id", "file_url", "original_name", "content_type", "size_bytes", "created_at"]
+
+    def get_file_url(self, obj: ListingRequestPhoto):
+        try:
+            url = obj.file.url
+        except Exception:
+            return ""
+        req = self.context.get("request")
+        return req.build_absolute_uri(url) if req else url
+
+
+class ListingRequestSerializer(serializers.ModelSerializer):
+    photos = ListingRequestPhotoSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ListingRequest
+        fields = [
+            "id",
+            "stage",
+            "rating",
+            "product_name",
+            "company_name",
+            "description",
+            "monthly_capacity",
+            "currency",
+            "unit_price",
+            "moq",
+            "category",
+            "category_label",
+            "pickup_type",
+            "pickup_address",
+            "pickup_contact_name",
+            "pickup_phone",
+            "created_product",
+            "created_at",
+            "updated_at",
+            "photos",
+        ]
+
+
+class ListingRequestCreateSerializer(serializers.Serializer):
+    product_name = serializers.CharField(required=True, allow_blank=False)
+    company_name = serializers.CharField(required=False, allow_blank=True)
+    category = serializers.CharField(required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True)
+    monthly_capacity = serializers.CharField(required=False, allow_blank=True)
+    currency = serializers.CharField(required=False, allow_blank=True)
+    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=True)
+    moq = serializers.IntegerField(required=False, min_value=1)
+    photo = serializers.FileField(required=False, allow_null=True)
+
+    def validate_currency(self, value: str):
+        val = (value or "").strip()
+        if val == "":
+            return "USD"
+        if len(val) != 3:
+            raise serializers.ValidationError("Currency must be a 3-letter code.")
+        return val.upper()
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+
+        category_text = (validated_data.pop("category", "") or "").strip()
+        category_obj = None
+        if category_text:
+            category_obj = Category.objects.filter(Q(name__iexact=category_text) | Q(slug__iexact=category_text)).first()
+        if category_obj is None:
+            category_obj = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
+
+        photo_file = validated_data.pop("photo", None)
+        moq = validated_data.pop("moq", None)
+
+        lr = ListingRequest.objects.create(
+            seller=user,
+            category=category_obj,
+            category_label=category_text if not category_obj else "",
+            product_name=(validated_data.get("product_name") or "").strip(),
+            company_name=(validated_data.get("company_name") or "").strip(),
+            description=(validated_data.get("description") or "").strip(),
+            monthly_capacity=(validated_data.get("monthly_capacity") or "").strip(),
+            currency=validated_data.get("currency") or "USD",
+            unit_price=validated_data.get("unit_price"),
+            moq=int(moq or 1),
+            stage=ListingRequest.Stage.SAMPLES,
+        )
+
+        if photo_file:
+            ListingRequestPhoto.objects.create(
+                listing_request=lr,
+                file=photo_file,
+                original_name=getattr(photo_file, "name", "") or "",
+                content_type=getattr(photo_file, "content_type", "") or "",
+                size_bytes=int(getattr(photo_file, "size", 0) or 0),
+            )
+
+        return lr
 
 
 class AdminProductListSerializer(serializers.ModelSerializer):

@@ -2,11 +2,12 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.catalog.models import Product, ProductVariation
+from apps.catalog.models import Product, ProductMedia, ProductVariation
 
 from .models import (
     Cart,
     CartItem,
+    WishlistItem,
     Dispute,
     Document,
     Order,
@@ -44,6 +45,46 @@ class CartUpsertItemSerializer(serializers.Serializer):
 
 class CartUpsertSerializer(serializers.Serializer):
     items = serializers.ListField(child=CartUpsertItemSerializer(), allow_empty=False)
+
+
+class WishlistItemSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
+    product_name = serializers.CharField(source="product.name", read_only=True)
+    currency = serializers.CharField(source="product.currency", read_only=True)
+    price = serializers.DecimalField(source="product.price", max_digits=12, decimal_places=2, read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WishlistItem
+        fields = ["id", "product_id", "product_name", "currency", "price", "seller_name", "image_url", "created_at"]
+
+    def get_seller_name(self, obj: WishlistItem):
+        seller = getattr(getattr(obj, "product", None), "seller", None)
+        if not seller:
+            return ""
+        full = f"{(seller.first_name or '').strip()} {(seller.last_name or '').strip()}".strip()
+        return full or seller.email or seller.phone or ""
+
+    def get_image_url(self, obj: WishlistItem):
+        product = getattr(obj, "product", None)
+        if not product:
+            return ""
+        try:
+            media = (
+                ProductMedia.objects.filter(product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
+                .order_by("position", "id")
+                .first()
+            )
+            if media and media.url:
+                url = media.url
+                req = self.context.get("request")
+                if req and isinstance(url, str) and url.startswith("/"):
+                    return req.build_absolute_uri(url)
+                return url
+        except Exception:
+            pass
+        return ""
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -124,10 +165,76 @@ class OrderSerializer(serializers.ModelSerializer):
     buyer_id = serializers.IntegerField(read_only=True)
     seller_id = serializers.IntegerField(read_only=True)
     items = OrderItemSerializer(many=True, read_only=True)
+    item_count = serializers.SerializerMethodField()
+    primary_item_name = serializers.SerializerMethodField()
+    counterparty = serializers.SerializerMethodField()
+    latest_shipment = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ["id", "buyer_id", "seller_id", "status", "currency", "total_amount", "deadline_at", "created_at", "updated_at", "items"]
+        fields = [
+            "id",
+            "buyer_id",
+            "seller_id",
+            "status",
+            "currency",
+            "total_amount",
+            "deadline_at",
+            "created_at",
+            "updated_at",
+            "item_count",
+            "primary_item_name",
+            "counterparty",
+            "latest_shipment",
+            "items",
+        ]
+
+    def get_item_count(self, obj: Order):
+        try:
+            return obj.items.count()
+        except Exception:
+            return len(getattr(obj, "items", []) or [])
+
+    def get_primary_item_name(self, obj: Order):
+        first = None
+        try:
+            first = obj.items.all().first()
+        except Exception:
+            items = getattr(obj, "items", None)
+            if items:
+                first = items[0]
+        if not first:
+            return ""
+        product = getattr(first, "product", None)
+        return getattr(product, "name", "") or getattr(first, "product_name", "") or ""
+
+    def get_counterparty(self, obj: Order):
+        req = self.context.get("request")
+        user = getattr(req, "user", None) if req else None
+        is_seller_view = bool(user and user.is_authenticated and (getattr(user, "account_type", None) == "seller" or getattr(user, "role", None) == "seller"))
+        other = getattr(obj, "buyer", None) if is_seller_view else getattr(obj, "seller", None)
+        if not other:
+            other_id = obj.buyer_id if is_seller_view else obj.seller_id
+            return {"id": other_id, "name": ""}
+        full = f"{(other.first_name or '').strip()} {(other.last_name or '').strip()}".strip()
+        name = full or other.email or other.phone or ""
+        return {"id": other.id, "name": name}
+
+    def get_latest_shipment(self, obj: Order):
+        shipment = None
+        try:
+            shipment = obj.shipments.order_by("-created_at").first()
+        except Exception:
+            shipment = None
+        if not shipment:
+            return None
+        return {
+            "id": shipment.id,
+            "status": shipment.status,
+            "tracking_number": shipment.tracking_number,
+            "estimated_delivery_at": shipment.estimated_delivery_at,
+            "actual_delivery_at": shipment.actual_delivery_at,
+        }
 
 
 class ShipmentEventSerializer(serializers.ModelSerializer):
