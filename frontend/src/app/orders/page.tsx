@@ -53,12 +53,14 @@ function apiBase() {
   const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
   const normalize = (u: string) => u.replace(/\/$/, "");
   if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
+  if (typeof window === "undefined") return "http://localhost:8000";
   const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
   return normalize(`${window.location.protocol}//${host}:8000`);
 }
 
 function readAccessToken() {
   try {
+    if (typeof window === "undefined") return "";
     return window.localStorage.getItem("vehsl.access") || "";
   } catch {
     return "";
@@ -67,6 +69,7 @@ function readAccessToken() {
 
 function readUser() {
   try {
+    if (typeof window === "undefined") return null;
     const raw = window.localStorage.getItem("vehsl.user");
     return raw ? JSON.parse(raw) : null;
   } catch {
@@ -141,6 +144,9 @@ function safeResults(data: any): { rows: OrderRow[]; count?: number } {
 }
 
 export default function Page() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   const [authUser, setAuthUser] = useState<any | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [q, setQ] = useState("");
@@ -152,8 +158,9 @@ export default function Page() {
   const qDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!mounted) return;
     setAuthUser(readUser());
-  }, []);
+  }, [mounted]);
 
   const isSeller = useMemo(() => {
     const t = (authUser?.account_type || authUser?.role || "").toString().toLowerCase();
@@ -161,6 +168,7 @@ export default function Page() {
   }, [authUser]);
 
   const fetchOrders = useCallback(async (query: string, key: FilterKey) => {
+    if (!mounted) return;
     const access = readAccessToken();
     if (!access) {
       toast.error("Please sign in.");
@@ -210,19 +218,23 @@ export default function Page() {
   }, [selected]);
 
   useEffect(() => {
-    fetchOrders(q, filter);
+    if (mounted) {
+      fetchOrders(q, filter);
+    }
     return () => abortRef.current?.abort();
-  }, [fetchOrders, filter]);
+  }, [fetchOrders, filter, mounted]);
 
   useEffect(() => {
     if (qDebounceRef.current) window.clearTimeout(qDebounceRef.current);
     qDebounceRef.current = window.setTimeout(() => {
-      fetchOrders(q, filter);
+      if (mounted) {
+        fetchOrders(q, filter);
+      }
     }, 350);
     return () => {
       if (qDebounceRef.current) window.clearTimeout(qDebounceRef.current);
     };
-  }, [fetchOrders, filter, q]);
+  }, [fetchOrders, filter, q, mounted]);
 
   const totals = useMemo(() => {
     const all = orders.length;
@@ -235,6 +247,8 @@ export default function Page() {
       cancelled: countBy(["cancelled", "rejected"]),
     };
   }, [orders]);
+
+  if (!mounted) return null;
 
   const filters: { key: FilterKey; label: string; count: number; icon: any }[] = [
     { key: "all", label: "All", count: totals.all, icon: Package },

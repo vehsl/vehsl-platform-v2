@@ -376,8 +376,8 @@ export function ProfileDropdown() {
                   <Divider />
 
                   <div className="space-y-0.5">
-                    <MenuItem icon={Settings} label="Settings" />
-                    <MenuItem icon={HelpCircle} label="Help & Support" />
+                    <MenuItem icon={Settings} label="Settings" onClick={() => { window.location.href = "/orders?settings=1"; }} />
+                    <MenuItem icon={HelpCircle} label="Help & Support" onClick={() => { window.location.href = "/orders?help=1"; }} />
                   </div>
 
                   <Divider />

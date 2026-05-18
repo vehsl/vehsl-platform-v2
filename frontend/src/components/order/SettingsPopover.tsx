@@ -55,6 +55,7 @@ const FONT = "'Urbanist', sans-serif";
 
 function readVehslUser() {
     try {
+        if (typeof window === 'undefined') return null;
         const raw = window.localStorage.getItem('vehsl.user');
         if (!raw) return null;
         return JSON.parse(raw);
@@ -67,12 +68,14 @@ function apiBase() {
     const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
     const normalize = (u: string) => u.replace(/\/$/, '');
     if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
+    if (typeof window === 'undefined') return 'http://localhost:8000';
     const host = (window.location.hostname === '0.0.0.0' || window.location.hostname === '') ? 'localhost' : window.location.hostname;
     return normalize(`${window.location.protocol}//${host}:8000`);
 }
 
 function readAuthTokens() {
     try {
+        if (typeof window === 'undefined') return { access: '', refresh: '' };
         const access = window.localStorage.getItem('vehsl.access') || '';
         const refresh = window.localStorage.getItem('vehsl.refresh') || '';
         return { access, refresh };
@@ -443,11 +446,11 @@ function MenuItem({
 function ProfilePopover({
     anchorRect, onClose, onOpenSettings, momentumRef,
 }: {
-    anchorRect: DOMRect | null; onClose: () => void; onOpenSettings: () => void;
+    anchorRect: DOMRect | null; onClose: () => void; onOpenSettings: (tab?: SettingsTab) => void;
     momentumRef: React.MutableRefObject<{ value: number }>;
 }) {
     const top = anchorRect ? anchorRect.bottom + 10 : 60;
-    const right = anchorRect ? window.innerWidth - anchorRect.right : 24;
+    const right = anchorRect && typeof window !== 'undefined' ? window.innerWidth - anchorRect.right : 24;
     const menuRef = useRef<HTMLDivElement>(null);
     const notifRef = useRef<HTMLDivElement>(null);
     const cardRef = useRef<HTMLDivElement>(null);
@@ -659,7 +662,11 @@ function ProfilePopover({
             window.location.href = '/messages';
             return;
         }
-        if (item.action === 'settings') onOpenSettings();
+        if (item.key === 'help') {
+            onOpenSettings('help');
+            return;
+        }
+        if (item.action === 'settings') onOpenSettings(item.key as SettingsTab);
         else toast(`Opening ${item.label}...`, { description: 'Coming soon.' });
     };
     const handleLogout = async () => {
@@ -1375,9 +1382,9 @@ function SidebarContent({ title, lines }: { title: string; lines: { label: strin
 }
 
 /* ── Full Settings Modal ── */
-function FullSettingsModal({ onClose }: { onClose: () => void }) {
+function FullSettingsModal({ initialTab = 'profile', onClose }: { initialTab?: SettingsTab; onClose: () => void }) {
     const { isSeller } = useRole();
-    const [tab, setTab] = useState<SettingsTab>('profile');
+    const [tab, setTab] = useState<SettingsTab>(initialTab);
     const [loaded, setLoaded] = useState(false);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const suppressNextSaveRef = useRef(false);
@@ -6071,9 +6078,24 @@ function CleanInput({ label, type = 'text', placeholder }: { label: string; type
 /* ══════════════════════════════════════════
    MAIN EXPORT
    ══════════════════════════════════════════ */
-export function SettingsPopover() {
+export function SettingsPopover({ initialTab = 'profile' }: { initialTab?: SettingsTab }) {
     const [popoverOpen, setPopoverOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('settings') === '1') {
+                setActiveTab('profile');
+                setSettingsOpen(true);
+            } else if (params.get('help') === '1') {
+                setActiveTab('help');
+                setSettingsOpen(true);
+            }
+        } catch { }
+    }, []);
     const avatarRef = useRef<HTMLButtonElement>(null);
     const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
     const [hovered, setHovered] = useState(false);
@@ -6100,8 +6122,9 @@ export function SettingsPopover() {
         setPopoverOpen(true);
     }, []);
     const closePopover = useCallback(() => setPopoverOpen(false), []);
-    const openSettings = useCallback(() => {
+    const openSettings = useCallback((tabName: SettingsTab = 'profile') => {
         setPopoverOpen(false);
+        setActiveTab(tabName);
         setTimeout(() => setSettingsOpen(true), 100);
     }, []);
     const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -6136,7 +6159,7 @@ export function SettingsPopover() {
                 {popoverOpen && <ProfilePopover anchorRect={anchorRect} onClose={closePopover} onOpenSettings={openSettings} momentumRef={momentumRef} />}
             </AnimatePresence>
             <AnimatePresence>
-                {settingsOpen && <FullSettingsModal onClose={closeSettings} />}
+                {settingsOpen && <FullSettingsModal initialTab={activeTab} onClose={closeSettings} />}
             </AnimatePresence>
         </>
     );

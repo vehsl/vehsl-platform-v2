@@ -22,6 +22,8 @@ import time
 from django.core.files.storage import default_storage
 from django.contrib.auth.hashers import make_password, check_password
 
+from apps.catalog.models import Product, ListingRequest
+from apps.orders.models import Order, OrderItem, Shipment, WishlistItem
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
 from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Value, When
@@ -64,6 +66,16 @@ from .serializers import (
     UserSerializer,
     UserSettingsSerializer,
     VehslTokenObtainPairSerializer,
+)
+from .dashboard_serializers import (
+    SellerDashboardMetricsSerializer,
+    SellerActionOrderSerializer,
+    SellerActivitySerializer,
+    SellerProductSerializer,
+    WarehouseSerializer,
+    WarehouseInventorySerializer,
+    WarehouseReleaseRequestSerializer,
+    WarehouseReleaseRecordSerializer,
 )
 
 
@@ -2541,3 +2553,179 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
         )
         doc.refresh_from_db()
         return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)
+
+class SellerDashboardViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsSeller]
+
+    @action(detail=False, methods=["get"])
+    def metrics(self, request):
+        user = request.user
+        total_pending = Order.objects.filter(seller=user, status__in=[Order.Status.CREATED, Order.Status.ACCEPTED, Order.Status.SHIPPED]).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
+        last_paid = 12912.00  # Mock or fetch from payments app if implemented
+        unread_messages = ChatMessage.objects.exclude(sender=user).exclude(read_by__contains=[user.id]).filter(thread__participants__contains=[user.id]).count()
+        active_orders = Order.objects.filter(seller=user).exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED]).count()
+        
+        # Calculate protection score
+        settings = getattr(user, 'settings', None)
+        security = getattr(settings, 'security', {}) if settings else {}
+        score = 0
+        if security.get('twoFactor'): score += 25
+        if security.get('payoutPinEnabled'): score += 25
+        if security.get('listingLockEnabled'): score += 25
+        if security.get('cancelVerifyEnabled'): score += 18
+        if score == 0: score = 68 # Default mock score if nothing set
+        
+        data = {
+            "total_pending": total_pending,
+            "last_paid": last_paid,
+            "unread_messages_count": unread_messages,
+            "active_orders_count": active_orders,
+            "protection_score": score
+        }
+        return Response(data)
+
+    @action(detail=False, methods=["get"])
+    def orders(self, request):
+        user = request.user
+        orders = Order.objects.filter(seller=user).exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED])
+        
+        results = []
+        for o in orders:
+            item = o.items.first()
+            product_name = item.product.name if item else "Unknown Product"
+            image_url = ""
+            if item and item.product:
+                media = item.product.media.filter(media_type="image").first()
+                if media:
+                    image_url = media.url
+
+            results.append({
+                "id": str(o.id),
+                "product": product_name,
+                "image": image_url,
+                "type": "approval" if o.status == Order.Status.CREATED else "production",
+                "deadline": "2d left",
+                "deadline_urgent": o.status == Order.Status.CREATED,
+                "order_number": f"#VH-{o.id}",
+                "qty": sum(i.quantity for i in o.items.all()),
+                "unit_price": float(item.unit_price) if item else 0,
+                "buyer": f"{o.buyer.first_name} {o.buyer.last_name}",
+                "destination": "London, UK",
+            })
+        
+        if not results:
+            return Response([])
+            
+        return Response(results)
+
+    @action(detail=False, methods=["get"])
+    def activities(self, request):
+        user = request.user
+        qs = Notification.objects.filter(user=user).order_by("-created_at")[:10]
+        ser = SellerActivitySerializer(qs, many=True)
+        return Response(ser.data)
+
+    @action(detail=False, methods=["get"])
+    def products(self, request):
+        user = request.user
+        qs = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
+        ser = SellerProductSerializer(qs, many=True)
+        return Response(ser.data)
+
+class WarehouseDashboardViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsSeller]
+
+    @action(detail=False, methods=["get"])
+    def list_warehouses(self, request):
+        # Mock warehouses for now as there is no Warehouse model yet
+        # In a real scenario, you'd fetch from a Warehouse model
+        from .dashboard_serializers import WarehouseSerializer
+        data = [
+            {
+                "id": "w1",
+                "name": "Greenstore G1 warehouse",
+                "address": "123 Green Street, Lahore",
+                "distance": "1.2 miles away",
+                "price_per_week": 35.0,
+                "rating": "A",
+                "features": ["climate", "security", "covered"],
+                "manager_name": "John Doe",
+                "manager_phone": "0300-1234567",
+                "hours": {"open": "08:00", "close": "18:00", "days": "Mon–Sat"}
+            },
+            {
+                "id": "w2",
+                "name": "James ZS warehouse",
+                "address": "456 James Street, Islamabad",
+                "distance": "4 miles away",
+                "price_per_week": 45.0,
+                "rating": "A+",
+                "features": ["climate", "security", "covered"],
+                "manager_name": "Jane Smith",
+                "manager_phone": "0300-7654321",
+                "hours": {"open": "07:00", "close": "22:00", "days": "Mon–Sun"}
+            }
+        ]
+        return Response(data)
+
+    @action(detail=False, methods=["get"])
+    def inventory(self, request):
+        warehouse_id = request.query_params.get("warehouse_id")
+        user = request.user
+        products = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
+        
+        results = []
+        for p in products:
+            image_url = ""
+            media = p.media.filter(media_type="image").first()
+            if media:
+                image_url = media.url
+
+            results.append({
+                "id": f"inv-{p.id}",
+                "product_name": p.name,
+                "sku": p.sku or f"SKU-{p.id}",
+                "image": image_url,
+                "total_boxes": 120,
+                "released_boxes": 34,
+                "pallets_count": 6,
+                "unit_price": float(p.price),
+                "warehouse_id": warehouse_id or "w2"
+            })
+        return Response(results)
+
+    @action(detail=False, methods=["get"])
+    def release_requests(self, request):
+        # Mock release requests
+        data = [
+            {
+                "id": "req1",
+                "inventory_item_id": "inv1",
+                "requester_name": "Bilal Hussain",
+                "id_card_number": "35201-1234567-9",
+                "vehicle_number": "LHR-2291",
+                "boxes_requested": 15,
+                "payment_amount": 480.0,
+                "requested_date": "2026-05-19",
+                "note": "Buyer from Lahore, needs delivery before Friday"
+            }
+        ]
+        return Response(data)
+
+    @action(detail=False, methods=["get"])
+    def release_records(self, request):
+        # Mock release records
+        data = [
+            {
+                "id": "rel1",
+                "inventory_item_id": "inv1",
+                "recipient_name": "Ahmed Khan",
+                "id_card_number": "35202-XXXX-123-4",
+                "vehicle_number": "LEA-7721",
+                "boxes_released": 20,
+                "payment_amount": 640.0,
+                "date": "2026-05-18",
+                "status": "completed"
+            }
+        ]
+        return Response(data)

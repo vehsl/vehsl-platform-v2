@@ -14,28 +14,35 @@ import { SellerDashboard } from "./SellerDashboard";
 
 type Tab = "orders" | "warehouse";
 
-function AppInner() {
+function AppInner({ initialOrderId }: { initialOrderId?: string }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   const { isSeller } = useRole();
   const [orders, setOrders] = useState(mockOrders);
-  const [selectedOrderId, setSelectedOrderId] = useState(mockOrders[0].id);
+  const [selectedOrderId, setSelectedOrderId] = useState(initialOrderId || mockOrders[0].id);
   const [activeTab, setActiveTab] = useState<Tab>("orders");
 
   useEffect(() => {
+    if (!mounted) return;
     try {
       const params = new URLSearchParams(window.location.search);
       const tab = (params.get("tab") || "").toLowerCase();
       if (tab === "warehouse") setActiveTab("warehouse");
       if (tab === "orders") setActiveTab("orders");
     } catch {}
-  }, []);
+  }, [mounted]);
 
   useEffect(() => {
+    if (!mounted) return;
     try {
       const url = new URL(window.location.href);
       url.searchParams.set("tab", activeTab);
       window.history.replaceState(null, "", url.toString());
     } catch {}
-  }, [activeTab]);
+  }, [activeTab, mounted]);
+
+  if (!mounted) return null;
 
   const selectedOrder = orders.find((o) => o.id === selectedOrderId) || orders[0];
 
@@ -58,7 +65,9 @@ function AppInner() {
 
   const handleSelectOrder = (id: string) => {
     setSelectedOrderId(id);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   };
 
   return (
@@ -160,10 +169,10 @@ function AppInner() {
   );
 }
 
-export function OrderApp() {
+export function OrderApp({ initialOrderId }: { initialOrderId?: string }) {
   return (
     <RoleProvider>
-      <AppInner />
+      <AppInner initialOrderId={initialOrderId} />
     </RoleProvider>
   );
 }

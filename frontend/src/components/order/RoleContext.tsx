@@ -14,19 +14,26 @@ const RoleContext = createContext<RoleContextValue>({
 
 export function RoleProvider({ children }: { children: React.ReactNode }) {
   const [isSeller, setIsSeller] = useState(false);
+  const [roleMounted, setRoleMounted] = useState(false);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem("vehsl.user");
-      if (!raw) return;
-      const user = JSON.parse(raw) as { account_type?: string } | null;
-      if (user?.account_type) setIsSeller(user.account_type === "seller");
-    } catch {}
+      if (raw) {
+        const user = JSON.parse(raw) as { account_type?: string } | null;
+        if (user?.account_type) setIsSeller(user.account_type === "seller");
+      }
+    } catch (e) {
+      console.error("RoleProvider init error:", e);
+    } finally {
+      setRoleMounted(true);
+    }
   }, []);
 
   return (
     <RoleContext.Provider value={{ isSeller, setIsSeller }}>
-      {children}
+      {roleMounted ? children : null}
     </RoleContext.Provider>
   );
 }

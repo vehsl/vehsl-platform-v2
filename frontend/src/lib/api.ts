@@ -17,3 +17,22 @@ export function getApiBase() {
     
     return 'http://localhost:8000';
 }
+
+export async function authedFetch(input: RequestInfo | URL, init?: RequestInit) {
+    const base = getApiBase();
+    const url = typeof input === 'string' && !input.startsWith('http') ? `${base}${input}` : input;
+    
+    let access = '';
+    if (typeof window !== 'undefined') {
+        access = window.localStorage.getItem('vehsl.access') || '';
+    }
+
+    return fetch(url, {
+        ...init,
+        headers: {
+            'Authorization': access ? `Bearer ${access}` : '',
+            'Content-Type': 'application/json',
+            ...init?.headers,
+        },
+    });
+}

@@ -18,3 +18,14 @@ env/
 staticfiles/
 media/
 .DS_Store
+.trae
+.vscode
+.idea
+*.log
+docs/
+tests/
+.git
+.github
+.dockerignore
+Dockerfile
+docker-compose.yml

@@ -26,6 +26,8 @@ from .views import (
     RefreshView,
     RegisterView,
     SellerProfileMeView,
+    SellerDashboardViewSet,
+    WarehouseDashboardViewSet,
     UserSettingsMeView,
     SubscriptionViewSet,
     RecoveryCodesMeView,
@@ -43,6 +45,8 @@ router.register(r"chat/threads", ChatThreadViewSet, basename="chat-thread")
 router.register(r"chat/messages", ChatMessageViewSet, basename="chat-message")
 router.register(r"help/articles", HelpArticleViewSet, basename="help-article")
 router.register(r"notifications", NotificationViewSet, basename="notification")
+router.register(r"seller/dashboard", SellerDashboardViewSet, basename="seller-dashboard")
+router.register(r"warehouse/dashboard", WarehouseDashboardViewSet, basename="warehouse-dashboard")
 router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")
 
 urlpatterns = [

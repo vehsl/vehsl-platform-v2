@@ -18,6 +18,11 @@ import { TrustSection } from "@/components/marketplace/TrustSection";
 import { useLanguage } from "@/context/language";
 
 export function HomeShell() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const router = useRouter();
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
@@ -28,24 +33,28 @@ export function HomeShell() {
   const closeTimer = useRef<number | null>(null);
 
   const openMenu = useCallback((categoryId: string) => {
-    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    if (typeof window !== "undefined" && closeTimer.current) window.clearTimeout(closeTimer.current);
     setActiveCategoryId(categoryId);
     setMenuOpen(true);
   }, []);
 
   const scheduleClose = useCallback(() => {
-    if (closeTimer.current) window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setMenuOpen(false), 120);
+    if (typeof window !== "undefined" && closeTimer.current) window.clearTimeout(closeTimer.current);
+    if (typeof window !== "undefined") {
+      closeTimer.current = window.setTimeout(() => setMenuOpen(false), 120) as any;
+    }
   }, []);
 
   const keepMenuOpen = useCallback(() => {
-    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    if (typeof window !== "undefined" && closeTimer.current) window.clearTimeout(closeTimer.current);
     setMenuOpen(true);
   }, []);
 
   useEffect(() => {
     return () => {
-      if (closeTimer.current) window.clearTimeout(closeTimer.current);
+      if (typeof window !== "undefined" && closeTimer.current) {
+        window.clearTimeout(closeTimer.current);
+      }
     };
   }, []);
 
@@ -90,6 +99,32 @@ export function HomeShell() {
     [t],
   );
 
+  const base = useMemo(() => {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+    const normalize = (u: string) => u.replace(/\/$/, "");
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
+      return normalize(fromEnv);
+    }
+    if (typeof window === "undefined") return "http://localhost:8000";
+    const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
+    return normalize(`${window.location.protocol}//${host}:8000`);
+  }, []);
+
+  const authedFetch = useCallback(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const access = typeof window !== "undefined" ? window.localStorage.getItem("vehsl.access") : null;
+      const url = typeof input === "string" && !input.startsWith("http") ? `${base}${input}` : input;
+      return fetch(url, {
+        ...init,
+        headers: {
+          ...init?.headers,
+          Authorization: `Bearer ${access}`,
+        },
+      });
+    },
+    [base],
+  );
+
   const handleSignIn = useCallback(async () => {
     if (signingIn) return;
     const id = identifier.trim();
@@ -102,16 +137,6 @@ export function HomeShell() {
       toast.error("Enter the 6-digit code from your authenticator app.");
       return;
     }
-
-    const base = (() => {
-      const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-      const normalize = (u: string) => u.replace(/\/$/, "");
-      if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-        return normalize(fromEnv);
-      }
-      const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
-      return normalize(`${window.location.protocol}//${host}:8000`);
-    })();
 
     try {
       setSigningIn(true);
@@ -167,6 +192,8 @@ export function HomeShell() {
       setSigningIn(false);
     }
   }, [identifier, password, router, signingIn, otpCode, requiresOtp]);
+
+  if (!mounted) return null;
 
   return (
     <div className="bg-vehsl-watercolor font-inter min-h-dvh w-full overflow-x-hidden">
