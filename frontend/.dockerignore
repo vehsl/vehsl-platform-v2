@@ -6,3 +6,14 @@ npm-debug.log
 README.md
 Dockerfile
 .dockerignore
+.DS_Store
+.vscode
+.idea
+*.log
+dist
+out
+build
+coverage
+.cache
+.npm
+.trae

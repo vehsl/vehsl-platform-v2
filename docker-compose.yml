@@ -3,6 +3,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-alpine}
     container_name: vehsl-frontend
     restart: unless-stopped
     environment:
@@ -19,6 +21,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
     container_name: vehsl-backend
     restart: unless-stopped
     command:
@@ -92,7 +96,7 @@ services:
       - vehsl
 
   db:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     container_name: vehsl-db
     restart: unless-stopped
     environment:

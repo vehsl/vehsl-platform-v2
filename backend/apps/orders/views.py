@@ -3,18 +3,19 @@ from datetime import timedelta
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
-from rest_framework import permissions, status, viewsets
+from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
-from apps.catalog.models import Product
+from apps.catalog.models import Product, ProductMedia
 
 from .models import (
     Cart,
     CartItem,
+    WishlistItem,
     Dispute,
     Document,
     Order,
@@ -33,6 +34,7 @@ from .serializers import (
     ReleaseOrderSerializer,
     ReviewSerializer,
     ShipmentSerializer,
+    WishlistItemSerializer,
 )
 
 
@@ -75,6 +77,153 @@ class CartMeView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class WishlistViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = WishlistItemSerializer
+
+    def get_queryset(self):
+        return (
+            WishlistItem.objects.filter(buyer=self.request.user, deleted_at__isnull=True)
+            .select_related("product", "product__seller")
+            .order_by("-created_at")
+        )
+
+    def list(self, request):
+        return Response(WishlistItemSerializer(self.get_queryset(), many=True, context={"request": request}).data)
+
+    def create(self, request):
+        product_id = request.data.get("product_id") or request.data.get("product") or None
+        try:
+            product_id = int(product_id)
+        except Exception:
+            return Response({"detail": "product_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        product = (
+            Product.objects.filter(id=product_id, deleted_at__isnull=True, status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+            .select_related("seller")
+            .first()
+        )
+        if not product:
+            return Response({"detail": "Invalid product."}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing = WishlistItem.objects.filter(buyer=request.user, product_id=product_id).first()
+        if existing:
+            if existing.deleted_at is not None:
+                existing.deleted_at = None
+                existing.save(update_fields=["deleted_at"])
+            item = existing
+        else:
+            item = WishlistItem.objects.create(buyer=request.user, product=product)
+
+        return Response(WishlistItemSerializer(item, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, pk=None):
+        try:
+            product_id = int(pk)
+        except Exception:
+            return Response({"detail": "Invalid product id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        item = WishlistItem.objects.filter(buyer=request.user, product_id=product_id, deleted_at__isnull=True).first()
+        if not item:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        item.deleted_at = timezone.now()
+        item.save(update_fields=["deleted_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["post"], url_path="toggle")
+    def toggle(self, request):
+        product_id = request.data.get("product_id") or request.data.get("product") or None
+        try:
+            product_id = int(product_id)
+        except Exception:
+            return Response({"detail": "product_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        item = WishlistItem.objects.filter(buyer=request.user, product_id=product_id).first()
+        if item and item.deleted_at is None:
+            item.deleted_at = timezone.now()
+            item.save(update_fields=["deleted_at"])
+            in_wishlist = False
+        else:
+            product = (
+                Product.objects.filter(id=product_id, deleted_at__isnull=True, status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+                .select_related("seller")
+                .first()
+            )
+            if not product:
+                return Response({"detail": "Invalid product."}, status=status.HTTP_400_BAD_REQUEST)
+            if item:
+                item.deleted_at = None
+                item.save(update_fields=["deleted_at"])
+            else:
+                item = WishlistItem.objects.create(buyer=request.user, product=product)
+            in_wishlist = True
+
+        count = WishlistItem.objects.filter(buyer=request.user, deleted_at__isnull=True).count()
+        return Response({"in_wishlist": in_wishlist, "wishlist_items": count})
+
+    @action(detail=False, methods=["post"], url_path="clear")
+    def clear(self, request):
+        WishlistItem.objects.filter(buyer=request.user, deleted_at__isnull=True).update(deleted_at=timezone.now())
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request):
+        q = (request.query_params.get("q") or request.query_params.get("search") or "").strip()
+        try:
+            limit = int(request.query_params.get("limit") or 12)
+        except Exception:
+            limit = 12
+        limit = max(1, min(limit, 24))
+
+        base = Product.objects.filter(deleted_at__isnull=True, status__in=[Product.Status.APPROVED, Product.Status.ACTIVE]).select_related("seller")
+        if q:
+            base = base.filter(Q(name__icontains=q) | Q(sku__icontains=q) | Q(description__icontains=q))
+        products = list(base.order_by("-created_at")[:limit])
+
+        product_ids = [p.id for p in products]
+        wish_ids = set(
+            WishlistItem.objects.filter(buyer=request.user, deleted_at__isnull=True, product_id__in=product_ids).values_list("product_id", flat=True)
+        )
+
+        image_map: dict[int, str] = {}
+        if product_ids:
+            media_qs = (
+                ProductMedia.objects.filter(product_id__in=product_ids, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
+                .order_by("product_id", "position", "id")
+                .values("product_id", "url")
+            )
+            req = request
+            for row in media_qs:
+                pid = int(row["product_id"])
+                if pid in image_map:
+                    continue
+                url = row.get("url") or ""
+                if url and isinstance(url, str) and url.startswith("/"):
+                    url = req.build_absolute_uri(url)
+                image_map[pid] = url
+
+        out = []
+        for p in products:
+            seller = getattr(p, "seller", None)
+            full = ""
+            if seller:
+                full = f"{(seller.first_name or '').strip()} {(seller.last_name or '').strip()}".strip()
+            seller_name = full or (seller.email if seller else "") or (seller.phone if seller else "") or ""
+            out.append(
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "currency": p.currency,
+                    "price": str(p.price),
+                    "seller_name": seller_name,
+                    "image_url": image_map.get(p.id, ""),
+                    "in_wishlist": p.id in wish_ids,
+                }
+            )
+
+        return Response({"results": out})
+
+
 class IsOrderParticipant(permissions.BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
@@ -83,13 +232,29 @@ class IsOrderParticipant(permissions.BasePermission):
 
 class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["items__product__name", "seller__email", "buyer__email", "seller__phone", "buyer__phone"]
+    ordering_fields = ["created_at", "updated_at", "total_amount"]
+    ordering = ["-created_at"]
 
     def get_queryset(self):
         user = self.request.user
-        qs = Order.objects.prefetch_related("items", "items__product", "items__variation").filter(deleted_at__isnull=True)
+        qs = (
+            Order.objects.select_related("buyer", "seller")
+            .prefetch_related("items", "items__product", "items__variation", "shipments")
+            .filter(deleted_at__isnull=True)
+        )
         if getattr(user, "account_type", None) == "seller":
-            return qs.filter(seller=user)
-        return qs.filter(buyer=user)
+            qs = qs.filter(seller=user)
+        else:
+            qs = qs.filter(buyer=user)
+
+        status_param = (self.request.query_params.get("status") or "").strip().lower()
+        if status_param:
+            statuses = [s.strip() for s in status_param.split(",") if s.strip()]
+            qs = qs.filter(status__in=statuses)
+
+        return qs
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -147,8 +312,15 @@ class ShipmentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = Shipment.objects.select_related("order").prefetch_related("events").filter(deleted_at__isnull=True)
         if getattr(user, "account_type", None) == "seller":
-            return qs.filter(order__seller=user)
-        return qs.filter(order__buyer=user)
+            qs = qs.filter(order__seller=user)
+        else:
+            qs = qs.filter(order__buyer=user)
+
+        order_id = (self.request.query_params.get("order") or "").strip()
+        if order_id.isdigit():
+            qs = qs.filter(order_id=int(order_id))
+
+        return qs
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:

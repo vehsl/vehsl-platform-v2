@@ -1,5 +1,9 @@
 import re
 import json
+import base64
+import hashlib
+import hmac
+import time
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -12,12 +16,14 @@ from .models import (
     BuyerProfile,
     ChatMessage,
     ChatThread,
+    HelpArticle,
     KycDocument,
     Notification,
     SellerProfile,
     Subscription,
     User,
     UserProfile,
+    UserSettings,
 )
 
 
@@ -131,6 +137,12 @@ class SellerProfileSerializer(serializers.ModelSerializer):
             "vehsl_rating",
             "sample_low_threshold",
         ]
+
+
+class UserSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserSettings
+        fields = ["display", "notifications", "order_settings", "security", "business", "updated_at"]
 
 
 class AdminProfileSerializer(serializers.ModelSerializer):
@@ -323,6 +335,10 @@ class KycDocumentUploadSerializer(serializers.Serializer):
             KycDocument.Kind.UTILITY_BILL,
             KycDocument.Kind.BUSINESS_LICENSE,
             KycDocument.Kind.BUSINESS_REGISTRATION,
+            KycDocument.Kind.ISO_9001,
+            KycDocument.Kind.GMP,
+            KycDocument.Kind.EXPORT_LICENSE,
+            KycDocument.Kind.PRODUCT_SAFETY,
         ]
     )
     doc_type = serializers.CharField(required=False, allow_blank=True)
@@ -515,6 +531,12 @@ class NotificationSerializer(serializers.ModelSerializer):
         fields = ["id", "channel", "event_type", "payload", "status", "sent_at", "created_at"]
 
 
+class HelpArticleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HelpArticle
+        fields = ["id", "category", "title", "description", "body", "steps", "tip"]
+
+
 class ChatThreadSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatThread
@@ -523,10 +545,87 @@ class ChatThreadSerializer(serializers.ModelSerializer):
 
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(read_only=True)
+    sender_name = serializers.SerializerMethodField()
+    deleted_at = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = ChatMessage
-        fields = ["id", "thread", "sender_id", "content", "attachments", "sent_at", "read_by"]
+        fields = ["id", "thread", "sender_id", "sender_name", "content", "attachments", "sent_at", "read_by", "deleted_at"]
+
+    def get_sender_name(self, obj: ChatMessage):
+        sender = getattr(obj, "sender", None)
+        if not sender:
+            return ""
+        full = f"{(sender.first_name or '').strip()} {(sender.last_name or '').strip()}".strip()
+        return full or (sender.email or "") or (sender.phone or "")
+
+
+class ChatThreadListSerializer(serializers.ModelSerializer):
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+    other_participants = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChatThread
+        fields = ["id", "type", "participants", "created_at", "updated_at", "last_message", "unread_count", "other_participants"]
+
+    def _uid(self):
+        req = self.context.get("request")
+        u = getattr(req, "user", None) if req else None
+        return getattr(u, "id", None)
+
+    def get_last_message(self, obj: ChatThread):
+        msg = getattr(obj, "_last_message_obj", None)
+        if msg is None:
+            try:
+                msg = obj.messages.filter(deleted_at__isnull=True).select_related("sender").order_by("-sent_at").first()
+            except Exception:
+                msg = None
+        if not msg:
+            return None
+        return ChatMessageSerializer(msg, context=self.context).data
+
+    def get_unread_count(self, obj: ChatThread):
+        uid = self._uid()
+        try:
+            return int(getattr(obj, "_unread_count", None) or 0)
+        except Exception:
+            pass
+        if not uid:
+            return 0
+        try:
+            return (
+                obj.messages.filter(deleted_at__isnull=True)
+                .exclude(sender_id=uid)
+                .exclude(read_by__contains=[uid])
+                .count()
+            )
+        except Exception:
+            return 0
+
+    def get_other_participants(self, obj: ChatThread):
+        uid = self._uid()
+        ids = [int(x) for x in (obj.participants or []) if isinstance(x, int) or (isinstance(x, str) and str(x).isdigit())]
+        if uid:
+            ids = [i for i in ids if i != uid]
+        from .models import User
+
+        users = list(User.objects.filter(id__in=ids).only("id", "first_name", "last_name", "email", "phone", "role", "account_type"))
+        out = []
+        for u in users:
+            full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+            out.append(
+                {
+                    "id": u.id,
+                    "name": full or (u.email or "") or (u.phone or ""),
+                    "role": getattr(u, "role", None),
+                    "account_type": getattr(u, "account_type", None),
+                    "email": u.email,
+                    "phone": u.phone,
+                }
+            )
+        return out
+
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -702,12 +801,14 @@ class VehslTokenObtainPairSerializer(TokenObtainPairSerializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["identifier"] = serializers.CharField()
+        self.fields["otp"] = serializers.CharField(required=False, allow_blank=True)
         if "username" in self.fields:
             self.fields.pop("username")
 
     def validate(self, attrs):
         identifier = (attrs.get("identifier") or "").strip()
         password = attrs.get("password")
+        otp = (attrs.get("otp") or "").strip()
 
         user = (
             User.objects.filter(Q(email__iexact=identifier) | Q(phone=identifier)).first()
@@ -722,6 +823,35 @@ class VehslTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         if not user.is_active:
             raise serializers.ValidationError("User is inactive.")
+
+        if bool(getattr(user, "two_factor_enabled", False)):
+            settings = getattr(user, "settings", None)
+            if settings is None:
+                settings, _ = UserSettings.objects.get_or_create(user=user)
+            sec = settings.security or {}
+            secret = (sec.get("totp_secret") or "").strip()
+            enabled = bool(sec.get("totp_enabled"))
+            if not secret or not enabled:
+                raise serializers.ValidationError({"detail": "Two-factor setup incomplete.", "otp_required": True})
+            if not otp:
+                raise serializers.ValidationError({"detail": "OTP required.", "otp_required": True})
+
+            def _totp_now(base32_secret: str, for_counter: int, digits: int = 6) -> str:
+                key = base64.b32decode(base32_secret.upper().encode("utf-8") + b"=" * ((8 - len(base32_secret) % 8) % 8))
+                msg = for_counter.to_bytes(8, "big")
+                digest = hmac.new(key, msg, hashlib.sha1).digest()
+                offset = digest[-1] & 0x0F
+                code_int = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+                return str(code_int % (10**digits)).zfill(digits)
+
+            counter = int(time.time() // 30)
+            ok = False
+            for w in (-1, 0, 1):
+                if _totp_now(secret, counter + w) == otp:
+                    ok = True
+                    break
+            if not ok:
+                raise serializers.ValidationError({"detail": "Invalid OTP.", "otp_required": True})
 
         refresh = self.get_token(user)
         return {

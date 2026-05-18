@@ -243,7 +243,7 @@ export default function KycPage() {
                 </div>
                 <Button
                   className="rounded-full"
-                  onClick={() => toast.success("Documents are submitted automatically for admin review.")}
+                  onClick={() => router.push("/orders/1")}
                   disabled={!requirements.all_required_uploaded}
                 >
                   Continue

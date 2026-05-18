@@ -5,17 +5,20 @@ from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin, IsSeller
 from apps.accounts.models import User
 
-from .models import Category, ComplianceRule, PricingTier, Product, ProductMedia, ProductVariation, Trademark
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
 from .serializers import (
     AdminProductListSerializer,
     AdminProductWriteSerializer,
     CategorySerializer,
     ComplianceRuleSerializer,
+    ListingRequestCreateSerializer,
+    ListingRequestSerializer,
     PricingTierSerializer,
     ProductMediaSerializer,
     ProductSerializer,
@@ -57,6 +60,118 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(seller=self.request.user)
+
+
+class SellerListingRequestViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsSeller]
+    serializer_class = ListingRequestSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        return ListingRequest.objects.filter(seller=self.request.user).select_related("category", "created_product").prefetch_related("photos")
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset().order_by("-created_at")
+        return Response(ListingRequestSerializer(qs, many=True, context={"request": request}).data)
+
+    def retrieve(self, request, pk=None, *args, **kwargs):
+        obj = self.get_queryset().filter(pk=pk).first()
+        if not obj:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(ListingRequestSerializer(obj, context={"request": request}).data)
+
+    def create(self, request, *args, **kwargs):
+        ser = ListingRequestCreateSerializer(data=request.data, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        lr = ser.save()
+        out = ListingRequestSerializer(lr, context={"request": request}).data
+        return Response(out, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="sample")
+    def sample(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        lr.pickup_type = (request.data.get("type") or request.data.get("pickup_type") or "").strip()
+        lr.pickup_address = (request.data.get("address") or request.data.get("pickup_address") or "").strip()
+        lr.pickup_contact_name = (request.data.get("contact_name") or request.data.get("pickup_contact_name") or "").strip()
+        lr.pickup_phone = (request.data.get("phone") or request.data.get("pickup_phone") or "").strip()
+
+        if len(lr.pickup_address) < 7 or len(lr.pickup_contact_name) < 2:
+            return Response({"detail": "Pickup address and contact name are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.stage = ListingRequest.Stage.INSPECTION
+        lr.save()
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="advance")
+    def advance(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if lr.stage == ListingRequest.Stage.SAMPLES:
+            return Response({"detail": "Save sample pickup details first."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if lr.stage == ListingRequest.Stage.INSPECTION:
+            try:
+                rating = float(request.data.get("rating") or 4.8)
+            except Exception:
+                rating = 4.8
+            rating = max(0.0, min(5.0, rating))
+            lr.rating = rating
+            lr.stage = ListingRequest.Stage.LIVE
+            lr.save()
+            return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="publish")
+    def publish(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if lr.stage not in {ListingRequest.Stage.LIVE, ListingRequest.Stage.DONE}:
+            return Response({"detail": "Listing is not ready to publish."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if lr.created_product_id:
+            lr.stage = ListingRequest.Stage.DONE
+            lr.save(update_fields=["stage", "updated_at"])
+            return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
+        category = lr.category
+        if category is None:
+            category = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
+        if category is None:
+            category = Category.objects.first()
+        if category is None:
+            category, _ = Category.objects.get_or_create(name="Other")
+
+        p = Product.objects.create(
+            seller=request.user,
+            category=category,
+            name=lr.product_name,
+            title=lr.product_name,
+            description=lr.description or "",
+            currency=(lr.currency or "USD").upper(),
+            price=lr.unit_price,
+            status=Product.Status.ACTIVE,
+            vehsl_rating=lr.rating,
+        )
+        photos = list(lr.photos.all())
+        for idx, ph in enumerate(photos[:10]):
+            try:
+                url = ph.file.url
+            except Exception:
+                continue
+            ProductMedia.objects.create(product=p, media_type=ProductMedia.MediaType.IMAGE, url=url, position=idx)
+
+        lr.created_product = p
+        lr.stage = ListingRequest.Stage.DONE
+        lr.save(update_fields=["created_product", "stage", "updated_at"])
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
 
 class ProductVariationViewSet(viewsets.ModelViewSet):

@@ -278,7 +278,8 @@ export function ScrollingForm({
         return normalize(fromEnv);
       }
       if (typeof window !== "undefined") {
-        return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+        const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
+        return normalize(`${window.location.protocol}//${host}:8000`);
       }
       return "http://localhost:8000";
     })();
@@ -395,6 +396,28 @@ export function ScrollingForm({
       });
 
       if (!loginRes.ok) {
+        const err = await loginRes.json().catch(() => null);
+        if (err && err.otp_required) {
+          const otp = (window.prompt("Enter the 6-digit code from your authenticator app") || "").trim();
+          if (otp) {
+            const retryRes = await fetch(`${base}/api/v1/auth/login`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ identifier: email || phone, password, otp }),
+            });
+            if (retryRes.ok) {
+              const tokens = await retryRes.json();
+              try {
+                window.localStorage.setItem("vehsl.access", tokens.access);
+                window.localStorage.setItem("vehsl.refresh", tokens.refresh);
+                window.localStorage.setItem("vehsl.user", JSON.stringify(tokens.user));
+              } catch {}
+              toast.success("Account created.");
+              router.replace("/");
+              return;
+            }
+          }
+        }
         toast.success("Account created.");
         handleDone("password");
         return;

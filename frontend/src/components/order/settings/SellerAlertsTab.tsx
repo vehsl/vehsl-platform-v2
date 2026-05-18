@@ -16,9 +16,9 @@ export function SellerAlertsTab({ notifications, setNotifications }: { notificat
 
     /* ── Quiet hours state ── */
     const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
-    const [quietFrom, setQuietFrom] = useState('22:00');
-    const [quietTo, setQuietTo] = useState('07:00');
-    const [quietDays, setQuietDays] = useState<string[]>([...ALL_DAYS]);
+    const quietFrom = (notifications?.quietFrom || '22:00') as string;
+    const quietTo = (notifications?.quietTo || '07:00') as string;
+    const quietDays = (Array.isArray(notifications?.quietDays) && notifications.quietDays.length ? notifications.quietDays : [...ALL_DAYS]) as string[];
     const [editingQuietHours, setEditingQuietHours] = useState(false);
     const [quietDraft, setQuietDraft] = useState({ from: '22:00', to: '07:00', days: [...ALL_DAYS] as string[] });
 
@@ -42,9 +42,7 @@ export function SellerAlertsTab({ notifications, setNotifications }: { notificat
     };
     const saveQuietHours = () => {
         if (quietDraft.days.length === 0) { toast('Select at least one day'); return; }
-        setQuietFrom(quietDraft.from);
-        setQuietTo(quietDraft.to);
-        setQuietDays([...quietDraft.days]);
+        setNotifications((p: any) => ({ ...p, quietFrom: quietDraft.from, quietTo: quietDraft.to, quietDays: [...quietDraft.days] }));
         setEditingQuietHours(false);
         toast('Quiet hours updated');
     };

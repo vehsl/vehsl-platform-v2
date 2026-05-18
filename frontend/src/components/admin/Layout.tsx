@@ -138,7 +138,8 @@ export function Layout() {
       return normalize(fromEnv);
     }
     if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+      const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
+      return normalize(`${window.location.protocol}//${host}:8000`);
     }
     return "http://localhost:8000";
   };

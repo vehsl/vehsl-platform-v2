@@ -34,9 +34,9 @@ import {
 
 /* ── Palette ── */
 const B = {
-    900: '#1d1d1f', 800: '#424245', 700: '#6e6e73', 600: '#86868b',
-    500: '#0071e3', 400: '#2997ff', 300: '#67AAEE',
-    200: '#99C6F4', 100: '#d2d2d7', 50: '#f5f5f7',
+    900: '#18191A', 800: '#3F3F46', 700: '#52525B', 600: '#71717A',
+    500: '#0171E3', 400: '#348DE9', 300: '#67AAEE',
+    200: '#99C6F4', 100: '#D4D4D8', 50: '#F4F4F5',
 };
 const C = {
     text: B[900], accent: B[500], accentH: B[400],
@@ -55,11 +55,32 @@ const FONT = "'Urbanist', sans-serif";
 
 function readVehslUser() {
     try {
+        if (typeof window === 'undefined') return null;
         const raw = window.localStorage.getItem('vehsl.user');
         if (!raw) return null;
         return JSON.parse(raw);
     } catch {
         return null;
+    }
+}
+
+function apiBase() {
+    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
+    const normalize = (u: string) => u.replace(/\/$/, '');
+    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
+    if (typeof window === 'undefined') return 'http://localhost:8000';
+    const host = (window.location.hostname === '0.0.0.0' || window.location.hostname === '') ? 'localhost' : window.location.hostname;
+    return normalize(`${window.location.protocol}//${host}:8000`);
+}
+
+function readAuthTokens() {
+    try {
+        if (typeof window === 'undefined') return { access: '', refresh: '' };
+        const access = window.localStorage.getItem('vehsl.access') || '';
+        const refresh = window.localStorage.getItem('vehsl.refresh') || '';
+        return { access, refresh };
+    } catch {
+        return { access: '', refresh: '' };
     }
 }
 
@@ -74,6 +95,44 @@ function getUserDisplay(user: any) {
     const initial = (initialFrom[0] || 'A').toUpperCase();
     const accountType = (user?.account_type || '').toString().trim().toLowerCase();
     return { name, secondary: shownSecondary, initial, accountType };
+}
+
+function buildHistoryGroups(notifications: any[]) {
+    const now = Date.now();
+    const buckets: Record<string, any[]> = { Today: [], Yesterday: [], 'Last week': [], Earlier: [] };
+    for (const n of notifications || []) {
+        const createdAt = n?.created_at ? new Date(n.created_at).getTime() : 0;
+        const days = createdAt ? (now - createdAt) / 86400000 : 999;
+        const period = days < 1 ? 'Today' : days < 2 ? 'Yesterday' : days < 7 ? 'Last week' : 'Earlier';
+        const eventType = ((n?.event_type || '') as string).toLowerCase();
+        const payload = (n?.payload && typeof n.payload === 'object') ? n.payload : {};
+        const sentence = (payload.title || payload.headline || payload.body || payload.detail || '').toString().trim()
+            || (n?.event_type || '').toString().replace(/[_-]+/g, ' ').trim()
+            || 'Update';
+        const moment = (payload.moment || payload.meta || '').toString().trim()
+            || (createdAt ? new Date(createdAt).toLocaleString() : '');
+
+        let kind: 'shipping' | 'message' | 'deal' = 'deal';
+        let tint = '#ff9500';
+        let icon = '✨';
+        if (eventType.includes('order') || eventType.includes('shipment')) {
+            kind = 'shipping';
+            tint = '#34c759';
+            icon = '📦';
+        } else if (eventType.includes('message') || eventType.includes('chat')) {
+            kind = 'message';
+            tint = '#0071e3';
+            icon = '💬';
+        }
+
+        buckets[period].push({ id: `n-${n?.id || sentence}`, rawId: n?.id, kind, sentence, moment, tint, icon });
+    }
+
+    const out: any[] = [];
+    for (const key of ['Today', 'Yesterday', 'Last week', 'Earlier']) {
+        if (buckets[key].length) out.push({ period: key, items: buckets[key] });
+    }
+    return out;
 }
 
 /* ── Figma SVG icons ── */
@@ -100,15 +159,18 @@ function IconLogout({ color = '#ff3b30', size = 14 }: { color?: string; size?: n
 }
 
 /* ── Glass ── */
-function Glass({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Glass({ children, className = '', style, ...rest }: { children: React.ReactNode; className?: string; style?: React.CSSProperties } & React.HTMLAttributes<HTMLDivElement>) {
     return (
-        <div className={`backdrop-blur-2xl border border-black/[0.04] ${className}`}
+        <div
+            {...rest}
+            className={`backdrop-blur-2xl border border-black/[0.06] ${className}`}
             style={{
+                ...(style || {}),
                 boxShadow: `
-                    0 0 0 0.5px rgba(0,0,0,0.03),
-                    0 2px 4px rgba(0,0,0,0.02),
-                    0 12px 32px -8px rgba(0,0,0,0.08),
-                    0 40px 80px -24px rgba(0,0,0,0.12)
+                    0 0 0 0.5px rgba(0,0,0,0.05),
+                    0 2px 8px rgba(0,0,0,0.06),
+                    0 18px 48px -12px rgba(0,0,0,0.18),
+                    0 44px 96px -28px rgba(0,0,0,0.22)
                 `,
             }}>
             {children}
@@ -384,11 +446,11 @@ function MenuItem({
 function ProfilePopover({
     anchorRect, onClose, onOpenSettings, momentumRef,
 }: {
-    anchorRect: DOMRect | null; onClose: () => void; onOpenSettings: () => void;
+    anchorRect: DOMRect | null; onClose: () => void; onOpenSettings: (tab?: SettingsTab) => void;
     momentumRef: React.MutableRefObject<{ value: number }>;
 }) {
     const top = anchorRect ? anchorRect.bottom + 10 : 60;
-    const right = anchorRect ? window.innerWidth - anchorRect.right : 24;
+    const right = anchorRect && typeof window !== 'undefined' ? window.innerWidth - anchorRect.right : 24;
     const menuRef = useRef<HTMLDivElement>(null);
     const notifRef = useRef<HTMLDivElement>(null);
     const cardRef = useRef<HTMLDivElement>(null);
@@ -396,19 +458,173 @@ function ProfilePopover({
     const [showHistory, setShowHistory] = useState(false);
     const { isSeller, setIsSeller } = useRole();
     const [authUser, setAuthUser] = useState<any | null>(null);
+    const [menuSummary, setMenuSummary] = useState<any | null>(null);
+    const [historyNotifications, setHistoryNotifications] = useState<any[] | null>(null);
+    const [markingHistoryRead, setMarkingHistoryRead] = useState(false);
 
     useEffect(() => {
         setAuthUser(readVehslUser());
     }, []);
 
     const userDisplay = useMemo(() => getUserDisplay(authUser), [authUser]);
-    const lockedRole = userDisplay.accountType === 'buyer' || userDisplay.accountType === 'seller' ? userDisplay.accountType : null;
+    const allowedAccountTypes = useMemo(() => {
+        const raw = menuSummary?.allowed_account_types;
+        return Array.isArray(raw) ? raw.filter((x: any) => x === 'buyer' || x === 'seller') : [];
+    }, [menuSummary]);
+    const lockedRole = allowedAccountTypes.length === 1 ? allowedAccountTypes[0] : null;
 
     useEffect(() => {
-        if (lockedRole) setIsSeller(lockedRole === 'seller');
-    }, [lockedRole, setIsSeller]);
+        if (menuSummary?.active_account_type === 'buyer' || menuSummary?.active_account_type === 'seller') {
+            setIsSeller(menuSummary.active_account_type === 'seller');
+        } else if (lockedRole) {
+            setIsSeller(lockedRole === 'seller');
+        }
+    }, [lockedRole, menuSummary, setIsSeller]);
 
-    const handleNotifPress = (notif: typeof NOTIFICATIONS[number], index: number) => {
+    const fetchMenuSummary = useCallback(async () => {
+        const { access } = readAuthTokens();
+        if (!access) return;
+        try {
+            const res = await fetch(`${apiBase()}/api/v1/me/menu`, {
+                headers: { Authorization: `Bearer ${access}` },
+            });
+            if (res.status === 401) return;
+            const data = await res.json().catch(() => null);
+            if (!res.ok) return;
+            setMenuSummary(data);
+            if (data?.user) {
+                setAuthUser(data.user);
+                try {
+                    window.localStorage.setItem('vehsl.user', JSON.stringify(data.user));
+                } catch { }
+            }
+        } catch { }
+    }, []);
+
+    const switchAccountType = useCallback(async (nextType: 'buyer' | 'seller') => {
+        const { access } = readAuthTokens();
+        if (!access) return false;
+        try {
+            const res = await fetch(`${apiBase()}/api/v1/me/switch-account-type`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_type: nextType }),
+            });
+            if (res.status === 401) return false;
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data && (data.detail || data.error)) || 'Could not switch role.';
+                toast.error(typeof msg === 'string' ? msg : 'Could not switch role.');
+                return false;
+            }
+            setAuthUser(data);
+            try {
+                window.localStorage.setItem('vehsl.user', JSON.stringify(data));
+            } catch { }
+            await fetchMenuSummary();
+            return true;
+        } catch {
+            toast.error('Network error.');
+            return false;
+        }
+    }, [fetchMenuSummary]);
+
+    useEffect(() => {
+        fetchMenuSummary();
+    }, [fetchMenuSummary]);
+
+    useEffect(() => {
+        if (!showHistory) return;
+        const { access } = readAuthTokens();
+        if (!access) return;
+        (async () => {
+            try {
+                const res = await fetch(`${apiBase()}/api/v1/notifications`, {
+                    headers: { Authorization: `Bearer ${access}` },
+                });
+                if (res.status === 401) return;
+                const data = await res.json().catch(() => null);
+                if (!res.ok) return;
+                const list = Array.isArray(data) ? data.slice(0, 40) : [];
+                setHistoryNotifications(list);
+            } catch { }
+        })();
+    }, [showHistory]);
+
+    const currentNotifs: NotifType[] = useMemo(() => {
+        const updates = menuSummary?.updates;
+        const list = Array.isArray(updates) ? updates : null;
+        if (!list || list.length === 0) return isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS;
+
+        const ids = isSeller ? ['sn1', 'sn2', 'sn3'] : ['n1', 'n2', 'n3'];
+        return list.slice(0, 3).map((u: any, idx: number) => ({
+            id: ids[idx] || `u-${idx}`,
+            kind: (u?.kind === 'shipping' || u?.kind === 'message' || u?.kind === 'deal') ? u.kind : 'deal',
+            headline: (u?.headline || 'Update').toString(),
+            detail: (u?.detail || '').toString(),
+            meta: (u?.meta || '').toString(),
+            tint: (u?.tint || '#0071e3').toString(),
+            action: (u?.action || 'settings').toString(),
+            progress: typeof u?.progress === 'number' ? u.progress : undefined,
+            stages: Array.isArray(u?.stages) ? u.stages : undefined,
+            personInitial: (u?.personInitial || '').toString() || undefined,
+            personColor: (u?.personColor || '').toString() || undefined,
+            savings: (u?.savings || '').toString() || undefined,
+        }));
+    }, [isSeller, menuSummary]);
+
+    const menuItems = useMemo(() => {
+        const counts = menuSummary?.counts || {};
+        return MENU_ITEMS.map((it) => {
+            if (it.key === 'orders') return { ...it, badge: Number(counts.orders_on_the_way || 0) };
+            if (it.key === 'messages') return { ...it, badge: Number(counts.unread_messages || 0) };
+            if (it.key === 'wishlist') return { ...it, badge: Number(counts.wishlist_items || 0) };
+            return it;
+        });
+    }, [menuSummary]);
+
+    const historyGroups = useMemo(() => {
+        const built = historyNotifications ? buildHistoryGroups(historyNotifications) : [];
+        if (built && built.length) return built;
+        return isSeller ? SELLER_HISTORY_GROUPS : NOTIF_HISTORY_GROUPS;
+    }, [historyNotifications, isSeller]);
+
+    const historyNotificationIds = useMemo(() => {
+        const ids: any[] = [];
+        for (const g of historyGroups || []) {
+            for (const it of (g?.items || [])) {
+                if (it?.rawId) ids.push(it.rawId);
+            }
+        }
+        return ids;
+    }, [historyGroups]);
+
+    const clearAllHistory = useCallback(async () => {
+        if (!historyNotificationIds.length) {
+            setShowHistory(false);
+            return;
+        }
+        const { access } = readAuthTokens();
+        if (!access) {
+            setShowHistory(false);
+            return;
+        }
+        if (markingHistoryRead) return;
+        try {
+            setMarkingHistoryRead(true);
+            await fetch(`${apiBase()}/api/v1/notifications/mark-read/`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: historyNotificationIds }),
+            });
+        } catch { }
+        setShowHistory(false);
+        setHistoryNotifications(null);
+        await fetchMenuSummary();
+        setMarkingHistoryRead(false);
+    }, [fetchMenuSummary, historyNotificationIds, markingHistoryRead]);
+
+    const handleNotifPress = (notif: NotifType, index: number) => {
         momentumRef.current.value = Math.min(1, momentumRef.current.value + 0.12);
         const card = cardRef.current;
         if (card) {
@@ -431,11 +647,40 @@ function ProfilePopover({
                 { transform: `scale(${1 + 0.002 * m})` }, { transform: 'scale(1)' },
             ], { duration: 360, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' });
         }
-        if (item.action === 'settings') onOpenSettings();
+        if (item.key === 'orders') {
+            onClose();
+            window.location.href = '/orders';
+            return;
+        }
+        if (item.key === 'wishlist') {
+            onClose();
+            window.location.href = '/wishlist';
+            return;
+        }
+        if (item.key === 'messages') {
+            onClose();
+            window.location.href = '/messages';
+            return;
+        }
+        if (item.key === 'help') {
+            onOpenSettings('help');
+            return;
+        }
+        if (item.action === 'settings') onOpenSettings(item.key as SettingsTab);
         else toast(`Opening ${item.label}...`, { description: 'Coming soon.' });
     };
-    const handleLogout = () => {
+    const handleLogout = async () => {
         momentumRef.current.value = Math.min(1, momentumRef.current.value + 0.25);
+        const { access, refresh } = readAuthTokens();
+        if (access) {
+            try {
+                await fetch(`${apiBase()}/api/v1/auth/logout`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refresh }),
+                });
+            } catch { }
+        }
         try {
             window.localStorage.removeItem('vehsl.access');
             window.localStorage.removeItem('vehsl.refresh');
@@ -471,7 +716,7 @@ function ProfilePopover({
                             transition={{ delay: 0.03, duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
                             className="flex flex-col items-center mb-5">
                             <div className="relative mb-3">
-                                {(isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS).length > 0 && (
+                                {currentNotifs.length > 0 && (
                                     <motion.div
                                         className="absolute rounded-full"
                                         style={{
@@ -510,7 +755,7 @@ function ProfilePopover({
                                         const active = tab.id === 'seller' ? isSeller : !isSeller;
                                         return (
                                             <button key={tab.id}
-                                                onClick={(e) => {
+                                                onClick={async (e) => {
                                                     if (active) return;
                                                     if (lockedRole) {
                                                         e.stopPropagation();
@@ -518,9 +763,15 @@ function ProfilePopover({
                                                         return;
                                                     }
                                                     e.stopPropagation();
-                                                    setIsSeller(tab.id === 'seller');
                                                     setExpandedNotif(null);
                                                     setShowHistory(false);
+                                                    if (!allowedAccountTypes.includes(tab.id)) {
+                                                        toast('Role is not available for this account');
+                                                        return;
+                                                    }
+                                                    const ok = await switchAccountType(tab.id);
+                                                    if (!ok) return;
+                                                    setIsSeller(tab.id === 'seller');
                                                     const m = momentumRef.current.value;
                                                     e.currentTarget.parentElement?.animate([
                                                         { transform: 'scale(1)' },
@@ -562,254 +813,113 @@ function ProfilePopover({
                         </motion.div>
 
                         {/* ── The Sentence + expandable detail ── */}
-                        {(isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS).length > 0 && (
+                        {currentNotifs.length > 0 && (
                             <motion.div
                                 ref={notifRef as React.RefObject<HTMLDivElement>}
                                 initial={{ opacity: 0, y: 6 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ delay: 0.15, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
                                 className="mb-4">
-                                {isSeller ? (
-                                    /* ── SELLER SENTENCE ── */
-                                    <p className="text-center px-2"
-                                        style={{ color: B[600], fontFamily: FONT, fontSize: '13.5px', lineHeight: 1.55 }}>
-                                        {'Inspector arrives '}
-                                        <motion.span id="hero-sn1" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#0071e3', textShadow: '0 0 18px rgba(0,113,227,0.2)', transition: 'text-shadow 0.3s ease', borderBottom: expandedNotif === 'sn1' ? '1.5px solid rgba(0,113,227,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'sn1' ? null : 'sn1'); document.getElementById('hero-sn1')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(0,113,227,0.45), 0 0 56px rgba(0,113,227,0.12)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(0,113,227,0.2)'; }}>
-                                            tomorrow</motion.span>
-                                        {'. '}
-                                        <motion.span id="hero-sn2" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#34c759', textShadow: '0 0 18px rgba(52,199,89,0.18)', transition: 'text-shadow 0.3s ease', borderBottom: expandedNotif === 'sn2' ? '1.5px solid rgba(52,199,89,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'sn2' ? null : 'sn2'); document.getElementById('hero-sn2')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(52,199,89,0.4), 0 0 56px rgba(52,199,89,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(52,199,89,0.18)'; }}>
-                                            $12,912 deposited</motion.span>
-                                        {'. Certificate '}
-                                        <motion.span id="hero-sn3" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#ff9500', textShadow: '0 0 18px rgba(255,149,0,0.18)', transition: 'text-shadow 0.3s ease', borderBottom: expandedNotif === 'sn3' ? '1.5px solid rgba(255,149,0,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'sn3' ? null : 'sn3'); document.getElementById('hero-sn3')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(255,149,0,0.4), 0 0 56px rgba(255,149,0,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(255,149,0,0.18)'; }}>
-                                            expiring</motion.span>
-                                        .
-                                    </p>
-                                ) : (
-                                    /* ── BUYER SENTENCE ── */
-                                    <p className="text-center px-2"
-                                        style={{ color: B[600], fontFamily: FONT, fontSize: '13.5px', lineHeight: 1.55 }}>
-                                        {'Your sweater arrives '}
-                                        <motion.span id="hero-n1" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#34c759', textShadow: '0 0 18px rgba(52,199,89,0.2)', transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)', borderBottom: expandedNotif === 'n1' ? '1.5px solid rgba(52,199,89,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'n1' ? null : 'n1'); document.getElementById('hero-n1')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(52,199,89,0.45), 0 0 56px rgba(52,199,89,0.12)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(52,199,89,0.2)'; }}>
-                                            Thursday</motion.span>
-                                        {'. '}
-                                        <motion.span id="hero-n2" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#0071e3', textShadow: '0 0 18px rgba(0,113,227,0.18)', transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)', borderBottom: expandedNotif === 'n2' ? '1.5px solid rgba(0,113,227,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'n2' ? null : 'n2'); document.getElementById('hero-n2')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(0,113,227,0.4), 0 0 56px rgba(0,113,227,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(0,113,227,0.18)'; }}>
-                                            Priya replied</motion.span>
-                                        {'. '}
-                                        {"You\u2019re saving "}
-                                        <motion.span id="hero-n3" className="font-semibold cursor-pointer inline-block"
-                                            style={{ color: '#ff9500', textShadow: '0 0 18px rgba(255,149,0,0.18)', transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)', borderBottom: expandedNotif === 'n3' ? '1.5px solid rgba(255,149,0,0.3)' : '1.5px solid transparent' }}
-                                            onClick={() => { setExpandedNotif(expandedNotif === 'n3' ? null : 'n3'); document.getElementById('hero-n3')?.animate([{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }); }}
-                                            onMouseEnter={(e) => { e.currentTarget.style.textShadow = '0 0 28px rgba(255,149,0,0.4), 0 0 56px rgba(255,149,0,0.1)'; }}
-                                            onMouseLeave={(e) => { e.currentTarget.style.textShadow = '0 0 18px rgba(255,149,0,0.18)'; }}>
-                                            $24</motion.span>
-                                        .
-                                    </p>
-                                )}
+                                <p className="text-center px-2"
+                                    style={{ color: B[600], fontFamily: FONT, fontSize: '13.5px', lineHeight: 1.55 }}>
+                                    {currentNotifs.map((n, idx) => (
+                                        <span key={n.id}>
+                                            <motion.span
+                                                id={`hero-${n.id}`}
+                                                className="font-semibold cursor-pointer inline-block"
+                                                style={{
+                                                    color: n.tint,
+                                                    textShadow: `0 0 18px ${n.tint}22`,
+                                                    transition: 'text-shadow 0.3s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)',
+                                                    borderBottom: expandedNotif === n.id ? `1.5px solid ${n.tint}55` : '1.5px solid transparent',
+                                                }}
+                                                onClick={() => {
+                                                    setExpandedNotif(expandedNotif === n.id ? null : n.id);
+                                                    document.getElementById(`hero-${n.id}`)?.animate(
+                                                        [{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }],
+                                                        { duration: 450, easing: 'cubic-bezier(0.34,1.56,0.64,1)' }
+                                                    );
+                                                }}
+                                                onMouseEnter={(e) => { e.currentTarget.style.textShadow = `0 0 28px ${n.tint}55, 0 0 56px ${n.tint}22`; }}
+                                                onMouseLeave={(e) => { e.currentTarget.style.textShadow = `0 0 18px ${n.tint}22`; }}
+                                            >
+                                                {n.headline}
+                                            </motion.span>
+                                            {idx < currentNotifs.length - 1 ? '. ' : ''}
+                                        </span>
+                                    ))}
+                                </p>
 
-                                {/* ── Expandable detail — the sentence opens up ── */}
                                 <AnimatePresence mode="wait">
-                                    {/* SELLER expandable details */}
-                                    {expandedNotif === 'sn1' && (
-                                        <motion.div key="d-sn1"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(0,113,227,0.04)' }}>
-                                            <div className="flex items-center gap-2.5 mb-2.5">
-                                                <Eye size={14} strokeWidth={1.8} style={{ color: '#0071e3' }} />
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Quality Inspection</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-1.5" style={{ color: B[600], fontFamily: FONT }}>Tomorrow at 9:00 AM · Your warehouse</p>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[100], fontFamily: FONT }}>Covering order #4KNW280R — 24x Wireless NC Headphones</p>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(0,113,227,0.08)', color: '#0071e3', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Inspection details', { description: 'Tomorrow 9:00 AM · Order #4KNW280R' }); }}>
-                                                View inspection details
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'sn2' && (
-                                        <motion.div key="d-sn2"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(52,199,89,0.05)' }}>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Payment cleared</span>
-                                                <span className="text-[15px] font-semibold" style={{ color: '#34c759', fontFamily: FONT }}>+$12,912</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-1" style={{ color: B[600], fontFamily: FONT }}>
-                                                48x Wireless NC Headphones · Order #7RKT441P
-                                            </p>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[100], fontFamily: FONT }}>
-                                                Deposited to your account within 2 business days
-                                            </p>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(52,199,89,0.08)', color: '#34c759', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening earnings...', { description: 'View full payment history' }); }}>
-                                                View earnings
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'sn3' && (
-                                        <motion.div key="d-sn3"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(255,149,0,0.04)' }}>
-                                            <div className="flex items-center gap-2.5 mb-2.5">
-                                                <AlertTriangle size={14} strokeWidth={1.8} style={{ color: '#ff9500' }} />
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Export certificate expiring</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-1" style={{ color: B[600], fontFamily: FONT }}>
-                                                Ceramic Vase (HS 6913.10) — expires in 14 days
-                                            </p>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[100], fontFamily: FONT }}>
-                                                Upload renewed certificate to avoid listing suspension
-                                            </p>
-                                            <button className="w-full text-[11.5px] font-semibold py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: '#ff9500', color: 'white', fontFamily: FONT, transition: 'opacity 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening file picker...', { description: 'Upload renewed export certificate' }); }}>
-                                                Upload certificate
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {/* BUYER expandable details */}
-                                    {expandedNotif === 'n1' && (
-                                        <motion.div key="d-n1"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(52,199,89,0.05)' }}>
-                                            <div className="flex items-center gap-2.5 mb-3">
-                                                <Truck size={14} strokeWidth={1.8} style={{ color: '#34c759' }} />
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Merino Crew Neck Sweater</span>
-                                            </div>
-                                            <p className="text-[11.5px] mb-2.5" style={{ color: B[600], fontFamily: FONT }}>Left New Jersey warehouse at 2:14pm</p>
-                                            <div className="relative h-[3px] rounded-full overflow-hidden mb-2" style={{ backgroundColor: 'rgba(52,199,89,0.12)' }}>
-                                                <motion.div className="absolute inset-y-0 left-0 rounded-full"
-                                                    initial={{ width: '0%' }} animate={{ width: '72%' }}
-                                                    transition={{ delay: 0.15, duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                                    style={{ background: 'linear-gradient(90deg, #34c759, #30d158)', boxShadow: '0 0 8px rgba(52,199,89,0.3)' }} />
-                                            </div>
-                                            <div className="flex justify-between mb-3">
-                                                {['Packed', 'Shipped', 'Delivered'].map((s, si) => (
-                                                    <span key={s} className="text-[9.5px] font-medium" style={{ color: si <= 1 ? '#34c759' : B[100], fontFamily: FONT }}>{s}</span>
-                                                ))}
-                                            </div>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(52,199,89,0.08)', color: '#34c759', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(52,199,89,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening tracking...', { description: 'Full shipment details' }); }}>
-                                                Track shipment
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'n2' && (
-                                        <motion.div key="d-n2"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(0,113,227,0.04)' }}>
-                                            <div className="flex items-center gap-2.5 mb-2.5">
-                                                <div className="w-[24px] h-[24px] rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(0,113,227,0.1)' }}>
-                                                    <span className="text-[10px] font-semibold" style={{ color: '#0071e3' }}>P</span>
+                                    {(() => {
+                                        const n = currentNotifs.find(x => x.id === expandedNotif);
+                                        if (!n) return null;
+                                        const bg = `${n.tint}0A`;
+                                        const soft = `${n.tint}14`;
+                                        const primary = n.tint;
+                                        const label =
+                                            n.action === 'orders' ? 'Open orders' :
+                                            n.action === 'messages' ? 'Open messages' :
+                                            n.action === 'wishlist' ? 'Open wishlist' :
+                                            n.action === 'settings' ? 'Open settings' : 'Open';
+                                        const onAction = (e: any) => {
+                                            e.stopPropagation();
+                                            if (n.action === 'orders') window.location.href = '/orders';
+                                            else if (n.action === 'settings') onOpenSettings();
+                                            else toast(`Opening ${n.action}...`, { description: 'Coming soon.' });
+                                        };
+                                        return (
+                                            <motion.div
+                                                key={`d-${n.id}`}
+                                                initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                                                animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
+                                                exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                                                transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+                                                className="overflow-hidden rounded-[14px] px-4 py-3.5"
+                                                style={{ background: bg }}
+                                            >
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>{n.headline}</span>
+                                                    <span className="text-[10px]" style={{ color: B[600], fontFamily: FONT }}>{n.meta}</span>
                                                 </div>
-                                                <span className="text-[12.5px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Priya Sharma</span>
-                                                <span className="text-[10.5px]" style={{ color: B[100], fontFamily: FONT }}>2h ago</span>
-                                            </div>
-                                            <p className="text-[12.5px] leading-relaxed rounded-[10px] px-3 py-2.5 mb-3"
-                                                style={{ color: B[700], fontFamily: FONT, background: 'rgba(0,113,227,0.04)', fontStyle: 'italic' }}>
-                                                "Hey! I checked with the warehouse — your delivery should definitely arrive by Thursday afternoon. I'll keep an eye on it!"
-                                            </p>
-                                            <button className="w-full text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                style={{ background: 'rgba(0,113,227,0.08)', color: '#0071e3', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.14)'; }}
-                                                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.08)'; }}
-                                                onClick={(e) => { e.stopPropagation(); toast('Opening messages...', { description: 'Conversation with Priya' }); }}>
-                                                Reply to Priya
-                                            </button>
-                                        </motion.div>
-                                    )}
-                                    {expandedNotif === 'n3' && (
-                                        <motion.div key="d-n3"
-                                            initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-                                            exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
-                                            className="overflow-hidden rounded-[14px] px-4 py-3.5"
-                                            style={{ background: 'rgba(255,149,0,0.04)' }}>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <span className="text-[13px] font-semibold" style={{ color: C.text, fontFamily: FONT }}>Merino Crew Neck</span>
-                                                <div className="flex items-baseline gap-1.5">
-                                                    <span className="text-[11px] line-through" style={{ color: B[100], fontFamily: FONT }}>$89</span>
-                                                    <span className="text-[14px] font-semibold" style={{ color: '#ff9500', fontFamily: FONT }}>$65</span>
-                                                </div>
-                                            </div>
-                                            <p className="text-[11.5px] mb-3" style={{ color: B[600], fontFamily: FONT }}>
-                                                Price dropped on your wishlist item. Lowest in 30 days.
-                                            </p>
-                                            <div className="flex gap-2">
-                                                <button className="flex-1 text-[11.5px] font-medium py-2 rounded-[10px] cursor-pointer border-none"
-                                                    style={{ background: 'rgba(255,149,0,0.08)', color: '#ff9500', fontFamily: FONT, transition: 'background 0.2s' }}
-                                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,149,0,0.14)'; }}
-                                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,149,0,0.08)'; }}
-                                                    onClick={(e) => { e.stopPropagation(); toast('Opening wishlist...'); }}>
-                                                    View item
-                                                </button>
-                                                <button className="flex-1 text-[11.5px] font-semibold py-2 rounded-[10px] cursor-pointer border-none"
-                                                    style={{ background: '#ff9500', color: 'white', fontFamily: FONT, transition: 'opacity 0.2s' }}
+                                                {n.kind === 'shipping' && typeof n.progress === 'number' && (
+                                                    <>
+                                                        <div className="w-full h-[6px] rounded-full overflow-hidden mb-3"
+                                                            style={{ background: soft }}>
+                                                            <motion.div initial={{ width: 0 }} animate={{ width: `${Math.round(n.progress * 100)}%` }}
+                                                                transition={{ duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94] }}
+                                                                className="h-full rounded-full"
+                                                                style={{ background: primary }} />
+                                                        </div>
+                                                        {Array.isArray(n.stages) && n.stages.length >= 2 && (
+                                                            <div className="flex items-center justify-between text-[10px] mb-3"
+                                                                style={{ color: B[600], fontFamily: FONT }}>
+                                                                {n.stages.slice(0, 3).map((s) => <span key={s}>{s}</span>)}
+                                                            </div>
+                                                        )}
+                                                    </>
+                                                )}
+                                                <p className="text-[11.5px] mb-3" style={{ color: B[600], fontFamily: FONT }}>
+                                                    {n.detail || '—'}
+                                                </p>
+                                                <button
+                                                    className="w-full text-[11.5px] font-semibold py-2 rounded-[10px] cursor-pointer border-none"
+                                                    style={{ background: primary, color: 'white', fontFamily: FONT, transition: 'opacity 0.2s' }}
                                                     onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
                                                     onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-                                                    onClick={(e) => { e.stopPropagation(); toast('Added to cart!', { description: 'Merino Crew Neck — $65' }); }}>
-                                                    Add to cart
+                                                    onClick={onAction}
+                                                >
+                                                    {label}
                                                 </button>
-                                            </div>
-                                        </motion.div>
-                                    )}
+                                            </motion.div>
+                                        );
+                                    })()}
                                 </AnimatePresence>
                             </motion.div>
                         )}
 
                         {/* ── See all / History toggle ── */}
-                        {(isSeller ? SELLER_NOTIFICATIONS : NOTIFICATIONS).length > 0 && (
+                        {currentNotifs.length > 0 && (
                             <motion.div
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
@@ -849,8 +959,8 @@ function ProfilePopover({
                                     <div className="relative">
                                         {/* Scrollable memory stream */}
                                         <div className="max-h-[280px] overflow-y-auto" style={{ scrollbarWidth: 'none' }}>
-                                            {(isSeller ? SELLER_HISTORY_GROUPS : NOTIF_HISTORY_GROUPS).map((group, gi) => {
-                                                const histGroups = isSeller ? SELLER_HISTORY_GROUPS : NOTIF_HISTORY_GROUPS;
+                                            {historyGroups.map((group, gi) => {
+                                                const histGroups = historyGroups;
                                                 let itemCounter = 0;
                                                 for (let g = 0; g < gi; g++) itemCounter += histGroups[g].items.length;
                                                 return (
@@ -949,9 +1059,9 @@ function ProfilePopover({
                                                                             </div>
                                                                             <div className="flex-1 min-w-0 pt-[1px]">
                                                                                 <p className="text-[12.5px] font-semibold leading-snug"
-                                                                                    style={{ color: '#1d1d1f', fontFamily: FONT }}>{item.sentence}</p>
+                                                                                    style={{ color: C.text, fontFamily: FONT }}>{item.sentence}</p>
                                                                                 <p className="text-[10.5px] font-normal leading-tight mt-1"
-                                                                                    style={{ color: 'rgba(0,0,0,0.38)', fontFamily: FONT }}>{item.moment}</p>
+                                                                                    style={{ color: B[600], fontFamily: FONT }}>{item.moment}</p>
                                                                             </div>
                                                                         </div>
                                                                     </motion.div>
@@ -972,7 +1082,7 @@ function ProfilePopover({
                                                 style={{ color: B[600], fontFamily: FONT, transition: 'all 0.25s ease' }}
                                                 onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.03)'; e.currentTarget.style.color = C.text; }}
                                                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = B[600]; }}
-                                                onClick={() => { toast('History cleared', { description: 'All past notifications removed' }); setShowHistory(false); }}>
+                                                onClick={clearAllHistory}>
                                                 <span style={{ fontSize: '9px', opacity: 0.5 }}>{'×'}</span>
                                                 Clear all history
                                             </button>
@@ -984,7 +1094,7 @@ function ProfilePopover({
 
                         <div className="h-px mb-1 rounded-full" style={{ backgroundColor: 'rgba(0,0,0,0.04)' }} />
                         <div ref={menuRef as React.RefObject<HTMLDivElement>}>
-                            {MENU_ITEMS.filter(item => item.key !== 'seller').map((item, i) => (
+                            {menuItems.filter(item => item.key !== 'seller').map((item, i) => (
                                     <MenuItem key={item.key} item={item} index={i}
                                         momentum={momentumRef.current.value}
                                         onPress={() => handleItemPress(item, i)}
@@ -1040,6 +1150,20 @@ const SELLER_TABS: { key: SettingsTab; label: string; icon: React.ElementType }[
     { key: 'security', label: 'Security', icon: Lock },
     { key: 'help', label: 'Help', icon: HelpCircle },
 ];
+
+const CERT_KEY_TO_KYC_KIND: Record<string, string> = {
+    iso9001: 'iso_9001',
+    gmp: 'gmp',
+    exportLicense: 'export_license',
+    productSafety: 'product_safety',
+};
+
+function kycReviewToCertStatus(reviewStatus: string): 'verified' | 'pending' | 'none' {
+    const s = (reviewStatus || '').toLowerCase();
+    if (s === 'verified') return 'verified';
+    if (s === 'rejected' || s === 'expired') return 'none';
+    return 'pending';
+}
 
 /* ── Setting Row — stripped to essence ── */
 function SettingRow({
@@ -1111,7 +1235,18 @@ function TabButton({ icon: Icon, label, active, onClick }: { icon: React.Element
             onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
             className="relative flex flex-col items-center px-5 py-3.5 pb-[14px] text-[13px] transition-colors duration-200"
             style={{ color: active ? C.accent : hovered ? C.text : B[600], fontWeight: active ? 600 : 500 }}>
-            <span ref={spanRef} className="flex items-center gap-2">
+            {(active || hovered) && (
+                <motion.div
+                    layoutId={active ? "stab-pill" : undefined}
+                    className="absolute inset-x-2 top-2 bottom-2 rounded-[14px]"
+                    style={{
+                        background: active ? 'rgba(0,113,227,0.10)' : 'rgba(0,0,0,0.03)',
+                        boxShadow: active ? 'inset 0 0 0 1px rgba(0,113,227,0.10)' : 'inset 0 0 0 1px rgba(0,0,0,0.04)',
+                    }}
+                    transition={{ type: 'spring', damping: 32, stiffness: 380 }}
+                />
+            )}
+            <span ref={spanRef} className="flex items-center gap-2" style={{ position: 'relative', zIndex: 1 }}>
                 <Icon size={14} strokeWidth={active ? 2.2 : 1.5} />
                 {label}
             </span>
@@ -1130,7 +1265,8 @@ function SettingsTabBar({ activeTab, onTabChange }: { activeTab: SettingsTab; on
     const { isSeller } = useRole();
     const TABS = isSeller ? SELLER_TABS : BUYER_TABS;
     return (
-        <div className="flex items-center gap-0 mt-8 -mx-10 px-10 border-b border-black/[0.06]">
+        <div className="flex items-center gap-0 mt-8 -mx-10 px-10 border-b border-black/[0.06]"
+            style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.015), rgba(255,255,255,0))' }}>
             {TABS.map(t => (
                 <TabButton key={t.key} icon={t.icon} label={t.label} active={activeTab === t.key} onClick={() => onTabChange(t.key)} />
             ))}
@@ -1246,9 +1382,14 @@ function SidebarContent({ title, lines }: { title: string; lines: { label: strin
 }
 
 /* ── Full Settings Modal ── */
-function FullSettingsModal({ onClose }: { onClose: () => void }) {
+function FullSettingsModal({ initialTab = 'profile', onClose }: { initialTab?: SettingsTab; onClose: () => void }) {
     const { isSeller } = useRole();
-    const [tab, setTab] = useState<SettingsTab>('profile');
+    const [tab, setTab] = useState<SettingsTab>(initialTab);
+    const [loaded, setLoaded] = useState(false);
+    const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const suppressNextSaveRef = useRef(false);
+    const lastSaveErrorAtRef = useRef(0);
+    const [meUser, setMeUser] = useState<any>(() => readVehslUser());
     const [notifications, setNotifications] = useState({
         /* Order lifecycle */
         orderConfirmed: true, orderProcessing: true, orderModified: true,
@@ -1272,10 +1413,40 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
         sound: true,
         /* Quiet hours */
         quietHours: false,
+        quietFrom: '22:00',
+        quietTo: '07:00',
+        quietDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
     });
     const [display, setDisplay] = useState({
         compactView: false, theme: 'system' as 'light' | 'dark' | 'system',
         currency: 'USD' as 'USD' | 'EUR' | 'GBP',
+    });
+    const [business, setBusiness] = useState<any>({
+        activeBizId: 'default',
+        businesses: [
+            {
+                id: 'default',
+                name: 'My Business',
+                regNo: '',
+                vat: '',
+                address: '',
+                rep: '',
+                email: '',
+                emailVerified: true,
+                payoutAccounts: [],
+                factoryAddress: '',
+                pickupAddress: '',
+                productionCapacity: '',
+                leadTime: '',
+                moq: '',
+                certifications: {
+                    iso9001: { name: '', status: 'none', expiry: '' },
+                    gmp: { name: '', status: 'none', expiry: '' },
+                    exportLicense: { name: '', status: 'none', expiry: '' },
+                    productSafety: { name: '', status: 'none', expiry: '' },
+                },
+            },
+        ],
     });
     const [orderSettings, setOrderSettings] = useState({
         defaultSort: 'newest' as 'newest' | 'oldest' | 'amount',
@@ -1290,6 +1461,13 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
     });
     const [privacy, setPrivacy] = useState({
         twoFactor: false, sessionTimeout: '30min' as '15min' | '30min' | '1hr' | 'never',
+        smsEnabled: true,
+        authAppEnabled: false,
+        recoveryGenerated: false,
+        payoutPinEnabled: true,
+        listingLockEnabled: true,
+        cancelVerifyEnabled: true,
+        payoutPinSet: false,
     });
 
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -1374,15 +1552,287 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
         return () => { document.body.style.overflow = ''; };
     }, []);
 
+    const refreshAccess = useCallback(async () => {
+        const { refresh } = readAuthTokens();
+        if (!refresh) return '';
+        try {
+            const res = await fetch(`${apiBase()}/api/v1/auth/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refresh }),
+            });
+            const data = await res.json().catch(() => null);
+            const nextAccess = (data?.access || '').toString();
+            if (!res.ok || !nextAccess) return '';
+            try { window.localStorage.setItem('vehsl.access', nextAccess); } catch { }
+            return nextAccess;
+        } catch {
+            return '';
+        }
+    }, []);
+
+    const authedFetch = useCallback(async (path: string, init?: RequestInit) => {
+        const doFetch = async (access: string) => fetch(`${apiBase()}${path}`, {
+            ...init,
+            headers: {
+                ...(init?.headers || {}),
+                ...(access ? { Authorization: `Bearer ${access}` } : {}),
+            },
+            cache: 'no-store',
+        });
+
+        let access = readAuthTokens().access;
+        let res = await doFetch(access);
+        if (res.status !== 401) return res;
+
+        const nextAccess = await refreshAccess();
+        if (!nextAccess) {
+            try {
+                window.localStorage.removeItem('vehsl.access');
+                window.localStorage.removeItem('vehsl.refresh');
+                window.localStorage.removeItem('vehsl.user');
+            } catch { }
+            try { window.location.assign('/?signin=1'); } catch { }
+            return res;
+        }
+
+        access = nextAccess;
+        res = await doFetch(access);
+        return res;
+    }, [refreshAccess]);
+
+    const mergeBusinessCertsFromKycDocs = useCallback((prevBusiness: any, docs: any[]) => {
+        const businesses = Array.isArray(prevBusiness?.businesses) ? prevBusiness.businesses : [];
+        if (!businesses.length || !Array.isArray(docs) || !docs.length) return prevBusiness;
+
+        const nextBusinesses = businesses.map((biz: any) => {
+            const certs = { ...(biz?.certifications || {}) };
+            for (const [certKey, kind] of Object.entries(CERT_KEY_TO_KYC_KIND)) {
+                const match = docs.find((d: any) => {
+                    const dk = (d?.kind || '').toLowerCase();
+                    const dt = (d?.doc_type || '').toString();
+                    return dk === kind && (dt === '' || dt === (biz?.id || '').toString());
+                });
+                if (!match) continue;
+                const prev = certs[certKey] || { name: '', status: 'none', expiry: '' };
+                certs[certKey] = {
+                    ...prev,
+                    name: match?.original_name || prev?.name || '',
+                    status: kycReviewToCertStatus(match?.review_status),
+                    expiry: match?.expires_at ? String(match.expires_at) : (prev?.expiry || ''),
+                    file_url: match?.file_url || prev?.file_url || '',
+                    document_id: match?.id || prev?.document_id || '',
+                };
+            }
+            return { ...biz, certifications: certs };
+        });
+
+        return { ...(prevBusiness || {}), businesses: nextBusinesses };
+    }, []);
+
+    const uploadSellerCertification = useCallback(async (bizId: string, certKey: string, file: File) => {
+        const kind = CERT_KEY_TO_KYC_KIND[certKey];
+        if (!kind) throw new Error('Unsupported document type.');
+        const fd = new FormData();
+        fd.append('kind', kind);
+        fd.append('doc_type', (bizId || '').toString());
+        fd.append('file', file);
+
+        const res = await authedFetch('/api/v1/kyc/documents', { method: 'POST', body: fd });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Upload failed.';
+            throw new Error(msg);
+        }
+
+        setBusiness((prev: any) => {
+            const businesses = Array.isArray(prev?.businesses) ? prev.businesses : [];
+            const nextBusinesses = businesses.map((b: any) => {
+                if ((b?.id || '').toString() !== (bizId || '').toString()) return b;
+                const certs = { ...(b?.certifications || {}) };
+                const prevCert = certs[certKey] || { name: '', status: 'none', expiry: '' };
+                certs[certKey] = {
+                    ...prevCert,
+                    name: data?.original_name || file.name || prevCert.name || '',
+                    status: kycReviewToCertStatus(data?.review_status),
+                    expiry: data?.expires_at ? String(data.expires_at) : (prevCert.expiry || ''),
+                    file_url: data?.file_url || prevCert.file_url || '',
+                    document_id: data?.id || prevCert.document_id || '',
+                };
+                return { ...b, certifications: certs };
+            });
+            return { ...(prev || {}), businesses: nextBusinesses };
+        });
+
+        toast.success('Certificate uploaded', { description: 'Review typically takes 24–48 hours.' });
+        return data;
+    }, [authedFetch, mergeBusinessCertsFromKycDocs]);
+
+    const generateRecoveryCodes = useCallback(async () => {
+        const res = await authedFetch('/api/v1/security/recovery-codes', { method: 'POST' });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to generate codes.';
+            throw new Error(msg);
+        }
+        setPrivacy((p: any) => ({ ...(p || {}), recoveryGenerated: true }));
+        return (data?.codes && Array.isArray(data.codes)) ? data.codes : [];
+    }, [authedFetch]);
+
+    const setupTotp = useCallback(async () => {
+        const res = await authedFetch('/api/v1/security/totp/setup', { method: 'POST' });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to start setup.';
+            throw new Error(msg);
+        }
+        return { secret: (data?.secret || '').toString(), otpauth_url: (data?.otpauth_url || '').toString() };
+    }, [authedFetch]);
+
+    const enableTotp = useCallback(async (code: string) => {
+        const res = await authedFetch('/api/v1/security/totp/enable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to enable 2FA.';
+            throw new Error(msg);
+        }
+        setPrivacy((p: any) => ({ ...(p || {}), twoFactor: true }));
+        return true;
+    }, [authedFetch]);
+
+    const disableTotp = useCallback(async (payload: { code?: string; recovery_code?: string }) => {
+        const res = await authedFetch('/api/v1/security/totp/disable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to disable 2FA.';
+            throw new Error(msg);
+        }
+        setPrivacy((p: any) => ({ ...(p || {}), twoFactor: false }));
+        return true;
+    }, [authedFetch]);
+
+    const deactivateAccount = useCallback(async () => {
+        const res = await authedFetch('/api/v1/auth/deactivate', { method: 'POST' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => null);
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to deactivate account.';
+            throw new Error(msg);
+        }
+        // Logout after deactivation
+        try {
+            window.localStorage.removeItem('vehsl.access');
+            window.localStorage.removeItem('vehsl.refresh');
+            window.localStorage.removeItem('vehsl.user');
+        } catch { }
+        toast.success('Account deactivated');
+        onClose();
+        window.location.href = '/';
+        return true;
+    }, [authedFetch, onClose]);
+
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const res = await authedFetch('/api/v1/settings/me');
+                if (!alive) return;
+                if (!res.ok) { setLoaded(true); return; }
+                const data = await res.json().catch(() => null);
+                if (data?.user) setMeUser(data.user);
+                const s = data?.settings || {};
+                if (s?.notifications && typeof s.notifications === 'object') setNotifications((p: any) => ({ ...p, ...(s.notifications || {}) }));
+                if (s?.display && typeof s.display === 'object') setDisplay((p: any) => ({ ...p, ...(s.display || {}) }));
+                if (s?.order_settings && typeof s.order_settings === 'object') setOrderSettings((p: any) => ({ ...p, ...(s.order_settings || {}) }));
+                if (s?.security && typeof s.security === 'object') setPrivacy((p: any) => ({ ...p, ...(s.security || {}) }));
+                if (s?.business && typeof s.business === 'object') setBusiness((p: any) => ({ ...p, ...(s.business || {}) }));
+
+                try {
+                    const docsRes = await authedFetch('/api/v1/kyc/documents');
+                    if (!alive) return;
+                    if (docsRes.ok) {
+                        const docs = await docsRes.json().catch(() => []);
+                        setBusiness((p: any) => mergeBusinessCertsFromKycDocs(p, docs));
+                    }
+                } catch { }
+            } catch { }
+            if (alive) setLoaded(true);
+        })();
+        return () => { alive = false; };
+    }, [authedFetch]);
+
+    useEffect(() => {
+        if (!loaded) return;
+        if (suppressNextSaveRef.current) { suppressNextSaveRef.current = false; return; }
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = setTimeout(() => {
+            const activeBizId = (business?.activeBizId || '').toString();
+            const businesses = Array.isArray(business?.businesses) ? business.businesses : [];
+            const activeBiz = businesses.find((b: any) => (b?.id || '').toString() === activeBizId) || businesses[0] || null;
+            const seller_profile = isSeller && activeBiz ? {
+                business_name: (activeBiz?.name || '').toString(),
+                tax_id: (activeBiz?.vat || '').toString(),
+            } : undefined;
+            const body: any = { display, notifications, order_settings: orderSettings, security: privacy, business };
+            if (seller_profile) body.seller_profile = seller_profile;
+            const pin = (privacy?.payoutPin || '').toString().trim();
+            const hasPin = pin.length > 0;
+            void (async () => {
+                try {
+                    const res = await authedFetch('/api/v1/settings/me', {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        const now = Date.now();
+                        if (now - lastSaveErrorAtRef.current > 5000) {
+                            lastSaveErrorAtRef.current = now;
+                            toast.error('Settings not saved', { description: 'Check your connection and try again.' });
+                        }
+                        return;
+                    }
+                    if (hasPin) {
+                        suppressNextSaveRef.current = true;
+                        setPrivacy((p: any) => {
+                            const next = { ...(p || {}) };
+                            delete next.payoutPin;
+                            return next;
+                        });
+                    }
+                } catch {
+                    const now = Date.now();
+                    if (now - lastSaveErrorAtRef.current > 5000) {
+                        lastSaveErrorAtRef.current = now;
+                        toast.error('Settings not saved', { description: 'Check your connection and try again.' });
+                    }
+                }
+            })();
+        }, 650);
+        return () => {
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        };
+    }, [loaded, display, notifications, orderSettings, privacy, business, authedFetch]);
+
     return createPortal(
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-[10000] flex items-start justify-center pt-[5vh] pb-6 px-4 overflow-y-auto"
+            className="fixed inset-0 z-[10000] flex items-start justify-center pt-[4vh] pb-6 px-4 overflow-y-auto"
             style={{ scrollbarWidth: 'none' }}>
 
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                 className="fixed inset-0"
-                style={{ background: 'rgba(0,0,0,0.25)', backdropFilter: 'blur(12px)' }}
+                style={{
+                    background: 'radial-gradient(1200px 700px at 50% -10%, rgba(0,113,227,0.20) 0%, rgba(10,10,14,0.42) 55%, rgba(10,10,14,0.52) 100%)',
+                    backdropFilter: 'blur(18px) saturate(1.15)',
+                }}
                 onClick={onClose} />
 
             <motion.div
@@ -1390,11 +1840,13 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                 animate={{ y: 0, opacity: 1, scale: 1 }}
                 exit={{ y: 10, opacity: 0, scale: 0.98 }}
                 transition={{ type: 'spring', damping: 30, stiffness: 300, mass: 0.7 }}
-                className="relative w-full max-w-[640px] z-10 font-urbanist"
+                className="relative w-full max-w-[680px] z-10 font-urbanist"
                 style={{ fontFamily: "'Urbanist', sans-serif" }}>
 
                 <Glass className="rounded-[20px] overflow-hidden"
-                    style={{ background: '#ffffff' } as React.CSSProperties}>
+                    style={{
+                        background: 'linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,248,250,0.96) 100%)',
+                    } as React.CSSProperties}>
 
                     <div className="relative">
                         {/* Header — minimal */}
@@ -1420,7 +1872,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                 <div
                                     ref={scrollRef}
                                     onScroll={updateScroll}
-                                    className="px-12 py-12 pr-10 overflow-y-auto settings-scroll-area"
+                                    className="px-10 py-10 pr-10 overflow-y-auto settings-scroll-area"
                                     style={{ maxHeight: '600px' }}>
                                     <style>{`
                                         .settings-scroll-area::-webkit-scrollbar { width: 0px; display: none; }
@@ -1457,7 +1909,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                             exit={{ opacity: 0 }}
                                             transition={{ duration: 0.15 }}>
                                             {tab === 'profile' && (isSeller
-                                                ? <SellerBusinessTab display={display} setDisplay={setDisplay} />
+                                                ? <SellerBusinessTab me={meUser} display={display} setDisplay={setDisplay} business={business} setBusiness={setBusiness} onUploadCertification={uploadSellerCertification} />
                                                 : <ProfileTab display={display} setDisplay={setDisplay} />
                                             )}
                                             {tab === 'alerts' && (isSeller
@@ -1469,12 +1921,12 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                                 : <OrdersTab orderSettings={orderSettings} setOrderSettings={setOrderSettings} />
                                             )}
                                             {tab === 'security' && (isSeller
-                                                ? <SellerSecurityTab privacy={privacy} setPrivacy={setPrivacy} />
+                                                ? <SellerSecurityTab privacy={privacy} setPrivacy={setPrivacy} generateRecoveryCodes={generateRecoveryCodes} setupTotp={setupTotp} enableTotp={enableTotp} disableTotp={disableTotp} deactivateAccount={deactivateAccount} />
                                                 : <SecurityTab privacy={privacy} setPrivacy={setPrivacy} />
                                             )}
                                             {tab === 'help' && (isSeller
-                                                ? <SellerHelpTab />
-                                                : <HelpTab />
+                                                ? <SellerHelpTab authedFetch={authedFetch} me={meUser} />
+                                                : <HelpTab authedFetch={authedFetch} me={meUser} />
                                             )}
                                         </motion.div>
                                     </AnimatePresence>
@@ -1515,7 +1967,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                         style={{ minHeight: 28 }}>
                                         <div className="w-full h-full rounded-[50px]"
                                             style={{
-                                                backgroundColor: scrollThumb.isHovering ? '#6e6e73' : '#86868b',
+                                                backgroundColor: scrollThumb.isHovering ? B[700] : B[600],
                                                 transition: 'background-color 0.2s ease',
                                             }} />
                                     </motion.div>
@@ -4037,11 +4489,11 @@ function RecoveryCodesPanel({ onClose }: { onClose: () => void }) {
 
     const handlePrint = () => {
         const content = activeTab === 'phrase'
-            ? `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#1d1d1f">Recovery Phrase</h2>
+            ? `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#18191A">Recovery Phrase</h2>
                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;font-family:monospace;font-size:14px;padding:20px;border:1px solid #e5e5e5;border-radius:12px">
                  ${RECOVERY_WORDS.map((w, i) => `<div><span style="color:#999;margin-right:8px">${i + 1}.</span>${w}</div>`).join('')}
                </div>`
-            : `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#1d1d1f">Private Key</h2>
+            : `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#18191A">Private Key</h2>
                <div style="font-family:monospace;font-size:13px;word-break:break-all;padding:20px;border:1px solid #e5e5e5;border-radius:12px">${PRIVATE_KEY}</div>`;
         const printWindow = window.open('', '_blank', 'width=480,height=600');
         if (!printWindow) { toast.error('Could not open print window'); return; }
@@ -5626,9 +6078,24 @@ function CleanInput({ label, type = 'text', placeholder }: { label: string; type
 /* ══════════════════════════════════════════
    MAIN EXPORT
    ══════════════════════════════════════════ */
-export function SettingsPopover() {
+export function SettingsPopover({ initialTab = 'profile' }: { initialTab?: SettingsTab }) {
     const [popoverOpen, setPopoverOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('settings') === '1') {
+                setActiveTab('profile');
+                setSettingsOpen(true);
+            } else if (params.get('help') === '1') {
+                setActiveTab('help');
+                setSettingsOpen(true);
+            }
+        } catch { }
+    }, []);
     const avatarRef = useRef<HTMLButtonElement>(null);
     const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
     const [hovered, setHovered] = useState(false);
@@ -5655,8 +6122,9 @@ export function SettingsPopover() {
         setPopoverOpen(true);
     }, []);
     const closePopover = useCallback(() => setPopoverOpen(false), []);
-    const openSettings = useCallback(() => {
+    const openSettings = useCallback((tabName: SettingsTab = 'profile') => {
         setPopoverOpen(false);
+        setActiveTab(tabName);
         setTimeout(() => setSettingsOpen(true), 100);
     }, []);
     const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -5691,7 +6159,7 @@ export function SettingsPopover() {
                 {popoverOpen && <ProfilePopover anchorRect={anchorRect} onClose={closePopover} onOpenSettings={openSettings} momentumRef={momentumRef} />}
             </AnimatePresence>
             <AnimatePresence>
-                {settingsOpen && <FullSettingsModal onClose={closeSettings} />}
+                {settingsOpen && <FullSettingsModal initialTab={activeTab} onClose={closeSettings} />}
             </AnimatePresence>
         </>
     );

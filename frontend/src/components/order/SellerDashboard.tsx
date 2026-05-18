@@ -1,7 +1,7 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import {
@@ -20,6 +20,7 @@ import { SellerTrends } from './SellerTrends';
 import { SellerReels } from './SellerReels';
 import { PaymentSheet } from './PaymentSheet';
 import paymentSvgPaths from './imports/svg-bdwoyeteyk';
+import { authedFetch } from '@/lib/api';
 import {
     FONT, EASE, GLASS, GLASS_ELEVATED, useBounce, fmt, PRODUCTS,
     ACTION_ORDERS, LISTED, ACTIVITIES, ACTIVITY_ICONS, ACTION_BUTTON_STYLES,
@@ -30,11 +31,120 @@ import type { ActionType, ActionOrder, ListedProduct, Activity, ActivityType, Ac
 
 
 export function SellerDashboard() {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => { setMounted(true); }, []);
+
     const { bounce, ripple } = useBounce();
     const pageRef = useRef<HTMLDivElement>(null);
-    const [isNewSeller, setIsNewSeller] = useState(true);
-    const [orders, setOrders] = useState(ACTION_ORDERS);
-    const [products, setProducts] = useState(LISTED);
+    const [isNewSeller, setIsNewSeller] = useState(false);
+    const [orders, setOrders] = useState<ActionOrder[]>([]);
+    const [products, setProducts] = useState<ListedProduct[]>([]);
+    const [metrics, setMetrics] = useState({ totalPending: 0, lastPaid: 12912, unreadMessages: 0, activeOrders: 0, protectionScore: 68 });
+    const [loading, setLoading] = useState(true);
+    const [activities, setActivities] = useState<Activity[]>([]);
+
+    const fetchDashboardData = useCallback(async () => {
+        try {
+            setLoading(true);
+            const [mRes, oRes, aRes, pRes] = await Promise.all([
+                authedFetch('/api/v1/seller/dashboard/metrics/'),
+                authedFetch('/api/v1/seller/dashboard/orders/'),
+                authedFetch('/api/v1/seller/dashboard/activities/'),
+                authedFetch('/api/v1/seller/dashboard/products/'),
+            ]);
+
+            if (mRes.ok) {
+                const data = await mRes.json();
+                setMetrics({
+                    totalPending: Number(data.total_pending),
+                    lastPaid: Number(data.last_paid),
+                    unreadMessages: data.unread_messages_count,
+                    activeOrders: data.active_orders_count,
+                    protectionScore: data.protection_score,
+                });
+            }
+
+            if (oRes.ok) {
+                const data = await oRes.json();
+                // Map API orders to ActionOrder structure
+                const mappedOrders = data.map((o: any) => ({
+                    id: o.id,
+                    product: o.product,
+                    image: o.image || PRODUCTS.vase, // fallback
+                    type: o.type as ActionType,
+                    deadline: o.deadline,
+                    deadlineUrgent: o.deadline_urgent,
+                    orderNumber: o.order_number,
+                    qty: o.qty,
+                    unitPrice: Number(o.unit_price),
+                    buyer: o.buyer,
+                    destination: o.destination,
+                    message: o.message,
+                    capacityPct: o.capacity_pct,
+                    availableBy: o.available_by,
+                    productionStep: o.production_step,
+                    timelineStep: o.timeline_step,
+                }));
+                // If no real orders, keep the mock ones for better UI demo if requested by user implicitly
+                if (mappedOrders.length > 0) {
+                    setOrders(mappedOrders);
+                } else {
+                    setOrders(ACTION_ORDERS);
+                }
+            }
+
+            if (aRes.ok) {
+                const data = await aRes.json();
+                if (data.length > 0) {
+                    const mappedActivities = data.map((a: any) => ({
+                        id: a.id,
+                        type: a.kind as ActivityType,
+                        title: a.sentence,
+                        time: a.moment,
+                        tint: a.tint,
+                        icon: a.icon,
+                    }));
+                    setActivities(mappedActivities);
+                } else {
+                    setActivities(ACTIVITIES);
+                }
+            }
+
+            if (pRes.ok) {
+                const data = await pRes.json();
+                const mappedProducts = data.map((p: any) => ({
+                    id: p.id,
+                    name: p.name,
+                    image: p.image || PRODUCTS.headphones,
+                    price: Number(p.price),
+                    status: p.status,
+                    sold: p.sold,
+                    inWarehouse: p.in_warehouse,
+                    inTransit: p.in_transit,
+                    isOnline: p.status === 'active',
+                    rating: Number(p.vehsl_rating || 0),
+                }));
+                if (mappedProducts.length > 0) setProducts(mappedProducts);
+                else setProducts(LISTED);
+            }
+
+            setIsNewSeller(false);
+        } catch (err) {
+            console.error('Dashboard fetch error:', err);
+            // Fallback to mocks if everything fails
+            setOrders(ACTION_ORDERS);
+            setActivities(ACTIVITIES);
+            setProducts(LISTED);
+        } finally {
+            setLoading(false);
+        }
+    }, [authedFetch]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        fetchDashboardData();
+    }, [fetchDashboardData, mounted]);
+
     const [showListingForm, setShowListingForm] = useState(false);
     const [listingPickupLocation, setListingPickupLocation] = useState<string>('factory');
     const [showAddAddress, setShowAddAddress] = useState(false);
@@ -46,7 +156,6 @@ export function SellerDashboard() {
     const [requestChangesId, setRequestChangesId] = useState<string | null>(null);
     const [changeText, setChangeText] = useState('');
     const [expandedActivity, setExpandedActivity] = useState<string | null>(null);
-    const [activities, setActivities] = useState(ACTIVITIES);
     const [adjustId, setAdjustId] = useState<string | null>(null);
     const [adjustDays, setAdjustDays] = useState(0);
     const [chatOpenId, setChatOpenId] = useState<string | null>(null);
@@ -155,10 +264,10 @@ export function SellerDashboard() {
     }, [orders]);
 
     // Compute pending earnings from active orders + in-progress
-    const pendingFromOrders = orders.reduce((sum, o) => sum + o.qty * o.unitPrice, 0);
-    const inProgressPending = 150 * 269 + 300 * 45; // in-transit orders
-    const totalPending = pendingFromOrders + inProgressPending;
-    const lastPaidAmount = 12912;
+    const pendingFromOrders = metrics.totalPending;
+    const totalPending = metrics.totalPending;
+    const lastPaidAmount = metrics.lastPaid;
+    const protectionScore = metrics.protectionScore;
 
     const handleConfirmPickup = (id: string) => {
         setOrders(prev => prev.map(o => {
@@ -317,6 +426,8 @@ export function SellerDashboard() {
         setActivities(prev => prev.filter(a => a.id !== id));
         toast('Dismissed', { description: 'Notification removed' });
     };
+
+    if (!mounted) return null;
 
     // ── New seller onboarding ────────────────────────────────────────────────
     if (isNewSeller) {

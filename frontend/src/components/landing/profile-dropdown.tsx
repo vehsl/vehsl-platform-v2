@@ -120,14 +120,40 @@ function Divider() {
   );
 }
 
-// ─── Activity pill ────────────────────────────────────────────────────────
+function apiBase() {
+  const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+  const normalize = (u: string) => u.replace(/\/$/, "");
+  if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
+  const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
+  return normalize(`${window.location.protocol}//${host}:8000`);
+}
 
-function ActivityLine() {
-  const items = [
-    { label: "Sweater", detail: "Thu", color: "#34c759" },
-    { label: "Priya replied", detail: null, color: "#0071e3" },
-    { label: "$24 saved", detail: null, color: "#ff9500" },
-  ];
+function readAuthTokens() {
+  try {
+    return {
+      access: window.localStorage.getItem("vehsl.access") || "",
+      refresh: window.localStorage.getItem("vehsl.refresh") || "",
+      user: (() => {
+        const raw = window.localStorage.getItem("vehsl.user");
+        return raw ? JSON.parse(raw) : null;
+      })(),
+    };
+  } catch {
+    return { access: "", refresh: "", user: null };
+  }
+}
+
+function greetingText() {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  if (h < 21) return "Good evening";
+  return "Good night";
+}
+
+type ActivityItem = { label: string; detail?: string | null; color: string };
+
+function ActivityLine({ items }: { items: ActivityItem[] }) {
 
   return (
     <div className="flex flex-wrap gap-1.5 justify-center mt-2">
@@ -159,6 +185,8 @@ export function ProfileDropdown() {
   const [open, setOpen] = useState(false);
   const [sellerOpen, setSellerOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const [menuSummary, setMenuSummary] = useState<any | null>(null);
+  const [authUser, setAuthUser] = useState<any | null>(null);
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -173,6 +201,74 @@ export function ProfileDropdown() {
   const handleBecomeSeller = () => {
     setOpen(false);
     setTimeout(() => setSellerOpen(true), 140);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const { access } = readAuthTokens();
+    if (!access) return;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase()}/api/v1/me/menu`, {
+          headers: { Authorization: `Bearer ${access}` },
+        });
+        if (res.status === 401) return;
+        const data = await res.json().catch(() => null);
+        if (!res.ok) return;
+        setMenuSummary(data);
+        if (data?.user) {
+          setAuthUser(data.user);
+          try {
+            window.localStorage.setItem("vehsl.user", JSON.stringify(data.user));
+          } catch {}
+        }
+      } catch {}
+    })();
+  }, [open]);
+
+  useEffect(() => {
+    if (authUser) return;
+    const { user } = readAuthTokens();
+    if (user) setAuthUser(user);
+  }, [authUser]);
+
+  const displayName = (() => {
+    const first = (authUser?.first_name || "").toString().trim();
+    const last = (authUser?.last_name || "").toString().trim();
+    const full = `${first} ${last}`.trim();
+    return full || (authUser?.email || authUser?.phone || "Account");
+  })();
+  const initial = ((displayName || "A").trim()[0] || "A").toUpperCase();
+
+  const updates = Array.isArray(menuSummary?.updates) ? menuSummary.updates : [];
+  const activityItems: ActivityItem[] = updates.slice(0, 3).map((u: any) => ({
+    label: (u?.headline || "Update").toString(),
+    detail: (u?.meta || "").toString() || null,
+    color: (u?.tint || "#0071e3").toString(),
+  }));
+
+  const counts = menuSummary?.counts || {};
+  const ordersOnWay = Number(counts.orders_on_the_way || 0);
+  const unreadMessages = Number(counts.unread_messages || 0);
+  const wishlistItems = Number(counts.wishlist_items || 0);
+
+  const handleLogout = async () => {
+    const { access, refresh } = readAuthTokens();
+    if (access) {
+      try {
+        await fetch(`${apiBase()}/api/v1/auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${access}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh }),
+        });
+      } catch {}
+    }
+    try {
+      window.localStorage.removeItem("vehsl.access");
+      window.localStorage.removeItem("vehsl.refresh");
+      window.localStorage.removeItem("vehsl.user");
+    } catch {}
+    window.location.href = "/";
   };
 
   return (
@@ -196,7 +292,7 @@ export function ProfileDropdown() {
             className="absolute inset-0 flex items-center justify-center text-white text-[15px]"
             style={{ fontWeight: 720, fontFamily: "Urbanist, sans-serif" }}
           >
-            N
+            {initial}
           </span>
           <motion.span
             animate={{ scale: open ? 1.15 : 1 }}
@@ -241,9 +337,19 @@ export function ProfileDropdown() {
                         letterSpacing: "-0.2px",
                       }}
                     >
-                      Good morning, Noah
+                      {greetingText()}, {displayName}
                     </p>
-                    <ActivityLine />
+                    <ActivityLine
+                      items={
+                        activityItems.length
+                          ? activityItems
+                          : [
+                              { label: "Updates", detail: null, color: "#0071e3" },
+                              { label: "Messages", detail: null, color: "#34c759" },
+                              { label: "Orders", detail: null, color: "#ff9500" },
+                            ]
+                      }
+                    />
                     <button
                       onClick={() => setOpen(false)}
                       className="mt-2.5 text-[11px] text-[#0071e3] flex items-center gap-0.5 mx-auto cursor-pointer hover:opacity-75 transition-opacity"
@@ -256,9 +362,9 @@ export function ProfileDropdown() {
 
                   {/* Nav items */}
                   <div className="space-y-0.5 py-1">
-                    <MenuItem icon={ShoppingBag} label="My orders" sub="2 on the way" />
-                    <MenuItem icon={MessageCircle} label="Messages" sub="1 unread" />
-                    <MenuItem icon={Heart} label="Wishlist" sub="8 items" />
+                    <MenuItem icon={ShoppingBag} label="My orders" sub={`${ordersOnWay} on the way`} onClick={() => { window.location.href = "/orders"; }} />
+                    <MenuItem icon={MessageCircle} label="Messages" sub={`${unreadMessages} unread`} onClick={() => { window.location.href = "/messages"; }} />
+                    <MenuItem icon={Heart} label="Wishlist" sub={`${wishlistItems} items`} onClick={() => { window.location.href = "/wishlist"; }} />
                     <MenuItem
                       icon={Store}
                       label="Become a seller"
@@ -270,13 +376,13 @@ export function ProfileDropdown() {
                   <Divider />
 
                   <div className="space-y-0.5">
-                    <MenuItem icon={Settings} label="Settings" />
-                    <MenuItem icon={HelpCircle} label="Help & Support" />
+                    <MenuItem icon={Settings} label="Settings" onClick={() => { window.location.href = "/orders?settings=1"; }} />
+                    <MenuItem icon={HelpCircle} label="Help & Support" onClick={() => { window.location.href = "/orders?help=1"; }} />
                   </div>
 
                   <Divider />
 
-                  <MenuItem icon={LogOut} label="Sign out" danger />
+                  <MenuItem icon={LogOut} label="Sign out" danger onClick={handleLogout} />
                 </div>
               </div>
             </motion.div>

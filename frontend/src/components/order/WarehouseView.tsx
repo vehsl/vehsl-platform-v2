@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { authedFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
 import {
@@ -21,6 +22,106 @@ import { useRole } from '@/components/order/RoleContext';
 // ─── Shared easing ───
 const EASE = [0.25, 0.46, 0.45, 0.94] as const;
 const EASE_OUT = [0.16, 1, 0.3, 1] as const;
+
+function asString(v: unknown, fallback = ''): string {
+    if (v === null || v === undefined) return fallback;
+    const s = String(v);
+    return s === 'undefined' || s === 'null' ? fallback : s;
+}
+
+function asNumber(v: unknown, fallback = 0): number {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function isWarehouseFeature(v: unknown): v is Warehouse['features'][number] {
+    return v === 'climate' || v === 'security' || v === 'covered';
+}
+
+function mapWarehouse(raw: any): Warehouse | null {
+    const id = asString(raw?.id);
+    if (!id) return null;
+
+    const featuresRaw: unknown[] = Array.isArray(raw?.features) ? raw.features : [];
+    const features = featuresRaw.filter(isWarehouseFeature);
+
+    const hoursRaw = raw?.hours;
+    let hours: Warehouse['hours'] | undefined;
+    if (hoursRaw === '24/7') {
+        hours = '24/7';
+    } else if (hoursRaw && typeof hoursRaw === 'object') {
+        const open = asString((hoursRaw as any).open);
+        const close = asString((hoursRaw as any).close);
+        const days = asString((hoursRaw as any).days);
+        if (open && close && days) hours = { open, close, days };
+    }
+
+    const storedSince = asString(raw?.storedSince ?? raw?.stored_since, '');
+
+    return {
+        id,
+        name: asString(raw?.name),
+        address: asString(raw?.address),
+        distance: asString(raw?.distance),
+        pricePerWeek: asNumber(raw?.pricePerWeek ?? raw?.price_per_week, 0),
+        rating: asString(raw?.rating),
+        features: features.length ? features : ['climate', 'security', 'covered'],
+        storedSince: storedSince || undefined,
+        hours,
+        managerName: asString(raw?.managerName ?? raw?.manager_name),
+        managerPhone: asString(raw?.managerPhone ?? raw?.manager_phone),
+    };
+}
+
+function mapInventoryItem(raw: any, fallbackWarehouseId: string): InventoryItem | null {
+    const id = asString(raw?.id);
+    if (!id) return null;
+    return {
+        id,
+        productName: asString(raw?.productName ?? raw?.product_name),
+        sku: asString(raw?.sku),
+        image: asString(raw?.image),
+        totalBoxes: asNumber(raw?.totalBoxes ?? raw?.total_boxes, 0),
+        releasedBoxes: asNumber(raw?.releasedBoxes ?? raw?.released_boxes, 0),
+        palletsCount: asNumber(raw?.palletsCount ?? raw?.pallets_count, 0),
+        unitPrice: asNumber(raw?.unitPrice ?? raw?.unit_price, 0),
+        warehouseId: asString(raw?.warehouseId ?? raw?.warehouse_id, fallbackWarehouseId),
+    };
+}
+
+function mapReleaseRequest(raw: any): ReleaseRequest | null {
+    const id = asString(raw?.id);
+    if (!id) return null;
+    return {
+        id,
+        inventoryItemId: asString(raw?.inventoryItemId ?? raw?.inventory_item_id),
+        requesterName: asString(raw?.requesterName ?? raw?.requester_name),
+        idCardNumber: asString(raw?.idCardNumber ?? raw?.id_card_number),
+        vehicleNumber: asString(raw?.vehicleNumber ?? raw?.vehicle_number),
+        boxesRequested: asNumber(raw?.boxesRequested ?? raw?.boxes_requested, 0),
+        paymentAmount: asNumber(raw?.paymentAmount ?? raw?.payment_amount, 0),
+        requestedDate: asString(raw?.requestedDate ?? raw?.requested_date),
+        note: asString(raw?.note, '') || undefined,
+    };
+}
+
+function mapReleaseRecord(raw: any): ReleaseRecord | null {
+    const id = asString(raw?.id);
+    if (!id) return null;
+    const statusRaw = asString(raw?.status).toLowerCase();
+    const status: ReleaseRecord['status'] = statusRaw === 'pending' ? 'pending' : 'completed';
+    return {
+        id,
+        inventoryItemId: asString(raw?.inventoryItemId ?? raw?.inventory_item_id),
+        recipientName: asString(raw?.recipientName ?? raw?.recipient_name),
+        idCardNumber: asString(raw?.idCardNumber ?? raw?.id_card_number),
+        vehicleNumber: asString(raw?.vehicleNumber ?? raw?.vehicle_number),
+        boxesReleased: asNumber(raw?.boxesReleased ?? raw?.boxes_released, 0),
+        paymentAmount: asNumber(raw?.paymentAmount ?? raw?.payment_amount, 0),
+        date: asString(raw?.date),
+        status,
+    };
+}
 
 // ─── Product color gradient (pink → teal → green) ───
 // Shared across inventory, composition bar, request cards, timeline
@@ -1556,13 +1657,80 @@ function ReleaseSheet({ item, onClose, onSubmit, prefill, productColor }: {
 type ViewState = 'select' | 'inventory';
 
 export function WarehouseView() {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => { setMounted(true); }, []);
+
     const { isSeller } = useRole();
     const [view, setView] = useState<ViewState>('inventory');
+    const [warehouses, setWarehouses] = useState<Warehouse[]>(mockWarehouses);
     const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse>(mockWarehouses[1]);
     const [searchQuery, setSearchQuery] = useState('');
     const [inventory, setInventory] = useState<InventoryItem[]>(mockInventory);
     const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>(mockReleaseRequests);
     const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>(mockReleaseRecords);
+    const [loading, setLoading] = useState(true);
+
+    const fetchWarehouseData = useCallback(async () => {
+        try {
+            setLoading(true);
+            const [wRes, rRes, recRes] = await Promise.all([
+                authedFetch('/api/v1/warehouse/dashboard/list_warehouses/'),
+                authedFetch('/api/v1/warehouse/dashboard/release_requests/'),
+                authedFetch('/api/v1/warehouse/dashboard/release_records/'),
+            ]);
+
+            if (wRes.ok) {
+                const raw = await wRes.json();
+                const mapped = Array.isArray(raw) ? raw.map(mapWarehouse).filter((x): x is Warehouse => !!x) : [];
+                if (mapped.length > 0) {
+                    setWarehouses(mapped);
+                    setSelectedWarehouse((prev) => mapped.find((w) => w.id === prev.id) || mapped[1] || mapped[0]);
+                }
+            }
+
+            if (rRes.ok) {
+                const raw = await rRes.json();
+                const mapped = Array.isArray(raw) ? raw.map(mapReleaseRequest).filter((x): x is ReleaseRequest => !!x) : [];
+                setReleaseRequests(mapped);
+            }
+
+            if (recRes.ok) {
+                const raw = await recRes.json();
+                const mapped = Array.isArray(raw) ? raw.map(mapReleaseRecord).filter((x): x is ReleaseRecord => !!x) : [];
+                setReleaseRecords(mapped);
+            }
+        } catch (err) {
+            console.error('Warehouse fetch error:', err);
+        } finally {
+            setLoading(false);
+        }
+    }, [authedFetch]);
+
+    const fetchInventory = useCallback(async (wId: string) => {
+        try {
+            const res = await authedFetch(`/api/v1/warehouse/dashboard/inventory/?warehouse_id=${wId}`);
+            if (res.ok) {
+                const raw = await res.json();
+                const mapped = Array.isArray(raw)
+                    ? raw.map((i: any) => mapInventoryItem(i, wId)).filter((x): x is InventoryItem => !!x)
+                    : [];
+                setInventory(mapped);
+            }
+        } catch (err) {
+            console.error('Inventory fetch error:', err);
+        }
+    }, [authedFetch]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        fetchWarehouseData();
+    }, [fetchWarehouseData, mounted]);
+
+    useEffect(() => {
+        if (!mounted || !selectedWarehouse?.id) return;
+        fetchInventory(selectedWarehouse.id);
+    }, [selectedWarehouse?.id, fetchInventory, mounted]);
+
     const [releasingItem, setReleasingItem] = useState<InventoryItem | null>(null);
     const [prefillData, setPrefillData] = useState<{ name: string; idCard: string; vehicle: string; boxes: number } | undefined>();
     const [showAllFacilities, setShowAllFacilities] = useState(false);
@@ -1573,7 +1741,7 @@ export function WarehouseView() {
 
     // Warehouses that have user's stock
     const warehouseIdsWithStock = new Set(inventory.map(i => i.warehouseId));
-    const warehousesWithStock = mockWarehouses.filter(w => warehouseIdsWithStock.has(w.id));
+    const warehousesWithStock = warehouses.filter(w => warehouseIdsWithStock.has(w.id));
 
     const filteredWarehouses = warehousesWithStock.filter(w =>
         w.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -1611,6 +1779,8 @@ export function WarehouseView() {
         });
         return map;
     }, [warehouseInventory]);
+
+    if (!mounted) return null;
 
     // ─── Rent ───
     const storedSince = selectedWarehouse.storedSince;

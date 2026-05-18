@@ -39,49 +39,34 @@ interface ChatMessage {
     time: string;
 }
 
-interface Conversation {
-    id: string;
-    title: string;
-    agent: string;
-    preview: string;
-    status: string;
-    statusColor: string;
-    date: string;
-    messages: ChatMessage[];
+interface ApiThreadListItem {
+    id: number;
+    type: string;
+    participants: number[];
+    created_at: string;
+    updated_at: string;
+    unread_count?: number;
+    last_message?: {
+        id: number;
+        sender_id: number;
+        sender_name: string;
+        content: string;
+        sent_at: string;
+    } | null;
+    other_participants?: Array<{ id: number; name: string; is_manager?: boolean }> | null;
 }
 
-const SELLER_CONVERSATIONS: Conversation[] = [
-    {
-        id: 'sconv-1',
-        title: 'Order #4KNW280R QC inspection',
-        agent: 'Marcus',
-        preview: 'The inspector has been assigned and will arrive at your facility tomorrow morning at 9 AM.',
-        status: 'In progress',
-        statusColor: '#0071e3',
-        date: '16 Mar 2026',
-        messages: [
-            { id: 'm1', from: 'user', text: 'Hi, when will the inspector come for order #4KNW280R? The batch is ready.', time: '10:15 AM' },
-            { id: 'm2', from: 'agent', text: 'Great to hear the batch is ready! Let me check the inspection schedule for you.', time: '10:18 AM' },
-            { id: 'm3', from: 'user', text: 'It\'s 24 units of Wireless NC Headphones. All packaged and labeled.', time: '10:22 AM' },
-            { id: 'm4', from: 'agent', text: 'The inspector has been assigned and will arrive at your facility tomorrow morning at 9 AM. Please have the units accessible for sampling. They\'ll check 5 random units.', time: '10:28 AM' },
-        ],
-    },
-    {
-        id: 'sconv-2',
-        title: 'Payout delay — Order #7RKT441P',
-        agent: 'Priya',
-        preview: 'The $12,912 payout has been processed and should appear in your HSBC account within 2 business days.',
-        status: 'Resolved',
-        statusColor: '#34c759',
-        date: '14 Mar 2026',
-        messages: [
-            { id: 'm1', from: 'user', text: 'My payout for order #7RKT441P hasn\'t arrived yet. It\'s been 5 days.', time: '2:30 PM' },
-            { id: 'm2', from: 'agent', text: 'I\'m looking into this right now. I can see the order was delivered and confirmed on March 9th.', time: '2:34 PM' },
-            { id: 'm3', from: 'user', text: 'Yes, the buyer confirmed everything was fine. Amount should be $12,912.', time: '2:40 PM' },
-            { id: 'm4', from: 'agent', text: 'The $12,912 payout has been processed and should appear in your HSBC account within 2 business days. There was a brief hold due to the amount threshold — this is normal for first-time large payouts.', time: '2:48 PM' },
-        ],
-    },
-];
+interface ApiMessage {
+    id: number;
+    thread: number;
+    sender_id: number;
+    sender_name: string;
+    content: string;
+    attachments: any[];
+    sent_at: string;
+    read_by: number[];
+    deleted_at: string | null;
+}
 
 const SELLER_TOPICS: Topic[] = [
     { icon: Rocket, title: 'Getting started as seller', articles: [
@@ -146,12 +131,27 @@ const SELLER_QUICK_SUGGESTIONS = [
 /* ═══════════════════════════════════════════════
    CHAT VIEW (same structure as buyer)
    ═══════════════════════════════════════════════ */
-function ChatView({ onBack, existingMessages, title }: { onBack: () => void; existingMessages?: ChatMessage[]; title?: string }) {
+function ChatView({
+    onBack,
+    title,
+    existingMessages,
+    authedFetch,
+    threadId,
+    currentUserId,
+}: {
+    onBack: () => void;
+    title?: string;
+    existingMessages?: ChatMessage[];
+    authedFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    threadId?: number;
+    currentUserId?: number;
+}) {
     const [messages, setMessages] = useState<ChatMessage[]>(existingMessages || [
         { id: 'bot-1', from: 'agent', text: 'Hi! I\'m your seller support specialist. How can I help you today?', time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) },
     ]);
     const [input, setInput] = useState('');
     const [typing, setTyping] = useState(false);
+    const [loading, setLoading] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -159,28 +159,87 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     }, [messages, typing]);
 
+    useEffect(() => {
+        if (!authedFetch || !threadId) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                setLoading(true);
+                const res = await authedFetch(`/api/v1/chat/threads/${threadId}/messages/?limit=120`);
+                const data = await res.json().catch(() => null);
+                if (!res.ok) return;
+                const apiMsgs: ApiMessage[] = Array.isArray(data) ? data : [];
+                const mapped: ChatMessage[] = apiMsgs
+                    .filter(m => !m.deleted_at && (m.content || '').trim())
+                    .map(m => ({
+                        id: `m-${m.id}`,
+                        from: currentUserId && m.sender_id === currentUserId ? 'user' : 'agent',
+                        text: (m.content || '').toString(),
+                        time: new Date(m.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+                    }));
+                if (!cancelled) setMessages(prev => mapped.length ? mapped : prev);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [authedFetch, threadId, currentUserId]);
+
     const sendMessage = useCallback((text: string) => {
         if (!text.trim()) return;
+        const trimmed = text.trim();
         const now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-        setMessages(prev => [...prev, { id: `u-${Date.now()}`, from: 'user', text: text.trim(), time: now }]);
+        if (!authedFetch || !threadId) {
+            setMessages(prev => [...prev, { id: `u-${Date.now()}`, from: 'user', text: trimmed, time: now }]);
+            setInput('');
+            setTyping(true);
+            setTimeout(() => {
+                setTyping(false);
+                const replies = [
+                    'I\'m pulling up your seller account details now. One moment.',
+                    'That\'s a great question. Let me check with our fulfillment team.',
+                    'I can see the issue. Let me work on getting this resolved for you right away.',
+                    'I\'ve escalated this to our seller operations team. You\'ll hear back within 4 hours.',
+                ];
+                setMessages(prev => [...prev, {
+                    id: `a-${Date.now()}`,
+                    from: 'agent',
+                    text: replies[Math.floor(Math.random() * replies.length)],
+                    time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+                }]);
+            }, 1200 + Math.random() * 800);
+            return;
+        }
+        const optimisticId = `u-${Date.now()}`;
+        setMessages(prev => [...prev, { id: optimisticId, from: 'user', text: trimmed, time: now }]);
         setInput('');
-        setTyping(true);
-        setTimeout(() => {
-            setTyping(false);
-            const replies = [
-                'I\'m pulling up your seller account details now. One moment.',
-                'That\'s a great question. Let me check with our fulfillment team.',
-                'I can see the issue. Let me work on getting this resolved for you right away.',
-                'I\'ve escalated this to our seller operations team. You\'ll hear back within 4 hours.',
-            ];
-            setMessages(prev => [...prev, {
-                id: `a-${Date.now()}`,
-                from: 'agent',
-                text: replies[Math.floor(Math.random() * replies.length)],
-                time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-            }]);
-        }, 1200 + Math.random() * 800);
-    }, []);
+        void (async () => {
+            try {
+                setTyping(true);
+                const res = await authedFetch(`/api/v1/chat/threads/${threadId}/messages/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: trimmed }),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok) {
+                    const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to send message.';
+                    toast.error(msg);
+                    return;
+                }
+                const created = data as ApiMessage;
+                const mapped: ChatMessage = {
+                    id: `m-${created.id || Date.now()}`,
+                    from: currentUserId && created.sender_id === currentUserId ? 'user' : 'agent',
+                    text: (created.content || '').toString(),
+                    time: created.sent_at ? new Date(created.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : now,
+                };
+                setMessages(prev => prev.map(m => m.id === optimisticId ? mapped : m));
+            } finally {
+                setTyping(false);
+            }
+        })();
+    }, [authedFetch, threadId, currentUserId]);
 
     return (
         <div className="flex flex-col h-full" style={{ minHeight: 420 }}>
@@ -202,6 +261,13 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
 
             {/* Messages */}
             <div ref={scrollRef} className="flex-1 overflow-y-auto py-4 space-y-3" style={{ scrollbarWidth: 'none' }}>
+                {loading && (
+                    <div className="flex justify-center">
+                        <span className="text-[11px] px-3 py-1 rounded-full" style={{ backgroundColor: 'rgba(0,0,0,0.03)', color: B[600] }}>
+                            Loading conversation…
+                        </span>
+                    </div>
+                )}
                 {messages.map(msg => (
                     <motion.div key={msg.id}
                         initial={{ opacity: 0, y: 8 }}
@@ -282,13 +348,25 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
 /* ═══════════════════════════════════════════════
    SELLER HELP TAB
    ═══════════════════════════════════════════════ */
-export function SellerHelpTab() {
+export function SellerHelpTab({
+    openSupportChat,
+    authedFetch,
+    me,
+}: {
+    openSupportChat?: () => void | Promise<void>;
+    authedFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    me?: any;
+}) {
     const [view, setView] = useState<'home' | 'topic' | 'article' | 'chat' | 'conversations' | 'conversation'>('home');
     const [activeTopic, setActiveTopic] = useState<Topic | null>(null);
     const [activeArticle, setActiveArticle] = useState<Article | null>(null);
-    const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+    const [activeThread, setActiveThread] = useState<ApiThreadListItem | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [helpfulness, setHelpfulness] = useState<Record<string, 'up' | 'down' | null>>({});
+    const [threads, setThreads] = useState<ApiThreadListItem[]>([]);
+    const [threadsLoading, setThreadsLoading] = useState(false);
+    const [threadsError, setThreadsError] = useState<string>('');
+    const currentUserId = Number(me?.id || 0) || undefined;
 
     const filteredTopics = searchQuery.trim()
         ? SELLER_TOPICS.filter(t =>
@@ -304,6 +382,58 @@ export function SellerHelpTab() {
         else if (view === 'conversations') setView('home');
         else if (view === 'chat') setView('home');
     };
+
+    const fetchThreads = useCallback(async () => {
+        if (!authedFetch) return;
+        try {
+            setThreadsError('');
+            setThreadsLoading(true);
+            const res = await authedFetch('/api/v1/chat/threads/');
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to load conversations.';
+                setThreadsError(msg);
+                setThreads([]);
+                return;
+            }
+            const items: ApiThreadListItem[] = Array.isArray(data) ? data : [];
+            const filtered = items.filter(t => ((t.type || '').toString().toLowerCase().includes('vehsl')));
+            setThreads(filtered);
+        } catch (e: any) {
+            setThreadsError((e?.message || '').toString().trim() || 'Failed to load conversations.');
+            setThreads([]);
+        } finally {
+            setThreadsLoading(false);
+        }
+    }, [authedFetch]);
+
+    const openSupport = useCallback(async () => {
+        if (!authedFetch) {
+            if (openSupportChat) { await openSupportChat(); return; }
+            try { window.location.href = '/messages'; } catch { }
+            return;
+        }
+        try {
+            const res = await authedFetch('/api/v1/chat/threads/support/', { method: 'POST' });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data?.detail || data?.error || '').toString().trim() || 'No support agent available.';
+                toast.error(msg);
+                return;
+            }
+            const thread = data as ApiThreadListItem;
+            setActiveThread(thread);
+            setView('conversation');
+        } catch (e: any) {
+            toast.error((e?.message || '').toString().trim() || 'Failed to open support chat.');
+        }
+    }, [authedFetch, openSupportChat]);
+
+    useEffect(() => {
+        if (authedFetch) {
+            void fetchThreads();
+        }
+    }, [authedFetch, fetchThreads]);
 
     return (
         <div>
@@ -345,13 +475,13 @@ export function SellerHelpTab() {
 
                         {/* Quick actions */}
                         <div className="flex gap-2.5 mb-6">
-                            <button onClick={() => setView('chat')}
+                            <button onClick={() => { void openSupport(); }}
                                 className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-[16px] text-[13px] font-medium border-none cursor-pointer transition-all duration-150 hover:opacity-85"
                                 style={{ backgroundColor: C.accent, color: 'white' }}>
                                 <MessageSquare size={15} strokeWidth={1.8} />
                                 Chat with support
                             </button>
-                            <button onClick={() => setView('conversations')}
+                            <button onClick={() => { void fetchThreads(); setView('conversations'); }}
                                 className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-[16px] text-[13px] font-medium border-none cursor-pointer transition-colors duration-150 hover:bg-black/[0.06]"
                                 style={{ backgroundColor: 'rgba(0,0,0,0.03)', color: C.text }}>
                                 <Phone size={15} strokeWidth={1.8} />
@@ -516,24 +646,47 @@ export function SellerHelpTab() {
                             <p className="text-[18px] font-semibold tracking-[-0.01em]" style={{ color: C.text }}>Past conversations</p>
                         </div>
                         <div className="space-y-2">
-                            {SELLER_CONVERSATIONS.map((conv, i) => (
-                                <motion.div key={conv.id}
+                            {threadsLoading && (
+                                <div className="p-4 rounded-[18px]" style={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
+                                    <p className="text-[12px]" style={{ color: B[600] }}>Loading conversations…</p>
+                                </div>
+                            )}
+                            {!!threadsError && !threadsLoading && (
+                                <div className="p-4 rounded-[18px]" style={{ backgroundColor: 'rgba(255,59,48,0.06)' }}>
+                                    <p className="text-[12px]" style={{ color: C.danger }}>{threadsError}</p>
+                                </div>
+                            )}
+                            {!threadsLoading && !threadsError && threads.length === 0 && (
+                                <div className="p-4 rounded-[18px]" style={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
+                                    <p className="text-[12px]" style={{ color: B[600] }}>No conversations yet.</p>
+                                </div>
+                            )}
+                            {threads.map((t, i) => (
+                                <motion.div key={t.id}
                                     initial={{ opacity: 0, y: 6 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: i * 0.05, duration: 0.3 }}
                                     role="button" tabIndex={0}
-                                    onClick={() => { setActiveConversation(conv); setView('conversation'); }}
+                                    onClick={() => { setActiveThread(t); setView('conversation'); }}
                                     className="p-4 rounded-[18px] transition-all duration-150 hover:bg-black/[0.03] cursor-pointer outline-none"
                                     style={{ backgroundColor: 'rgba(0,0,0,0.01)' }}>
                                     <div className="flex items-center justify-between mb-1.5">
-                                        <p className="text-[14px] font-medium" style={{ color: C.text }}>{conv.title}</p>
-                                        <span className="text-[10px] font-semibold px-2 py-[3px] rounded-full flex-shrink-0"
-                                            style={{ backgroundColor: `${conv.statusColor}15`, color: conv.statusColor }}>
-                                            {conv.status}
-                                        </span>
+                                        <p className="text-[14px] font-medium" style={{ color: C.text }}>
+                                            {(t.other_participants && t.other_participants[0]?.name) ? t.other_participants[0].name : (t.type === 'seller_vehsl' ? 'Seller Support' : 'Conversation')}
+                                        </p>
+                                        {!!(t.unread_count || 0) && (
+                                            <span className="text-[10px] font-semibold px-2 py-[3px] rounded-full flex-shrink-0"
+                                                style={{ backgroundColor: 'rgba(0,113,227,0.10)', color: C.accent }}>
+                                                {t.unread_count} new
+                                            </span>
+                                        )}
                                     </div>
-                                    <p className="text-[12px] truncate" style={{ color: B[600] }}>{conv.preview}</p>
-                                    <p className="text-[11px] mt-1.5" style={{ color: B[100] }}>{conv.agent} · {conv.date}</p>
+                                    <p className="text-[12px] truncate" style={{ color: B[600] }}>
+                                        {(t.last_message && t.last_message.content) ? t.last_message.content : 'No messages yet'}
+                                    </p>
+                                    <p className="text-[11px] mt-1.5" style={{ color: B[100] }}>
+                                        {new Date(t.updated_at).toLocaleDateString()}
+                                    </p>
                                 </motion.div>
                             ))}
                         </div>
@@ -541,14 +694,16 @@ export function SellerHelpTab() {
                 )}
 
                 {/* ── SINGLE CONVERSATION ── */}
-                {view === 'conversation' && activeConversation && (
+                {view === 'conversation' && activeThread && (
                     <motion.div key="conversation"
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                         transition={{ duration: 0.2 }}>
                         <ChatView
                             onBack={() => setView('conversations')}
-                            existingMessages={activeConversation.messages}
-                            title={activeConversation.title}
+                            title={(activeThread.other_participants && activeThread.other_participants[0]?.name) ? activeThread.other_participants[0].name : (activeThread.type === 'seller_vehsl' ? 'Seller Support' : 'Conversation')}
+                            threadId={activeThread.id}
+                            authedFetch={authedFetch}
+                            currentUserId={currentUserId}
                         />
                     </motion.div>
                 )}

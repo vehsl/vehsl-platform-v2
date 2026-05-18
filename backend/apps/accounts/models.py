@@ -156,6 +156,10 @@ class KycDocument(models.Model):
         BUSINESS_LICENSE = "business_license", "Business License"
         BUSINESS_REGISTRATION = "business_registration", "Business Registration"
         UTILITY_BILL = "utility_bill", "Utility Bill"
+        ISO_9001 = "iso_9001", "ISO 9001"
+        GMP = "gmp", "GMP Compliance"
+        EXPORT_LICENSE = "export_license", "Export License"
+        PRODUCT_SAFETY = "product_safety", "Product Safety"
 
         # Legacy values (kept for backward compatibility)
         ID_DOC_1 = "id_doc_1", "ID Document 1"
@@ -235,6 +239,19 @@ class SellerProfile(models.Model):
 
     def __str__(self):
         return f"seller_profile:{self.user_id}"
+
+
+class UserSettings(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="settings")
+    display = models.JSONField(default=dict, blank=True)
+    notifications = models.JSONField(default=dict, blank=True)
+    order_settings = models.JSONField(default=dict, blank=True)
+    security = models.JSONField(default=dict, blank=True)
+    business = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"settings:{self.user_id}"
 
 
 class AdminProfile(models.Model):
@@ -367,6 +384,32 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"audit:{self.pk}"
+
+
+class HelpArticle(models.Model):
+    class Category(models.TextChoices):
+        GETTING_STARTED = "getting_started", "Getting started as seller"
+        LISTING_APPROVAL = "listing_approval", "Listing & approval"
+        FULFILLMENT = "fulfillment", "Fulfillment pipeline"
+        PAYOUTS = "payouts", "Payouts & earnings"
+        SHIPPING = "shipping", "Shipping & logistics"
+        DISPUTES = "disputes", "Disputes & protection"
+        ANALYTICS = "analytics", "Analytics & trends"
+        ACCOUNT_SECURITY = "account_security", "Account & security"
+        BUSINESS_TOOLS = "business_tools", "Business tools"
+        PLANS_PRICING = "plans_pricing", "Plans & pricing"
+
+    category = models.CharField(max_length=32, choices=Category.choices)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    body = models.JSONField(default=list, blank=True)  # List of strings
+    steps = models.JSONField(default=list, blank=True)  # List of strings
+    tip = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.category}: {self.title}"
 
 
 class ChatThread(models.Model):

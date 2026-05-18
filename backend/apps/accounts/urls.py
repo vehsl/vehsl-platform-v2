@@ -8,9 +8,11 @@ from .views import (
     AdminUserViewSet,
     AdminVerificationUserViewSet,
     BuyerProfileMeView,
+    ChatMessageViewSet,
     ChatThreadViewSet,
     KycDocumentsMeView,
     KycRequirementsView,
+    HelpArticleViewSet,
     LoginView,
     LogoutView,
     AdminProfileMeView,
@@ -18,11 +20,21 @@ from .views import (
     AdminUiNotificationsMarkReadView,
     AdminUiNotificationsView,
     MeView,
+    MeMenuView,
+    MeSwitchAccountTypeView,
     NotificationViewSet,
     RefreshView,
     RegisterView,
     SellerProfileMeView,
+    SellerDashboardViewSet,
+    WarehouseDashboardViewSet,
+    UserSettingsMeView,
     SubscriptionViewSet,
+    RecoveryCodesMeView,
+    TotpSetupMeView,
+    TotpEnableMeView,
+    TotpDisableMeView,
+    DeactivateMeView,
 )
 
 router = DefaultRouter()
@@ -30,7 +42,11 @@ router.register(r"admin/users", AdminUserViewSet, basename="admin-user")
 router.register(r"admin/verification/users", AdminVerificationUserViewSet, basename="admin-verification-user")
 router.register(r"admin/verification/kyc-documents", AdminKycDocumentViewSet, basename="admin-kyc-document")
 router.register(r"chat/threads", ChatThreadViewSet, basename="chat-thread")
+router.register(r"chat/messages", ChatMessageViewSet, basename="chat-message")
+router.register(r"help/articles", HelpArticleViewSet, basename="help-article")
 router.register(r"notifications", NotificationViewSet, basename="notification")
+router.register(r"seller/dashboard", SellerDashboardViewSet, basename="seller-dashboard")
+router.register(r"warehouse/dashboard", WarehouseDashboardViewSet, basename="warehouse-dashboard")
 router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")
 
 urlpatterns = [
@@ -39,11 +55,19 @@ urlpatterns = [
     path("auth/logout", LogoutView.as_view()),
     path("auth/refresh", RefreshView.as_view()),
     path("auth/me", MeView.as_view()),
+    path("auth/deactivate", DeactivateMeView.as_view()),
+    path("me/menu", MeMenuView.as_view()),
+    path("me/switch-account-type", MeSwitchAccountTypeView.as_view()),
     path("kyc/requirements", KycRequirementsView.as_view()),
     path("kyc/documents", KycDocumentsMeView.as_view()),
+    path("security/recovery-codes", RecoveryCodesMeView.as_view()),
+    path("security/totp/setup", TotpSetupMeView.as_view()),
+    path("security/totp/enable", TotpEnableMeView.as_view()),
+    path("security/totp/disable", TotpDisableMeView.as_view()),
     path("profiles/admin/me", AdminProfileMeView.as_view()),
     path("profiles/buyer/me", BuyerProfileMeView.as_view()),
     path("profiles/seller/me", SellerProfileMeView.as_view()),
+    path("settings/me", UserSettingsMeView.as_view()),
     path("admin/overview", AdminPlatformOverviewView.as_view()),
     path("admin/settings", AdminPlatformSettingsView.as_view()),
     path("admin/ui/notifications", AdminUiNotificationsView.as_view()),

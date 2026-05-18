@@ -16,20 +16,39 @@ import { SectionTitle, Sep, Toggle, SettingRow } from './shared';
 /* ═══════════════════════════════════════════════
    SELLER SECURITY TAB
    ═══════════════════════════════════════════════ */
-export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPrivacy: any }) {
-    const [smsEnabled, setSmsEnabled] = useState(true);
-    const [authAppEnabled, setAuthAppEnabled] = useState(false);
-    const [recoveryGenerated, setRecoveryGenerated] = useState(false);
+export function SellerSecurityTab({
+    privacy,
+    setPrivacy,
+    generateRecoveryCodes,
+    setupTotp,
+    enableTotp,
+    disableTotp,
+    deactivateAccount,
+}: {
+    privacy: any;
+    setPrivacy: any;
+    generateRecoveryCodes?: () => Promise<string[]>;
+    setupTotp?: () => Promise<{ secret: string; otpauth_url: string }>;
+    enableTotp?: (code: string) => Promise<boolean>;
+    disableTotp?: (payload: { code?: string; recovery_code?: string }) => Promise<boolean>;
+    deactivateAccount?: () => Promise<boolean>;
+}) {
+    const smsEnabled = privacy?.smsEnabled ?? true;
+    const authAppEnabled = privacy?.authAppEnabled ?? false;
+    const recoveryGenerated = privacy?.recoveryGenerated ?? false;
     const [showCodes, setShowCodes] = useState(false);
-    const [passkeys, setPasskeys] = useState([
-        { id: '1', name: 'MacBook Air', deviceType: 'laptop' as const, addedDate: 'Dec 2025' },
-        { id: '2', name: 'iPhone 15', deviceType: 'phone' as const, addedDate: 'Jan 2026' },
-    ]);
+    const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+    const passkeys = Array.isArray(privacy?.passkeys)
+        ? privacy.passkeys
+        : [
+            { id: '1', name: 'MacBook Air', deviceType: 'laptop' as const, addedDate: 'Dec 2025' },
+            { id: '2', name: 'iPhone 15', deviceType: 'phone' as const, addedDate: 'Jan 2026' },
+        ];
 
     /* ── Seller-specific verification ── */
-    const [payoutPinEnabled, setPayoutPinEnabled] = useState(true);
-    const [listingLockEnabled, setListingLockEnabled] = useState(true);
-    const [cancelVerifyEnabled, setCancelVerifyEnabled] = useState(true);
+    const payoutPinEnabled = privacy?.payoutPinEnabled ?? true;
+    const listingLockEnabled = privacy?.listingLockEnabled ?? true;
+    const cancelVerifyEnabled = privacy?.cancelVerifyEnabled ?? true;
     const [showPayoutPinSetup, setShowPayoutPinSetup] = useState(false);
     const [payoutPin, setPayoutPin] = useState(['', '', '', '']);
     const payoutPinRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -39,10 +58,24 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
 
     /* ── Trusted devices ── */
     const [showDevices, setShowDevices] = useState(false);
-    const [devices] = useState([
-        { id: '1', name: 'MacBook Air', os: 'macOS 15.3', browser: 'Chrome 122', current: true, lastActive: 'Active now' },
-        { id: '2', name: 'iPhone 15', os: 'iOS 18.3', browser: 'Safari 19.3', current: false, lastActive: '2 days ago' },
-    ]);
+    const [deviceId] = useState(() => {
+        try {
+            const k = 'vehsl.device_id';
+            const existing = window.localStorage.getItem(k);
+            if (existing) return existing;
+            const next = `dev_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+            window.localStorage.setItem(k, next);
+            return next;
+        } catch {
+            return `dev_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        }
+    });
+    const trustedDevices = Array.isArray(privacy?.trustedDevices)
+        ? privacy.trustedDevices
+        : [
+            { id: deviceId, name: 'This device', os: 'Current', browser: 'Current', current: true, lastActive: 'Active now' },
+        ];
+    const devices = trustedDevices.map((d: any) => ({ ...d, current: (d?.id || '') === deviceId }));
 
     /* ── Protection score ── */
     const score = (() => {
@@ -67,12 +100,53 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
     const scoreColorAlpha = (a: number) => `hsla(${hueNorm}, ${sat}%, ${lit}%, ${a})`;
 
     const handleToggle2FA = (v: boolean) => {
-        setPrivacy((p: any) => ({ ...p, twoFactor: v }));
         if (v) {
-            toast.success('Two-factor authentication enabled', { description: 'Choose a verification method below.' });
+            void (async () => {
+                if (!setupTotp || !enableTotp) {
+                    toast.error('Two-factor setup not available');
+                    return;
+                }
+                try {
+                    const setup = await setupTotp();
+                    setPrivacy((p: any) => ({ ...(p || {}), authAppEnabled: true, totp_secret: setup.secret, totp_enabled: false }));
+                    const code = (window.prompt('Enter the 6-digit code from your authenticator app') || '').trim();
+                    if (!code) return;
+                    await enableTotp(code);
+                    setPrivacy((p: any) => ({ ...(p || {}), twoFactor: true, totp_enabled: true }));
+                    toast.success('Two-factor authentication enabled');
+                } catch (err: any) {
+                    const msg = (err?.message || '').toString().trim() || 'Failed to enable two-factor authentication.';
+                    toast.error('2FA setup failed', { description: msg });
+                    setPrivacy((p: any) => ({ ...(p || {}), twoFactor: false, totp_enabled: false }));
+                }
+            })();
         } else {
-            setAuthAppEnabled(false); setRecoveryGenerated(false); setShowCodes(false);
-            toast('Two-factor authentication disabled');
+            void (async () => {
+                if (!disableTotp) {
+                    setPrivacy((p: any) => ({ ...(p || {}), twoFactor: false, authAppEnabled: false, recoveryGenerated: false, totp_enabled: false }));
+                    setShowCodes(false);
+                    toast('Two-factor authentication disabled');
+                    return;
+                }
+                try {
+                    const otp = (window.prompt('Enter OTP or leave empty to use recovery code') || '').trim();
+                    let payload: any = {};
+                    if (otp) payload.code = otp;
+                    else {
+                        const rc = (window.prompt('Enter a recovery code') || '').trim();
+                        if (!rc) return;
+                        payload.recovery_code = rc;
+                    }
+                    await disableTotp(payload);
+                    setPrivacy((p: any) => ({ ...(p || {}), twoFactor: false, authAppEnabled: false, recoveryGenerated: false, totp_enabled: false, totp_secret: '' }));
+                    setShowCodes(false);
+                    toast('Two-factor authentication disabled');
+                } catch (err: any) {
+                    const msg = (err?.message || '').toString().trim() || 'Failed to disable two-factor authentication.';
+                    toast.error('Could not disable 2FA', { description: msg });
+                    setPrivacy((p: any) => ({ ...(p || {}), twoFactor: true }));
+                }
+            })();
         }
     };
 
@@ -83,8 +157,6 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
         setPayoutPin(next);
         if (value && index < 3) payoutPinRefs.current[index + 1]?.focus();
     };
-
-    const recoveryCodes = ['XKCD-8842', 'MNOP-3917', 'RSTV-6204', 'WXYC-1538', 'BCDF-9071', 'GHKL-4285'];
 
     return (
         <div>
@@ -156,7 +228,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                         <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Required before changing payout accounts or withdrawing</span>
                     </div>
                     <Toggle checked={payoutPinEnabled} onChange={(v) => {
-                        setPayoutPinEnabled(v);
+                        setPrivacy((p: any) => ({ ...p, payoutPinEnabled: v }));
                         if (v) { setShowPayoutPinSetup(true); toast.success('Set your 4-digit payout PIN'); }
                         else { setShowPayoutPinSetup(false); toast('Payout PIN disabled'); }
                     }} />
@@ -196,7 +268,10 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                 <button
                                     onClick={() => {
                                         if (payoutPin.every(d => d)) {
+                                            const pin = payoutPin.join('');
                                             setShowPayoutPinSetup(false);
+                                            setPrivacy((p: any) => ({ ...p, payoutPin: pin, payoutPinSet: true }));
+                                            setPayoutPin(['', '', '', '']);
                                             toast.success('Payout PIN set successfully');
                                         } else {
                                             toast.error('Please enter all 4 digits');
@@ -221,7 +296,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                         <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Require password before editing live product listings</span>
                     </div>
                     <Toggle checked={listingLockEnabled} onChange={(v) => {
-                        setListingLockEnabled(v);
+                        setPrivacy((p: any) => ({ ...p, listingLockEnabled: v }));
                         toast(v ? 'Listing lock enabled' : 'Listing lock disabled');
                     }} />
                 </div>
@@ -236,7 +311,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                         <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Password required to cancel accepted orders</span>
                     </div>
                     <Toggle checked={cancelVerifyEnabled} onChange={(v) => {
-                        setCancelVerifyEnabled(v);
+                        setPrivacy((p: any) => ({ ...p, cancelVerifyEnabled: v }));
                         toast(v ? 'Cancellation verification on' : 'Cancellation verification off');
                     }} />
                 </div>
@@ -264,7 +339,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                 <span className="text-[14px] font-medium block" style={{ color: C.text }}>SMS verification</span>
                                 <span className="text-[12px] block mt-0.5" style={{ color: B[600] }}>Text message codes to +1 •••• 4892</span>
                             </div>
-                            <Toggle checked={smsEnabled} onChange={(v) => { setSmsEnabled(v); toast(v ? 'SMS verification enabled' : 'SMS verification disabled'); }} />
+                            <Toggle checked={smsEnabled} onChange={(v) => { setPrivacy((p: any) => ({ ...p, smsEnabled: v })); toast(v ? 'SMS verification enabled' : 'SMS verification disabled'); }} />
                         </div>
 
                         <Sep />
@@ -277,7 +352,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                     {authAppEnabled ? 'Connected — Google Authenticator' : 'More secure than SMS'}
                                 </span>
                             </div>
-                            <Toggle checked={authAppEnabled} onChange={(v) => { setAuthAppEnabled(v); toast(v ? 'Authenticator app enabled' : 'Authenticator app disabled'); }} />
+                            <Toggle checked={authAppEnabled} onChange={(v) => { setPrivacy((p: any) => ({ ...p, authAppEnabled: v })); toast(v ? 'Authenticator app enabled' : 'Authenticator app disabled'); }} />
                         </div>
 
                         <Sep />
@@ -287,8 +362,25 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                             <div
                                 role="button" tabIndex={0}
                                 onClick={() => {
-                                    if (!recoveryGenerated) { setRecoveryGenerated(true); setShowCodes(true); toast.success('Recovery codes generated'); }
-                                    else { setShowCodes(!showCodes); }
+                                    if (!recoveryGenerated) {
+                                        void (async () => {
+                                            if (!generateRecoveryCodes) {
+                                                toast.error('Recovery codes not available');
+                                                return;
+                                            }
+                                            try {
+                                                const codes = await generateRecoveryCodes();
+                                                setRecoveryCodes(codes);
+                                                setShowCodes(true);
+                                                toast.success('Recovery codes generated');
+                                            } catch (err: any) {
+                                                const msg = (err?.message || '').toString().trim() || 'Failed to generate codes.';
+                                                toast.error('Could not generate codes', { description: msg });
+                                            }
+                                        })();
+                                    } else {
+                                        setShowCodes(!showCodes);
+                                    }
                                 }}
                                 className="w-full flex items-center gap-4 py-4 text-left cursor-pointer transition-opacity duration-150 hover:opacity-100 outline-none"
                                 style={{ opacity: 0.88 }}>
@@ -313,20 +405,50 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                         transition={{ duration: 0.25 }}
                                         className="overflow-hidden">
                                         <div className="rounded-[18px] p-4 mb-3" style={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
-                                            <div className="grid grid-cols-2 gap-2 mb-3">
-                                                {recoveryCodes.map(code => (
-                                                    <div key={code} className="flex items-center justify-center py-2.5 rounded-[10px] text-[13px] font-mono font-medium"
-                                                        style={{ backgroundColor: 'rgba(0,0,0,0.03)', color: C.text }}>
-                                                        {code}
-                                                    </div>
-                                                ))}
-                                            </div>
+                                            {recoveryCodes.length > 0 ? (
+                                                <div className="grid grid-cols-2 gap-2 mb-3">
+                                                    {recoveryCodes.map(code => (
+                                                        <div key={code} className="flex items-center justify-center py-2.5 rounded-[10px] text-[13px] font-mono font-medium"
+                                                            style={{ backgroundColor: 'rgba(0,0,0,0.03)', color: C.text }}>
+                                                            {code}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <div className="mb-3 rounded-[12px] px-3.5 py-3 text-[12px]"
+                                                    style={{ backgroundColor: 'rgba(0,0,0,0.03)', color: B[600] }}>
+                                                    Recovery codes are shown once. Generate a new set to view them again.
+                                                </div>
+                                            )}
                                             <button
-                                                onClick={() => { navigator.clipboard?.writeText(recoveryCodes.join('\n')); toast.success('Codes copied to clipboard'); }}
+                                                onClick={() => {
+                                                    if (!recoveryCodes.length) return;
+                                                    navigator.clipboard?.writeText(recoveryCodes.join('\n'));
+                                                    toast.success('Codes copied to clipboard');
+                                                }}
                                                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-[12px] text-[12px] font-medium border-none cursor-pointer transition-colors duration-150 hover:bg-black/[0.06]"
                                                 style={{ backgroundColor: 'rgba(0,0,0,0.04)', color: B[600] }}>
                                                 <Copy size={13} strokeWidth={1.8} />
                                                 Copy all codes
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    void (async () => {
+                                                        if (!generateRecoveryCodes) return;
+                                                        try {
+                                                            const codes = await generateRecoveryCodes();
+                                                            setRecoveryCodes(codes);
+                                                            toast.success('New recovery codes generated');
+                                                        } catch (err: any) {
+                                                            const msg = (err?.message || '').toString().trim() || 'Failed to generate codes.';
+                                                            toast.error('Could not generate codes', { description: msg });
+                                                        }
+                                                    })();
+                                                }}
+                                                className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 rounded-[12px] text-[12px] font-medium border-none cursor-pointer transition-colors duration-150 hover:bg-black/[0.06]"
+                                                style={{ backgroundColor: 'rgba(0,0,0,0.04)', color: B[600] }}>
+                                                <RotateCcw size={13} strokeWidth={1.8} />
+                                                Generate new codes
                                             </button>
                                         </div>
                                     </motion.div>
@@ -344,7 +466,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
             </p>
 
             <div className="space-y-2.5">
-                {passkeys.map(pk => {
+                {passkeys.map((pk: any) => {
                     const DeviceIcon = pk.deviceType === 'laptop' ? Laptop : Smartphone;
                     return (
                         <div key={pk.id} className="rounded-[18px] p-4 flex items-center gap-3.5" style={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
@@ -353,7 +475,13 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                 <p className="text-[14px] font-medium" style={{ color: C.text }}>{pk.name}</p>
                                 <p className="text-[12px] mt-0.5" style={{ color: B[600] }}>Added {pk.addedDate}</p>
                             </div>
-                            <button onClick={() => { setPasskeys(prev => prev.filter(p => p.id !== pk.id)); toast('Passkey removed'); }}
+                            <button onClick={() => {
+                                setPrivacy((prev: any) => {
+                                    const cur = Array.isArray(prev?.passkeys) ? prev.passkeys : passkeys;
+                                    return { ...(prev || {}), passkeys: cur.filter((p: any) => p.id !== pk.id) };
+                                });
+                                toast('Passkey removed');
+                            }}
                                 className="w-[28px] h-[28px] rounded-full flex items-center justify-center transition-colors duration-150 hover:bg-black/[0.06] border-none cursor-pointer"
                                 style={{ backgroundColor: 'rgba(0,0,0,0.04)' }}>
                                 <Trash2 size={12} strokeWidth={2} style={{ color: C.danger }} />
@@ -362,7 +490,13 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                     );
                 })}
                 <button
-                    onClick={() => { setPasskeys(prev => [...prev, { id: Date.now().toString(), name: 'New passkey', deviceType: 'laptop', addedDate: 'Mar 2026' }]); toast.success('Passkey added'); }}
+                    onClick={() => {
+                        setPrivacy((prev: any) => {
+                            const cur = Array.isArray(prev?.passkeys) ? prev.passkeys : passkeys;
+                            return { ...(prev || {}), passkeys: [...cur, { id: Date.now().toString(), name: 'New passkey', deviceType: 'laptop', addedDate: 'Mar 2026' }] };
+                        });
+                        toast.success('Passkey added');
+                    }}
                     className="w-full flex items-center justify-center gap-2 py-3.5 rounded-[18px] text-[13px] font-medium transition-colors duration-150 hover:bg-black/[0.04] cursor-pointer border-none outline-none"
                     style={{ backgroundColor: 'rgba(0,0,0,0.02)', color: B[600] }}>
                     <Fingerprint size={15} strokeWidth={1.8} />
@@ -397,7 +531,7 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                             transition={{ duration: 0.25 }}
                             className="overflow-hidden">
                             <div className="space-y-2.5 mb-3">
-                                {devices.map(d => (
+                                {devices.map((d: any) => (
                                     <div key={d.id} className="rounded-[18px] p-4 flex items-center gap-3.5" style={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
                                         {d.os.includes('iOS') ? <Smartphone size={18} strokeWidth={1.5} style={{ color: B[600] }} /> : <Laptop size={18} strokeWidth={1.5} style={{ color: B[600] }} />}
                                         <div className="flex-1 min-w-0">
@@ -412,8 +546,40 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                                             </div>
                                             <p className="text-[12px] mt-0.5" style={{ color: B[600] }}>{d.os} · {d.browser} · {d.lastActive}</p>
                                         </div>
+                                        {!d.current && (
+                                            <button
+                                                onClick={() => {
+                                                    setPrivacy((p: any) => {
+                                                        const cur = Array.isArray(p?.trustedDevices) ? p.trustedDevices : devices;
+                                                        return { ...(p || {}), trustedDevices: cur.filter((x: any) => x.id !== d.id) };
+                                                    });
+                                                    toast('Device removed');
+                                                }}
+                                                className="w-[28px] h-[28px] rounded-full flex items-center justify-center transition-colors duration-150 hover:bg-black/[0.06] border-none cursor-pointer"
+                                                style={{ backgroundColor: 'rgba(0,0,0,0.04)' }}>
+                                                <Trash2 size={12} strokeWidth={2} style={{ color: C.danger }} />
+                                            </button>
+                                        )}
                                     </div>
                                 ))}
+                                <button
+                                    onClick={() => {
+                                        const ua = (typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '').toString();
+                                        const name = (typeof navigator !== 'undefined' ? (navigator.platform || '') : '').toString() || 'This device';
+                                        const browser = ua.includes('Chrome') ? 'Chrome' : ua.includes('Safari') ? 'Safari' : ua.includes('Firefox') ? 'Firefox' : 'Browser';
+                                        const os = ua.includes('Mac') ? 'macOS' : ua.includes('Windows') ? 'Windows' : ua.includes('Android') ? 'Android' : ua.includes('iPhone') || ua.includes('iPad') ? 'iOS' : 'OS';
+                                        setPrivacy((p: any) => {
+                                            const cur = Array.isArray(p?.trustedDevices) ? p.trustedDevices : devices;
+                                            const next = cur.filter((x: any) => x.id !== deviceId);
+                                            return { ...(p || {}), trustedDevices: [...next, { id: deviceId, name, os, browser, lastActive: 'Active now' }] };
+                                        });
+                                        toast.success('Device trusted');
+                                    }}
+                                    className="w-full flex items-center justify-center gap-2 py-3.5 rounded-[18px] text-[13px] font-medium transition-colors duration-150 hover:bg-black/[0.04] cursor-pointer border-none outline-none"
+                                    style={{ backgroundColor: 'rgba(0,0,0,0.02)', color: B[600] }}>
+                                    <ShieldCheck size={15} strokeWidth={1.8} />
+                                    Trust this device
+                                </button>
                             </div>
                         </motion.div>
                     )}
@@ -473,7 +639,18 @@ export function SellerSecurityTab({ privacy, setPrivacy }: { privacy: any; setPr
                     icon={ShieldAlert}
                     label="Deactivate seller account"
                     description="Pause or close your store permanently"
-                    onClick={() => toast('Account deactivation', { description: 'Please contact support to deactivate your seller account.' })}
+                    onClick={() => {
+                        if (window.confirm('Are you sure you want to deactivate your seller account? This action is permanent and will sign you out.')) {
+                            void (async () => {
+                                if (!deactivateAccount) return;
+                                try {
+                                    await deactivateAccount();
+                                } catch (err: any) {
+                                    toast.error('Deactivation failed', { description: err?.message || 'Please contact support.' });
+                                }
+                            })();
+                        }
+                    }}
                     danger
                 />
             </div>
