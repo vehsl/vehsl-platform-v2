@@ -53,7 +53,8 @@ function apiBase() {
   const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
   const normalize = (u: string) => u.replace(/\/$/, "");
   if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
-  return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+  const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
+  return normalize(`${window.location.protocol}//${host}:8000`);
 }
 
 function readAccessToken() {

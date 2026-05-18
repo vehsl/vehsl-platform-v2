@@ -13,9 +13,14 @@ from django.utils import timezone
 from datetime import timedelta
 import os
 import uuid
+import secrets
+import base64
+import hashlib
+import hmac
+import time
 
 from django.core.files.storage import default_storage
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import make_password, check_password
 
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
@@ -29,6 +34,7 @@ from .models import (
     BuyerProfile,
     ChatMessage,
     ChatThread,
+    HelpArticle,
     KycDocument,
     Notification,
     SellerProfile,
@@ -47,6 +53,7 @@ from .serializers import (
     ChatMessageSerializer,
     ChatThreadSerializer,
     ChatThreadListSerializer,
+    HelpArticleSerializer,
     KycDocumentSelfSerializer,
     KycDocumentUploadSerializer,
     NotificationSerializer,
@@ -1527,8 +1534,10 @@ class UserSettingsMeView(APIView):
                     sec["payoutPinSet"] = True
                 sec.pop("payoutPin", None)
             if "twoFactor" in sec:
-                user.two_factor_enabled = bool(sec.get("twoFactor"))
-                user.save(update_fields=["two_factor_enabled"])
+                desired = bool(sec.get("twoFactor"))
+                if not desired:
+                    user.two_factor_enabled = False
+                    user.save(update_fields=["two_factor_enabled"])
             obj.security = sec
 
         business = data.get("business")
@@ -1571,6 +1580,142 @@ class UserSettingsMeView(APIView):
         return Response({"user": UserSerializer(user, context={"request": request}).data, "settings": _merged_settings_payload(user, obj)})
 
 
+class DeactivateMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        user.status = User.Status.DELETED
+        user.is_active = False
+        user.save(update_fields=["status", "is_active"])
+        return Response({"detail": "Account deactivated successfully."})
+
+
+class RecoveryCodesMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        sec = dict(obj.security or {})
+
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+        def gen_code() -> str:
+            part1 = "".join(secrets.choice(alphabet) for _ in range(4))
+            part2 = "".join(secrets.choice(alphabet) for _ in range(4))
+            return f"{part1}-{part2}"
+
+        codes = [gen_code() for _ in range(6)]
+        sec["recoveryGenerated"] = True
+        sec["recoveryCodes"] = [make_password(c) for c in codes]
+        sec["recoveryGeneratedAt"] = timezone.now().isoformat()
+        obj.security = sec
+        obj.save(update_fields=["security", "updated_at"])
+        return Response({"codes": codes})
+
+
+class TotpSetupMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        sec = dict(obj.security or {})
+
+        raw = secrets.token_bytes(20)
+        secret = base64.b32encode(raw).decode("utf-8").replace("=", "")
+        sec["totp_secret"] = secret
+        sec["totp_enabled"] = False
+        sec["twoFactor"] = False
+        obj.security = sec
+        obj.save(update_fields=["security", "updated_at"])
+
+        identifier = (request.user.email or request.user.phone or str(request.user.id) or "").strip()
+        issuer = "Vehsl"
+        label = f"{issuer}:{identifier}"
+        otpauth = f"otpauth://totp/{label}?secret={secret}&issuer={issuer}&digits=6&period=30"
+        return Response({"secret": secret, "otpauth_url": otpauth})
+
+
+class TotpEnableMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        code = str(request.data.get("code") or "").strip()
+        if not code:
+            return Response({"detail": "OTP code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        sec = dict(obj.security or {})
+        secret = str(sec.get("totp_secret") or "").strip()
+        if not secret:
+            return Response({"detail": "TOTP not set up."}, status=status.HTTP_400_BAD_REQUEST)
+
+        def _totp(base32_secret: str, for_counter: int, digits: int = 6) -> str:
+            key = base64.b32decode(base32_secret.upper().encode("utf-8") + b"=" * ((8 - len(base32_secret) % 8) % 8))
+            msg = for_counter.to_bytes(8, "big")
+            digest = hmac.new(key, msg, hashlib.sha1).digest()
+            offset = digest[-1] & 0x0F
+            code_int = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+            return str(code_int % (10**digits)).zfill(digits)
+
+        counter = int(time.time() // 30)
+        ok = any(_totp(secret, counter + w) == code for w in (-1, 0, 1))
+        if not ok:
+            return Response({"detail": "Invalid OTP code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sec["totp_enabled"] = True
+        sec["twoFactor"] = True
+        obj.security = sec
+        obj.save(update_fields=["security", "updated_at"])
+        request.user.two_factor_enabled = True
+        request.user.save(update_fields=["two_factor_enabled"])
+        return Response({"enabled": True})
+
+
+class TotpDisableMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        code = str(request.data.get("code") or "").strip()
+        recovery_code = str(request.data.get("recovery_code") or "").strip()
+
+        obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        sec = dict(obj.security or {})
+        secret = str(sec.get("totp_secret") or "").strip()
+
+        ok = False
+        if recovery_code:
+            hashes = sec.get("recoveryCodes") or []
+            if isinstance(hashes, list):
+                ok = any(check_password(recovery_code, h) for h in hashes if isinstance(h, str) and h)
+
+        if not ok and code and secret and bool(sec.get("totp_enabled")):
+            def _totp(base32_secret: str, for_counter: int, digits: int = 6) -> str:
+                key = base64.b32decode(base32_secret.upper().encode("utf-8") + b"=" * ((8 - len(base32_secret) % 8) % 8))
+                msg = for_counter.to_bytes(8, "big")
+                digest = hmac.new(key, msg, hashlib.sha1).digest()
+                offset = digest[-1] & 0x0F
+                code_int = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+                return str(code_int % (10**digits)).zfill(digits)
+
+            counter = int(time.time() // 30)
+            ok = any(_totp(secret, counter + w) == code for w in (-1, 0, 1))
+
+        if not ok:
+            return Response({"detail": "OTP or recovery code required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sec["twoFactor"] = False
+        sec["totp_enabled"] = False
+        sec.pop("totp_secret", None)
+        sec.pop("recoveryCodes", None)
+        sec["recoveryGenerated"] = False
+        obj.security = sec
+        obj.save(update_fields=["security", "updated_at"])
+        request.user.two_factor_enabled = False
+        request.user.save(update_fields=["two_factor_enabled"])
+        return Response({"enabled": False})
+
+
 class AdminProfileMeView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminProfileUpdateSerializer
@@ -1604,6 +1749,19 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             return Response({"detail": "ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
         updated = Notification.objects.filter(user=request.user, id__in=ids).update(status=Notification.Status.READ)
         return Response({"updated": updated})
+
+
+class HelpArticleViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [permissions.AllowAny]
+    queryset = HelpArticle.objects.all().order_by("category", "id")
+    serializer_class = HelpArticleSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        category = self.request.query_params.get("category")
+        if category:
+            qs = qs.filter(category=category)
+        return qs
 
 
 class ChatThreadViewSet(viewsets.ModelViewSet):

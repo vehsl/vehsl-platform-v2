@@ -34,9 +34,9 @@ import {
 
 /* ── Palette ── */
 const B = {
-    900: '#1d1d1f', 800: '#424245', 700: '#6e6e73', 600: '#86868b',
-    500: '#0071e3', 400: '#2997ff', 300: '#67AAEE',
-    200: '#99C6F4', 100: '#d2d2d7', 50: '#f5f5f7',
+    900: '#18191A', 800: '#3F3F46', 700: '#52525B', 600: '#71717A',
+    500: '#0171E3', 400: '#348DE9', 300: '#67AAEE',
+    200: '#99C6F4', 100: '#D4D4D8', 50: '#F4F4F5',
 };
 const C = {
     text: B[900], accent: B[500], accentH: B[400],
@@ -67,7 +67,8 @@ function apiBase() {
     const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
     const normalize = (u: string) => u.replace(/\/$/, '');
     if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
-    return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+    const host = (window.location.hostname === '0.0.0.0' || window.location.hostname === '') ? 'localhost' : window.location.hostname;
+    return normalize(`${window.location.protocol}//${host}:8000`);
 }
 
 function readAuthTokens() {
@@ -155,15 +156,18 @@ function IconLogout({ color = '#ff3b30', size = 14 }: { color?: string; size?: n
 }
 
 /* ── Glass ── */
-function Glass({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Glass({ children, className = '', style, ...rest }: { children: React.ReactNode; className?: string; style?: React.CSSProperties } & React.HTMLAttributes<HTMLDivElement>) {
     return (
-        <div className={`backdrop-blur-2xl border border-black/[0.04] ${className}`}
+        <div
+            {...rest}
+            className={`backdrop-blur-2xl border border-black/[0.06] ${className}`}
             style={{
+                ...(style || {}),
                 boxShadow: `
-                    0 0 0 0.5px rgba(0,0,0,0.03),
-                    0 2px 4px rgba(0,0,0,0.02),
-                    0 12px 32px -8px rgba(0,0,0,0.08),
-                    0 40px 80px -24px rgba(0,0,0,0.12)
+                    0 0 0 0.5px rgba(0,0,0,0.05),
+                    0 2px 8px rgba(0,0,0,0.06),
+                    0 18px 48px -12px rgba(0,0,0,0.18),
+                    0 44px 96px -28px rgba(0,0,0,0.22)
                 `,
             }}>
             {children}
@@ -1048,9 +1052,9 @@ function ProfilePopover({
                                                                             </div>
                                                                             <div className="flex-1 min-w-0 pt-[1px]">
                                                                                 <p className="text-[12.5px] font-semibold leading-snug"
-                                                                                    style={{ color: '#1d1d1f', fontFamily: FONT }}>{item.sentence}</p>
+                                                                                    style={{ color: C.text, fontFamily: FONT }}>{item.sentence}</p>
                                                                                 <p className="text-[10.5px] font-normal leading-tight mt-1"
-                                                                                    style={{ color: 'rgba(0,0,0,0.38)', fontFamily: FONT }}>{item.moment}</p>
+                                                                                    style={{ color: B[600], fontFamily: FONT }}>{item.moment}</p>
                                                                             </div>
                                                                         </div>
                                                                     </motion.div>
@@ -1140,6 +1144,20 @@ const SELLER_TABS: { key: SettingsTab; label: string; icon: React.ElementType }[
     { key: 'help', label: 'Help', icon: HelpCircle },
 ];
 
+const CERT_KEY_TO_KYC_KIND: Record<string, string> = {
+    iso9001: 'iso_9001',
+    gmp: 'gmp',
+    exportLicense: 'export_license',
+    productSafety: 'product_safety',
+};
+
+function kycReviewToCertStatus(reviewStatus: string): 'verified' | 'pending' | 'none' {
+    const s = (reviewStatus || '').toLowerCase();
+    if (s === 'verified') return 'verified';
+    if (s === 'rejected' || s === 'expired') return 'none';
+    return 'pending';
+}
+
 /* ── Setting Row — stripped to essence ── */
 function SettingRow({
     icon: Icon, label, description, right, onClick, danger = false,
@@ -1210,7 +1228,18 @@ function TabButton({ icon: Icon, label, active, onClick }: { icon: React.Element
             onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
             className="relative flex flex-col items-center px-5 py-3.5 pb-[14px] text-[13px] transition-colors duration-200"
             style={{ color: active ? C.accent : hovered ? C.text : B[600], fontWeight: active ? 600 : 500 }}>
-            <span ref={spanRef} className="flex items-center gap-2">
+            {(active || hovered) && (
+                <motion.div
+                    layoutId={active ? "stab-pill" : undefined}
+                    className="absolute inset-x-2 top-2 bottom-2 rounded-[14px]"
+                    style={{
+                        background: active ? 'rgba(0,113,227,0.10)' : 'rgba(0,0,0,0.03)',
+                        boxShadow: active ? 'inset 0 0 0 1px rgba(0,113,227,0.10)' : 'inset 0 0 0 1px rgba(0,0,0,0.04)',
+                    }}
+                    transition={{ type: 'spring', damping: 32, stiffness: 380 }}
+                />
+            )}
+            <span ref={spanRef} className="flex items-center gap-2" style={{ position: 'relative', zIndex: 1 }}>
                 <Icon size={14} strokeWidth={active ? 2.2 : 1.5} />
                 {label}
             </span>
@@ -1229,7 +1258,8 @@ function SettingsTabBar({ activeTab, onTabChange }: { activeTab: SettingsTab; on
     const { isSeller } = useRole();
     const TABS = isSeller ? SELLER_TABS : BUYER_TABS;
     return (
-        <div className="flex items-center gap-0 mt-8 -mx-10 px-10 border-b border-black/[0.06]">
+        <div className="flex items-center gap-0 mt-8 -mx-10 px-10 border-b border-black/[0.06]"
+            style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.015), rgba(255,255,255,0))' }}>
             {TABS.map(t => (
                 <TabButton key={t.key} icon={t.icon} label={t.label} active={activeTab === t.key} onClick={() => onTabChange(t.key)} />
             ))}
@@ -1350,6 +1380,9 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
     const [tab, setTab] = useState<SettingsTab>('profile');
     const [loaded, setLoaded] = useState(false);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const suppressNextSaveRef = useRef(false);
+    const lastSaveErrorAtRef = useRef(0);
+    const [meUser, setMeUser] = useState<any>(() => readVehslUser());
     const [notifications, setNotifications] = useState({
         /* Order lifecycle */
         orderConfirmed: true, orderProcessing: true, orderModified: true,
@@ -1381,7 +1414,33 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
         compactView: false, theme: 'system' as 'light' | 'dark' | 'system',
         currency: 'USD' as 'USD' | 'EUR' | 'GBP',
     });
-    const [business, setBusiness] = useState<any>({ activeBizId: 'default', businesses: [] });
+    const [business, setBusiness] = useState<any>({
+        activeBizId: 'default',
+        businesses: [
+            {
+                id: 'default',
+                name: 'My Business',
+                regNo: '',
+                vat: '',
+                address: '',
+                rep: '',
+                email: '',
+                emailVerified: true,
+                payoutAccounts: [],
+                factoryAddress: '',
+                pickupAddress: '',
+                productionCapacity: '',
+                leadTime: '',
+                moq: '',
+                certifications: {
+                    iso9001: { name: '', status: 'none', expiry: '' },
+                    gmp: { name: '', status: 'none', expiry: '' },
+                    exportLicense: { name: '', status: 'none', expiry: '' },
+                    productSafety: { name: '', status: 'none', expiry: '' },
+                },
+            },
+        ],
+    });
     const [orderSettings, setOrderSettings] = useState({
         defaultSort: 'newest' as 'newest' | 'oldest' | 'amount',
         autoArchive: true, autoArchiveDays: 30,
@@ -1535,6 +1594,143 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
         return res;
     }, [refreshAccess]);
 
+    const mergeBusinessCertsFromKycDocs = useCallback((prevBusiness: any, docs: any[]) => {
+        const businesses = Array.isArray(prevBusiness?.businesses) ? prevBusiness.businesses : [];
+        if (!businesses.length || !Array.isArray(docs) || !docs.length) return prevBusiness;
+
+        const nextBusinesses = businesses.map((biz: any) => {
+            const certs = { ...(biz?.certifications || {}) };
+            for (const [certKey, kind] of Object.entries(CERT_KEY_TO_KYC_KIND)) {
+                const match = docs.find((d: any) => {
+                    const dk = (d?.kind || '').toLowerCase();
+                    const dt = (d?.doc_type || '').toString();
+                    return dk === kind && (dt === '' || dt === (biz?.id || '').toString());
+                });
+                if (!match) continue;
+                const prev = certs[certKey] || { name: '', status: 'none', expiry: '' };
+                certs[certKey] = {
+                    ...prev,
+                    name: match?.original_name || prev?.name || '',
+                    status: kycReviewToCertStatus(match?.review_status),
+                    expiry: match?.expires_at ? String(match.expires_at) : (prev?.expiry || ''),
+                    file_url: match?.file_url || prev?.file_url || '',
+                    document_id: match?.id || prev?.document_id || '',
+                };
+            }
+            return { ...biz, certifications: certs };
+        });
+
+        return { ...(prevBusiness || {}), businesses: nextBusinesses };
+    }, []);
+
+    const uploadSellerCertification = useCallback(async (bizId: string, certKey: string, file: File) => {
+        const kind = CERT_KEY_TO_KYC_KIND[certKey];
+        if (!kind) throw new Error('Unsupported document type.');
+        const fd = new FormData();
+        fd.append('kind', kind);
+        fd.append('doc_type', (bizId || '').toString());
+        fd.append('file', file);
+
+        const res = await authedFetch('/api/v1/kyc/documents', { method: 'POST', body: fd });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Upload failed.';
+            throw new Error(msg);
+        }
+
+        setBusiness((prev: any) => {
+            const businesses = Array.isArray(prev?.businesses) ? prev.businesses : [];
+            const nextBusinesses = businesses.map((b: any) => {
+                if ((b?.id || '').toString() !== (bizId || '').toString()) return b;
+                const certs = { ...(b?.certifications || {}) };
+                const prevCert = certs[certKey] || { name: '', status: 'none', expiry: '' };
+                certs[certKey] = {
+                    ...prevCert,
+                    name: data?.original_name || file.name || prevCert.name || '',
+                    status: kycReviewToCertStatus(data?.review_status),
+                    expiry: data?.expires_at ? String(data.expires_at) : (prevCert.expiry || ''),
+                    file_url: data?.file_url || prevCert.file_url || '',
+                    document_id: data?.id || prevCert.document_id || '',
+                };
+                return { ...b, certifications: certs };
+            });
+            return { ...(prev || {}), businesses: nextBusinesses };
+        });
+
+        toast.success('Certificate uploaded', { description: 'Review typically takes 24–48 hours.' });
+        return data;
+    }, [authedFetch, mergeBusinessCertsFromKycDocs]);
+
+    const generateRecoveryCodes = useCallback(async () => {
+        const res = await authedFetch('/api/v1/security/recovery-codes', { method: 'POST' });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to generate codes.';
+            throw new Error(msg);
+        }
+        setPrivacy((p: any) => ({ ...(p || {}), recoveryGenerated: true }));
+        return (data?.codes && Array.isArray(data.codes)) ? data.codes : [];
+    }, [authedFetch]);
+
+    const setupTotp = useCallback(async () => {
+        const res = await authedFetch('/api/v1/security/totp/setup', { method: 'POST' });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to start setup.';
+            throw new Error(msg);
+        }
+        return { secret: (data?.secret || '').toString(), otpauth_url: (data?.otpauth_url || '').toString() };
+    }, [authedFetch]);
+
+    const enableTotp = useCallback(async (code: string) => {
+        const res = await authedFetch('/api/v1/security/totp/enable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to enable 2FA.';
+            throw new Error(msg);
+        }
+        setPrivacy((p: any) => ({ ...(p || {}), twoFactor: true }));
+        return true;
+    }, [authedFetch]);
+
+    const disableTotp = useCallback(async (payload: { code?: string; recovery_code?: string }) => {
+        const res = await authedFetch('/api/v1/security/totp/disable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to disable 2FA.';
+            throw new Error(msg);
+        }
+        setPrivacy((p: any) => ({ ...(p || {}), twoFactor: false }));
+        return true;
+    }, [authedFetch]);
+
+    const deactivateAccount = useCallback(async () => {
+        const res = await authedFetch('/api/v1/auth/deactivate', { method: 'POST' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => null);
+            const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to deactivate account.';
+            throw new Error(msg);
+        }
+        // Logout after deactivation
+        try {
+            window.localStorage.removeItem('vehsl.access');
+            window.localStorage.removeItem('vehsl.refresh');
+            window.localStorage.removeItem('vehsl.user');
+        } catch { }
+        toast.success('Account deactivated');
+        onClose();
+        window.location.href = '/';
+        return true;
+    }, [authedFetch, onClose]);
+
     useEffect(() => {
         let alive = true;
         (async () => {
@@ -1543,12 +1739,22 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                 if (!alive) return;
                 if (!res.ok) { setLoaded(true); return; }
                 const data = await res.json().catch(() => null);
+                if (data?.user) setMeUser(data.user);
                 const s = data?.settings || {};
                 if (s?.notifications && typeof s.notifications === 'object') setNotifications((p: any) => ({ ...p, ...(s.notifications || {}) }));
                 if (s?.display && typeof s.display === 'object') setDisplay((p: any) => ({ ...p, ...(s.display || {}) }));
                 if (s?.order_settings && typeof s.order_settings === 'object') setOrderSettings((p: any) => ({ ...p, ...(s.order_settings || {}) }));
                 if (s?.security && typeof s.security === 'object') setPrivacy((p: any) => ({ ...p, ...(s.security || {}) }));
                 if (s?.business && typeof s.business === 'object') setBusiness((p: any) => ({ ...p, ...(s.business || {}) }));
+
+                try {
+                    const docsRes = await authedFetch('/api/v1/kyc/documents');
+                    if (!alive) return;
+                    if (docsRes.ok) {
+                        const docs = await docsRes.json().catch(() => []);
+                        setBusiness((p: any) => mergeBusinessCertsFromKycDocs(p, docs));
+                    }
+                } catch { }
             } catch { }
             if (alive) setLoaded(true);
         })();
@@ -1557,20 +1763,51 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
 
     useEffect(() => {
         if (!loaded) return;
+        if (suppressNextSaveRef.current) { suppressNextSaveRef.current = false; return; }
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = setTimeout(() => {
-            const body = {
-                display,
-                notifications,
-                order_settings: orderSettings,
-                security: privacy,
-                business,
-            };
-            void authedFetch('/api/v1/settings/me', {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
+            const activeBizId = (business?.activeBizId || '').toString();
+            const businesses = Array.isArray(business?.businesses) ? business.businesses : [];
+            const activeBiz = businesses.find((b: any) => (b?.id || '').toString() === activeBizId) || businesses[0] || null;
+            const seller_profile = isSeller && activeBiz ? {
+                business_name: (activeBiz?.name || '').toString(),
+                tax_id: (activeBiz?.vat || '').toString(),
+            } : undefined;
+            const body: any = { display, notifications, order_settings: orderSettings, security: privacy, business };
+            if (seller_profile) body.seller_profile = seller_profile;
+            const pin = (privacy?.payoutPin || '').toString().trim();
+            const hasPin = pin.length > 0;
+            void (async () => {
+                try {
+                    const res = await authedFetch('/api/v1/settings/me', {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        const now = Date.now();
+                        if (now - lastSaveErrorAtRef.current > 5000) {
+                            lastSaveErrorAtRef.current = now;
+                            toast.error('Settings not saved', { description: 'Check your connection and try again.' });
+                        }
+                        return;
+                    }
+                    if (hasPin) {
+                        suppressNextSaveRef.current = true;
+                        setPrivacy((p: any) => {
+                            const next = { ...(p || {}) };
+                            delete next.payoutPin;
+                            return next;
+                        });
+                    }
+                } catch {
+                    const now = Date.now();
+                    if (now - lastSaveErrorAtRef.current > 5000) {
+                        lastSaveErrorAtRef.current = now;
+                        toast.error('Settings not saved', { description: 'Check your connection and try again.' });
+                    }
+                }
+            })();
         }, 650);
         return () => {
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -1580,12 +1817,15 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
     return createPortal(
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-[10000] flex items-start justify-center pt-[5vh] pb-6 px-4 overflow-y-auto"
+            className="fixed inset-0 z-[10000] flex items-start justify-center pt-[4vh] pb-6 px-4 overflow-y-auto"
             style={{ scrollbarWidth: 'none' }}>
 
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                 className="fixed inset-0"
-                style={{ background: 'rgba(0,0,0,0.25)', backdropFilter: 'blur(12px)' }}
+                style={{
+                    background: 'radial-gradient(1200px 700px at 50% -10%, rgba(0,113,227,0.20) 0%, rgba(10,10,14,0.42) 55%, rgba(10,10,14,0.52) 100%)',
+                    backdropFilter: 'blur(18px) saturate(1.15)',
+                }}
                 onClick={onClose} />
 
             <motion.div
@@ -1593,11 +1833,13 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                 animate={{ y: 0, opacity: 1, scale: 1 }}
                 exit={{ y: 10, opacity: 0, scale: 0.98 }}
                 transition={{ type: 'spring', damping: 30, stiffness: 300, mass: 0.7 }}
-                className="relative w-full max-w-[640px] z-10 font-urbanist"
+                className="relative w-full max-w-[680px] z-10 font-urbanist"
                 style={{ fontFamily: "'Urbanist', sans-serif" }}>
 
                 <Glass className="rounded-[20px] overflow-hidden"
-                    style={{ background: '#ffffff' } as React.CSSProperties}>
+                    style={{
+                        background: 'linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(247,248,250,0.96) 100%)',
+                    } as React.CSSProperties}>
 
                     <div className="relative">
                         {/* Header — minimal */}
@@ -1623,7 +1865,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                 <div
                                     ref={scrollRef}
                                     onScroll={updateScroll}
-                                    className="px-12 py-12 pr-10 overflow-y-auto settings-scroll-area"
+                                    className="px-10 py-10 pr-10 overflow-y-auto settings-scroll-area"
                                     style={{ maxHeight: '600px' }}>
                                     <style>{`
                                         .settings-scroll-area::-webkit-scrollbar { width: 0px; display: none; }
@@ -1660,7 +1902,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                             exit={{ opacity: 0 }}
                                             transition={{ duration: 0.15 }}>
                                             {tab === 'profile' && (isSeller
-                                                ? <SellerBusinessTab display={display} setDisplay={setDisplay} business={business} setBusiness={setBusiness} />
+                                                ? <SellerBusinessTab me={meUser} display={display} setDisplay={setDisplay} business={business} setBusiness={setBusiness} onUploadCertification={uploadSellerCertification} />
                                                 : <ProfileTab display={display} setDisplay={setDisplay} />
                                             )}
                                             {tab === 'alerts' && (isSeller
@@ -1672,32 +1914,12 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                                 : <OrdersTab orderSettings={orderSettings} setOrderSettings={setOrderSettings} />
                                             )}
                                             {tab === 'security' && (isSeller
-                                                ? <SellerSecurityTab privacy={privacy} setPrivacy={setPrivacy} />
+                                                ? <SellerSecurityTab privacy={privacy} setPrivacy={setPrivacy} generateRecoveryCodes={generateRecoveryCodes} setupTotp={setupTotp} enableTotp={enableTotp} disableTotp={disableTotp} deactivateAccount={deactivateAccount} />
                                                 : <SecurityTab privacy={privacy} setPrivacy={setPrivacy} />
                                             )}
                                             {tab === 'help' && (isSeller
-                                                ? <SellerHelpTab openSupportChat={async () => {
-                                                    try {
-                                                        const res = await authedFetch('/api/v1/chat/threads/support/', { method: 'POST' });
-                                                        const data = await res.json().catch(() => null);
-                                                        const id = Number(data?.id || 0);
-                                                        if (id) window.location.href = `/messages?thread=${id}`;
-                                                        else window.location.href = '/messages';
-                                                    } catch {
-                                                        window.location.href = '/messages';
-                                                    }
-                                                }} />
-                                                : <HelpTab openSupportChat={async () => {
-                                                    try {
-                                                        const res = await authedFetch('/api/v1/chat/threads/support/', { method: 'POST' });
-                                                        const data = await res.json().catch(() => null);
-                                                        const id = Number(data?.id || 0);
-                                                        if (id) window.location.href = `/messages?thread=${id}`;
-                                                        else window.location.href = '/messages';
-                                                    } catch {
-                                                        window.location.href = '/messages';
-                                                    }
-                                                }} />
+                                                ? <SellerHelpTab authedFetch={authedFetch} me={meUser} />
+                                                : <HelpTab authedFetch={authedFetch} me={meUser} />
                                             )}
                                         </motion.div>
                                     </AnimatePresence>
@@ -1738,7 +1960,7 @@ function FullSettingsModal({ onClose }: { onClose: () => void }) {
                                         style={{ minHeight: 28 }}>
                                         <div className="w-full h-full rounded-[50px]"
                                             style={{
-                                                backgroundColor: scrollThumb.isHovering ? '#6e6e73' : '#86868b',
+                                                backgroundColor: scrollThumb.isHovering ? B[700] : B[600],
                                                 transition: 'background-color 0.2s ease',
                                             }} />
                                     </motion.div>
@@ -4260,11 +4482,11 @@ function RecoveryCodesPanel({ onClose }: { onClose: () => void }) {
 
     const handlePrint = () => {
         const content = activeTab === 'phrase'
-            ? `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#1d1d1f">Recovery Phrase</h2>
+            ? `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#18191A">Recovery Phrase</h2>
                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;font-family:monospace;font-size:14px;padding:20px;border:1px solid #e5e5e5;border-radius:12px">
                  ${RECOVERY_WORDS.map((w, i) => `<div><span style="color:#999;margin-right:8px">${i + 1}.</span>${w}</div>`).join('')}
                </div>`
-            : `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#1d1d1f">Private Key</h2>
+            : `<h2 style="font-family:system-ui;margin-bottom:16px;font-size:16px;color:#18191A">Private Key</h2>
                <div style="font-family:monospace;font-size:13px;word-break:break-all;padding:20px;border:1px solid #e5e5e5;border-radius:12px">${PRIVATE_KEY}</div>`;
         const printWindow = window.open('', '_blank', 'width=480,height=600');
         if (!printWindow) { toast.error('Could not open print window'); return; }

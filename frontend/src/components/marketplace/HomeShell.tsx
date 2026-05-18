@@ -52,8 +52,17 @@ export function HomeShell() {
   const [signInOpen, setSignInOpen] = useState(false);
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [requiresOtp, setRequiresOtp] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+
+  useEffect(() => {
+    if (!signInOpen) {
+      setRequiresOtp(false);
+      setOtpCode("");
+    }
+  }, [signInOpen]);
 
   useEffect(() => {
     try {
@@ -89,6 +98,10 @@ export function HomeShell() {
       toast.error("Enter email/phone and password.");
       return;
     }
+    if (requiresOtp && !otpCode.trim()) {
+      toast.error("Enter the 6-digit code from your authenticator app.");
+      return;
+    }
 
     const base = (() => {
       const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
@@ -96,7 +109,8 @@ export function HomeShell() {
       if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
         return normalize(fromEnv);
       }
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
+      const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
+      return normalize(`${window.location.protocol}//${host}:8000`);
     })();
 
     try {
@@ -104,10 +118,15 @@ export function HomeShell() {
       const res = await fetch(`${base}/api/v1/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: id, password: pw }),
+        body: JSON.stringify({ identifier: id, password: pw, otp: otpCode.trim() || undefined }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => null);
+        if (err && err.otp_required) {
+          setRequiresOtp(true);
+          toast.error("Enter the 6-digit code from your authenticator app.");
+          return;
+        }
         const msg = (err && (err.detail || err.non_field_errors)) || "Login failed.";
         toast.error(typeof msg === "string" ? msg : "Login failed.");
         return;
@@ -121,6 +140,8 @@ export function HomeShell() {
       } catch {}
 
       setSignInOpen(false);
+      setRequiresOtp(false);
+      setOtpCode("");
       toast.success("Signed in.");
       const role = (tokens?.user?.role || "").toString().toLowerCase();
       if (role === "admin") {
@@ -145,7 +166,7 @@ export function HomeShell() {
     } finally {
       setSigningIn(false);
     }
-  }, [identifier, password, router, signingIn]);
+  }, [identifier, password, router, signingIn, otpCode, requiresOtp]);
 
   return (
     <div className="bg-vehsl-watercolor font-inter min-h-dvh w-full overflow-x-hidden">
@@ -200,6 +221,19 @@ export function HomeShell() {
                     <Eye className="h-4 w-4" strokeWidth={1.5} />
                   </button>
                 </div>
+
+                {requiresOtp && (
+                  <Input
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value)}
+                    placeholder="6-digit code"
+                    className="h-10 rounded-full bg-white/85 text-sm"
+                    inputMode="numeric"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSignIn();
+                    }}
+                  />
+                )}
               </div>
 
               <div className="mt-2 flex justify-end">

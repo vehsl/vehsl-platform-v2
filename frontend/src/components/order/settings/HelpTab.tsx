@@ -156,40 +156,117 @@ const QUICK_SUGGESTIONS = [
    CHAT VIEW
    ══════════════════════════════════════════════ */
 
-function ChatView({ onBack, existingMessages, title }: { onBack: () => void; existingMessages?: ChatMessage[]; title?: string }) {
+function ChatView({
+    onBack,
+    existingMessages,
+    title,
+    threadId,
+    authedFetch,
+    currentUserId,
+}: {
+    onBack: () => void;
+    existingMessages?: ChatMessage[];
+    title?: string;
+    threadId?: number;
+    authedFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    currentUserId?: number;
+}) {
     const [messages, setMessages] = useState<ChatMessage[]>(existingMessages || [
         { id: 'bot-1', from: 'agent', text: 'Hi there! How can I help you today?', time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) },
     ]);
     const [input, setInput] = useState('');
     const [showSuggestions, setShowSuggestions] = useState(!existingMessages);
     const [typing, setTyping] = useState(false);
+    const [loading, setLoading] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }, [messages, typing]);
 
+    useEffect(() => {
+        if (!authedFetch || !threadId) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                setLoading(true);
+                const res = await authedFetch(`/api/v1/chat/threads/${threadId}/messages/?limit=100`);
+                const data = await res.json().catch(() => null);
+                if (!res.ok) return;
+                const apiMsgs: any[] = Array.isArray(data) ? data : [];
+                const mapped: ChatMessage[] = apiMsgs
+                    .filter(m => !m.deleted_at && (m.content || '').trim())
+                    .map(m => ({
+                        id: `m-${m.id}`,
+                        from: currentUserId && m.sender_id === currentUserId ? 'user' : 'agent',
+                        text: (m.content || '').toString(),
+                        time: new Date(m.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+                    }));
+                if (!cancelled) setMessages(prev => mapped.length ? mapped : prev);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [authedFetch, threadId, currentUserId]);
+
     const sendMessage = useCallback((text: string) => {
         if (!text.trim()) return;
-        const userMsg: ChatMessage = { id: `u-${Date.now()}`, from: 'user', text, time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) };
-        setMessages(prev => [...prev, userMsg]);
+        const trimmed = text.trim();
+        const now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+        if (!authedFetch || !threadId) {
+            const userMsg: ChatMessage = { id: `u-${Date.now()}`, from: 'user', text: trimmed, time: now };
+            setMessages(prev => [...prev, userMsg]);
+            setInput('');
+            setShowSuggestions(false);
+            setTyping(true);
+
+            const responses: Record<string, string> = {
+                'I need help with an order': 'Sure! Could you share your order number? It starts with #VH-.',
+                'I have a shipping question': 'Of course. Are you asking about timelines, rates, or tracking?',
+                'I want to return a product': 'I can help. Share your order number and I\'ll check eligibility.',
+                'Something else': 'Please describe what you need and I\'ll do my best to help.',
+            };
+
+            setTimeout(() => {
+                setTyping(false);
+                const reply = responses[trimmed] || 'Thanks for reaching out. Could you provide a bit more detail?';
+                setMessages(prev => [...prev, { id: `b-${Date.now()}`, from: 'agent', text: reply, time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }]);
+            }, 1200 + Math.random() * 800);
+            return;
+        }
+
+        const optimisticId = `u-${Date.now()}`;
+        setMessages(prev => [...prev, { id: optimisticId, from: 'user', text: trimmed, time: now }]);
         setInput('');
-        setShowSuggestions(false);
-        setTyping(true);
-
-        const responses: Record<string, string> = {
-            'I need help with an order': 'Sure! Could you share your order number? It starts with #VH-.',
-            'I have a shipping question': 'Of course. Are you asking about timelines, rates, or tracking?',
-            'I want to return a product': 'I can help. Share your order number and I\'ll check eligibility.',
-            'Something else': 'Please describe what you need and I\'ll do my best to help.',
-        };
-
-        setTimeout(() => {
-            setTyping(false);
-            const reply = responses[text] || 'Thanks for reaching out. Could you provide a bit more detail?';
-            setMessages(prev => [...prev, { id: `b-${Date.now()}`, from: 'agent', text: reply, time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }]);
-        }, 1200 + Math.random() * 800);
-    }, []);
+        void (async () => {
+            try {
+                setTyping(true);
+                const res = await authedFetch(`/api/v1/chat/threads/${threadId}/messages/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: trimmed }),
+                });
+                const data = await res.json().catch(() => null);
+                if (!res.ok) {
+                    const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to send message.';
+                    toast.error(msg);
+                    return;
+                }
+                const created = data as any;
+                const mapped: ChatMessage = {
+                    id: `m-${created.id || Date.now()}`,
+                    from: currentUserId && created.sender_id === currentUserId ? 'user' : 'agent',
+                    text: (created.content || '').toString(),
+                    time: created.sent_at ? new Date(created.sent_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : now,
+                };
+                setMessages(prev => prev.map(m => m.id === optimisticId ? mapped : m));
+            } finally {
+                setTyping(false);
+            }
+        })();
+    }, [authedFetch, threadId, currentUserId]);
 
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col" style={{ margin: '-48px', height: 'calc(100% + 96px)', minHeight: 600 }}>
@@ -215,6 +292,13 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
                 <div className="flex justify-center mb-3">
                     <span className="text-[10px] px-3 py-1 rounded-full" style={{ backgroundColor: 'rgba(232,232,237,0.6)', color: B[600] }}>Today</span>
                 </div>
+                {loading && (
+                    <div className="flex justify-center py-2">
+                        <span className="text-[10px] px-3 py-1 rounded-full" style={{ backgroundColor: 'rgba(0,0,0,0.03)', color: B[600] }}>
+                            Loading conversation…
+                        </span>
+                    </div>
+                )}
                 {messages.map(msg => (
                     <motion.div key={msg.id} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className={`flex ${msg.from === 'user' ? 'justify-end' : 'items-start gap-2'}`}>
                         {msg.from === 'agent' && (
@@ -232,7 +316,7 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
                             }}>
                                 {msg.text}
                             </div>
-                            <p className={`text-[9.5px] mt-1 px-1.5 ${msg.from === 'user' ? 'text-right' : ''}`} style={{ color: '#c7c7cc' }}>{msg.time}</p>
+                            <p className={`text-[9.5px] mt-1 px-1.5 ${msg.from === 'user' ? 'text-right' : ''}`} style={{ color: B[600] }}>{msg.time}</p>
                         </div>
                     </motion.div>
                 ))}
@@ -279,7 +363,7 @@ function ChatView({ onBack, existingMessages, title }: { onBack: () => void; exi
                     <button onClick={() => sendMessage(input)}
                         className="w-[30px] h-[30px] flex items-center justify-center rounded-full cursor-pointer border-none transition-all duration-150"
                         style={{ backgroundColor: input.trim() ? '#0071e3' : '#e8e8ed' }}>
-                        <Send size={13} strokeWidth={1.5} style={{ color: input.trim() ? 'white' : '#c7c7cc' }} />
+                        <Send size={13} strokeWidth={1.5} style={{ color: input.trim() ? 'white' : B[100] }} />
                     </button>
                 </div>
             </div>
@@ -314,7 +398,7 @@ function TopicView({ topic, onBack, onArticle }: { topic: Topic; onBack: () => v
                             <p className="text-[13.5px] font-medium group-hover:underline" style={{ color: C.text }}>{article.title}</p>
                             <p className="text-[12px] mt-0.5" style={{ color: B[600] }}>{article.description}</p>
                         </div>
-                        <ChevronRight size={13} strokeWidth={1.5} className="flex-shrink-0 ml-3 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: '#d1d1d6' }} />
+                        <ChevronRight size={13} strokeWidth={1.5} className="flex-shrink-0 ml-3 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
                     </button>
                 ))}
             </div>
@@ -397,7 +481,7 @@ function ArticleView({ article, topic, onBack, onArticle }: {
                             className="w-full flex items-center justify-between py-3 cursor-pointer bg-transparent border-none text-left group"
                             style={{ borderBottom: '1px solid rgba(0,0,0,0.04)' }}>
                             <span className="text-[13px] font-medium group-hover:underline" style={{ color: C.text }}>{a.title}</span>
-                            <ChevronRight size={12} strokeWidth={1.5} style={{ color: '#d1d1d6' }} />
+                            <ChevronRight size={12} strokeWidth={1.5} style={{ color: B[100] }} />
                         </button>
                     ))}
                 </div>
@@ -438,7 +522,7 @@ function TopicsBrowseView({ onBack, onTopic, onArticle }: {
                                 <p className="text-[13.5px] font-medium" style={{ color: C.text }}>{topic.title}</p>
                                 <p className="text-[11.5px]" style={{ color: B[600] }}>{topic.articles.length} articles</p>
                             </div>
-                            <ChevronRight size={13} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: '#d1d1d6' }} />
+                            <ChevronRight size={13} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
                         </button>
                     );
                 })}
@@ -459,14 +543,85 @@ type HelpView =
     | { type: 'topic'; topicIndex: number }
     | { type: 'article'; topicIndex: number; article: Article };
 
-export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Promise<void> }) {
+export function HelpTab({
+    authedFetch,
+    me,
+}: {
+    authedFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    me?: any;
+}) {
     const [view, setView] = useState<HelpView>({ type: 'settings' });
     const [showPhone, setShowPhone] = useState(false);
+    const [activeThread, setActiveThread] = useState<any | null>(null);
+    const [threads, setThreads] = useState<any[]>([]);
+    const [threadsLoading, setThreadsLoading] = useState(false);
+    const [threadsError, setThreadsError] = useState<string>('');
+    const currentUserId = Number(me?.id || 0) || undefined;
+
+    const fetchThreads = useCallback(async () => {
+        if (!authedFetch) return;
+        try {
+            setThreadsError('');
+            setThreadsLoading(true);
+            const res = await authedFetch('/api/v1/chat/threads/');
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data?.detail || data?.error || '').toString().trim() || 'Failed to load conversations.';
+                setThreadsError(msg);
+                setThreads([]);
+                return;
+            }
+            const items: any[] = Array.isArray(data) ? data : [];
+            // Filter for buyer-vehsl threads
+            const filtered = items.filter(t => ((t.type || '').toString().toLowerCase().includes('vehsl')));
+            setThreads(filtered);
+        } catch (e: any) {
+            setThreadsError((e?.message || '').toString().trim() || 'Failed to load conversations.');
+            setThreads([]);
+        } finally {
+            setThreadsLoading(false);
+        }
+    }, [authedFetch]);
+
+    const openSupport = useCallback(async () => {
+        if (!authedFetch) {
+            toast.error('Sign in to chat with support');
+            return;
+        }
+        try {
+            const res = await authedFetch('/api/v1/chat/threads/support/', { method: 'POST' });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                const msg = (data?.detail || data?.error || '').toString().trim() || 'No support agent available.';
+                toast.error(msg);
+                return;
+            }
+            setActiveThread(data);
+            setView({ type: 'chat', title: 'Support Chat' });
+        } catch (e: any) {
+            toast.error((e?.message || '').toString().trim() || 'Failed to open support chat.');
+        }
+    }, [authedFetch]);
+
+    useEffect(() => {
+        if (authedFetch) {
+            void fetchThreads();
+        }
+    }, [authedFetch, fetchThreads]);
 
     /* Sub-views */
     if (view.type === 'chat') {
         const conv = view.conversationId ? CONVERSATIONS.find(c => c.id === view.conversationId) : undefined;
-        return <ChatView onBack={() => setView(view.conversationId ? { type: 'conversations' } : { type: 'settings' })} existingMessages={conv?.messages} title={conv?.title || view.title} />;
+        return (
+            <ChatView
+                onBack={() => setView(view.conversationId ? { type: 'conversations' } : { type: 'settings' })}
+                existingMessages={conv?.messages}
+                title={conv?.title || view.title}
+                threadId={activeThread?.id}
+                authedFetch={authedFetch}
+                currentUserId={currentUserId}
+            />
+        );
     }
 
     if (view.type === 'conversations') {
@@ -478,18 +633,40 @@ export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Pr
                 </button>
                 <h2 className="text-[20px] font-bold tracking-[-0.4px] mb-10" style={{ color: C.text }}>Open requests</h2>
                 <div>
-                    {CONVERSATIONS.map((conv, i) => (
+                    {threadsLoading && (
+                        <div className="p-4 rounded-[18px]" style={{ backgroundColor: 'rgba(0,0,0,0.02)' }}>
+                            <p className="text-[12px]" style={{ color: B[600] }}>Loading conversations…</p>
+                        </div>
+                    )}
+                    {threads.map((t, i) => (
+                        <button key={t.id} onClick={() => { setActiveThread(t); setView({ type: 'chat', title: (t.other_participants && t.other_participants[0]?.name) || 'Support Chat' }); }}
+                            className="w-full text-left cursor-pointer border-none bg-transparent p-0 group"
+                            style={{ borderBottom: i < threads.length - 1 ? '1px solid rgba(0,0,0,0.04)' : 'none' }}>
+                            <div className="flex items-center justify-between py-5">
+                                <div className="flex-1 min-w-0 pr-4">
+                                    <p className="text-[13.5px] font-medium line-clamp-1" style={{ color: C.text }}>
+                                        {(t.other_participants && t.other_participants[0]?.name) || (t.type === 'seller_vehsl' ? 'Seller Support' : 'Conversation')}
+                                    </p>
+                                    <p className="text-[12px] mt-1.5" style={{ color: B[600] }}>
+                                        {t.last_message?.content || 'No messages yet'} · {new Date(t.updated_at).toLocaleDateString()}
+                                    </p>
+                                </div>
+                                <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
+                            </div>
+                        </button>
+                    ))}
+                    {threads.length === 0 && !threadsLoading && CONVERSATIONS.map((conv, i) => (
                         <button key={conv.id} onClick={() => setView({ type: 'chat', conversationId: conv.id, title: conv.title })}
                             className="w-full text-left cursor-pointer border-none bg-transparent p-0 group"
                             style={{ borderBottom: i < CONVERSATIONS.length - 1 ? '1px solid rgba(0,0,0,0.04)' : 'none' }}>
                             <div className="flex items-center justify-between py-5">
                                 <div className="flex-1 min-w-0 pr-4">
                                     <p className="text-[13.5px] font-medium line-clamp-1" style={{ color: C.text }}>{conv.title}</p>
-                                    <p className="text-[12px] mt-1.5" style={{ color: '#86868b' }}>
+                                    <p className="text-[12px] mt-1.5" style={{ color: B[600] }}>
                                         {conv.status} · {conv.date}
                                     </p>
                                 </div>
-                                <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: '#d1d1d6' }} />
+                                <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
                             </div>
                         </button>
                     ))}
@@ -558,12 +735,9 @@ export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Pr
                         )}
                     </AnimatePresence>
                 </motion.button>
-                <button onClick={() => {
-                    if (openSupportChat) { void openSupportChat(); return; }
-                    try { window.location.href = '/messages'; } catch { }
-                }}
+                <button onClick={() => { void openSupport(); }}
                     className="flex items-center justify-center gap-2 py-[10px] px-5 rounded-full text-[13px] font-semibold cursor-pointer border-none"
-                    style={{ backgroundColor: '#1d1d1f', color: 'white' }}>
+                    style={{ backgroundColor: B[900], color: 'white' }}>
                     <MessageSquare size={14} strokeWidth={1.5} />
                     Chat
                 </button>
@@ -578,14 +752,41 @@ export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Pr
                         exit={{ opacity: 0, height: 0, marginTop: -14, marginBottom: 0 }}
                         transition={{ duration: 0.2 }}
                         className="text-[11px] text-center overflow-hidden"
-                        style={{ color: '#aeaeb2' }}>
+                        style={{ color: B[600] }}>
                         Mon – Fri, 8 am – 8 pm EST
                     </motion.p>
                 )}
             </AnimatePresence>
 
             {/* ── Open requests ── */}
-            {CONVERSATIONS.length > 0 && (
+            {(threads.length > 0) && (
+                <div className="mb-14">
+                    {threads.slice(0, 3).map((t, i) => (
+                        <button key={t.id} onClick={() => { setActiveThread(t); setView({ type: 'chat', title: (t.other_participants && t.other_participants[0]?.name) || 'Support Chat' }); }}
+                            className="w-full text-left cursor-pointer border-none bg-transparent p-0 group"
+                            style={{ borderBottom: i < Math.min(threads.length, 3) - 1 ? '1px solid rgba(0,0,0,0.04)' : 'none' }}>
+                            <div className="flex items-center justify-between py-4">
+                                <div className="flex-1 min-w-0 pr-3">
+                                    <p className="text-[13.5px] font-medium line-clamp-1" style={{ color: C.text }}>
+                                        {(t.other_participants && t.other_participants[0]?.name) || (t.type === 'seller_vehsl' ? 'Seller Support' : 'Conversation')}
+                                    </p>
+                                    <p className="text-[12px] mt-1" style={{ color: B[600] }}>
+                                        {t.last_message?.content || 'No messages yet'} · {new Date(t.updated_at).toLocaleDateString()}
+                                    </p>
+                                </div>
+                                <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
+                            </div>
+                        </button>
+                    ))}
+                    {threads.length > 3 && (
+                        <button onClick={() => setView({ type: 'conversations' })}
+                            className="w-full text-center py-4 cursor-pointer bg-transparent border-none">
+                            <span className="text-[12.5px] font-medium" style={{ color: C.accent }}>View all requests</span>
+                        </button>
+                    )}
+                </div>
+            )}
+            {threads.length === 0 && CONVERSATIONS.length > 0 && (
                 <div className="mb-14">
                     {CONVERSATIONS.map((conv, i) => (
                         <button key={conv.id} onClick={() => setView({ type: 'chat', conversationId: conv.id, title: conv.title })}
@@ -594,9 +795,9 @@ export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Pr
                             <div className="flex items-center justify-between py-4">
                                 <div className="flex-1 min-w-0 pr-3">
                                     <p className="text-[13.5px] font-medium line-clamp-1" style={{ color: C.text }}>{conv.title}</p>
-                                    <p className="text-[12px] mt-1" style={{ color: '#aeaeb2' }}>{conv.status} · {conv.date}</p>
+                                    <p className="text-[12px] mt-1" style={{ color: B[600] }}>{conv.status} · {conv.date}</p>
                                 </div>
-                                <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: '#d1d1d6' }} />
+                                <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
                             </div>
                         </button>
                     ))}
@@ -612,10 +813,10 @@ export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Pr
                             className="w-full flex items-center justify-between cursor-pointer bg-transparent border-none p-0 text-left group"
                             style={{ borderBottom: i < 5 ? '1px solid rgba(0,0,0,0.04)' : 'none' }}>
                             <div className="flex items-center gap-3 py-4">
-                                <Icon size={16} strokeWidth={1.5} style={{ color: '#86868b' }} />
+                                <Icon size={16} strokeWidth={1.5} style={{ color: B[600] }} />
                                 <span className="text-[13.5px] font-medium" style={{ color: C.text }}>{topic.title}</span>
                             </div>
-                            <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: '#d1d1d6' }} />
+                            <ChevronRight size={14} strokeWidth={1.5} className="flex-shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" style={{ color: B[100] }} />
                         </button>
                     );
                 })}
@@ -636,13 +837,13 @@ export function HelpTab({ openSupportChat }: { openSupportChat?: () => void | Pr
                     <button key={item.label} onClick={item.action}
                         className="w-full flex items-center justify-between py-3.5 cursor-pointer bg-transparent border-none text-left"
                         style={{ borderBottom: i === 0 ? '1px solid rgba(0,0,0,0.04)' : 'none' }}>
-                        <span className="text-[13px]" style={{ color: '#86868b' }}>{item.label}</span>
-                        <ExternalLink size={13} strokeWidth={1.5} style={{ color: '#d1d1d6' }} />
+                        <span className="text-[13px]" style={{ color: B[600] }}>{item.label}</span>
+                        <ExternalLink size={13} strokeWidth={1.5} style={{ color: B[100] }} />
                     </button>
                 ))}
             </div>
 
-            <p className="text-[11px] text-center" style={{ color: '#c7c7cc' }}>
+            <p className="text-[11px] text-center" style={{ color: B[100] }}>
                 Vehsl v3.2.1
             </p>
         </div>
