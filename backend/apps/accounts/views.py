@@ -10,7 +10,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import CharField, Count, DecimalField, Q, Sum
 from django.utils import timezone
-from datetime import timedelta
+from django.http import HttpResponse
+from datetime import timedelta, datetime
 import os
 import uuid
 import secrets
@@ -18,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import time
+import csv
 
 from django.core.files.storage import default_storage
 from django.contrib.auth.hashers import make_password, check_password
@@ -33,6 +35,7 @@ from .models import (
     AdminProfile,
     AdminPlatformSettings,
     AdminUiNotificationState,
+    AuditLog,
     BuyerProfile,
     ChatMessage,
     ChatThread,
@@ -77,6 +80,55 @@ from .dashboard_serializers import (
     WarehouseReleaseRequestSerializer,
     WarehouseReleaseRecordSerializer,
 )
+
+SERVER_BUILD = os.environ.get("VEHSL_SERVER_BUILD") or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+def _admin_role(user: User) -> str:
+    prof = getattr(user, "admin_profile", None)
+    return (getattr(prof, "admin_role", "") or "").strip().lower()
+
+
+def _is_super_admin(user: User) -> bool:
+    if getattr(user, "is_superuser", False):
+        return True
+    return _admin_role(user) == AdminProfile.AdminRole.SUPER_ADMIN
+
+
+def _audit(actor: User | None, *, action: str, target_type: str, target_id: str = "", payload: dict | None = None):
+    try:
+        AuditLog.objects.create(
+            actor=actor,
+            actor_role=(getattr(actor, "role", "") or "").lower() if actor else "",
+            action=action,
+            target_type=target_type,
+            target_id=str(target_id or ""),
+            payload=payload or {},
+        )
+    except Exception:
+        pass
+
+
+def _can_manage_admin_users(actor: User) -> bool:
+    role = (getattr(actor, "role", "") or "").lower()
+    if role != User.Role.ADMIN:
+        return False
+    return _is_super_admin(actor)
+
+
+def _can_manage_seller_verification(actor: User) -> bool:
+    role = (getattr(actor, "role", "") or "").lower()
+    if role != User.Role.ADMIN:
+        return False
+    ar = _admin_role(actor)
+    return _is_super_admin(actor) or ar in {AdminProfile.AdminRole.COMPLIANCE}
+
+
+def _can_issue_password_reset(actor: User) -> bool:
+    role = (getattr(actor, "role", "") or "").lower()
+    if role != User.Role.ADMIN:
+        return False
+    ar = _admin_role(actor)
+    return _is_super_admin(actor) or ar in {AdminProfile.AdminRole.SUPPORT}
 
 
 class AdminUiNotificationsView(APIView):
@@ -912,6 +964,60 @@ class LoginView(TokenObtainPairView):
 
 class RefreshView(TokenRefreshView):
     pass
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        identifier = str(request.data.get("identifier") or "").strip()
+        token = str(request.data.get("token") or "").strip()
+        new_password = str(request.data.get("new_password") or "").strip()
+
+        if not identifier or not token or not new_password:
+            return Response({"detail": "identifier, token and new_password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = (
+            User.objects.filter(email__iexact=identifier).first()
+            if "@" in identifier
+            else User.objects.filter(phone=identifier).first()
+        )
+        if not user:
+            return Response({"detail": "Invalid identifier."}, status=status.HTTP_400_BAD_REQUEST)
+
+        settings_obj, _ = UserSettings.objects.get_or_create(user=user)
+        sec = dict(settings_obj.security or {})
+        pr = sec.get("password_reset") if isinstance(sec.get("password_reset"), dict) else {}
+        expires_at = pr.get("expires_at")
+        token_hash = pr.get("token_hash")
+        if not token_hash or not expires_at:
+            return Response({"detail": "Reset token not found or expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            expires_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if timezone.is_naive(expires_dt):
+                expires_dt = timezone.make_aware(expires_dt, timezone=timezone.get_current_timezone())
+        except Exception:
+            return Response({"detail": "Reset token not found or expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if timezone.now() > expires_dt:
+            sec.pop("password_reset", None)
+            settings_obj.security = sec
+            settings_obj.save(update_fields=["security", "updated_at"])
+            return Response({"detail": "Reset token not found or expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not check_password(token, str(token_hash)):
+            return Response({"detail": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+
+        sec.pop("password_reset", None)
+        settings_obj.security = sec
+        settings_obj.save(update_fields=["security", "updated_at"])
+
+        _audit(user, action="password_reset_confirmed", target_type="user", target_id=str(user.id), payload={})
+        return Response({"detail": "Password updated successfully."})
 
 
 class LogoutView(APIView):
@@ -1836,8 +1942,11 @@ class ChatThreadViewSet(viewsets.ModelViewSet):
 
         other_ids = [p for p in participants if p != uid]
         other_user = User.objects.filter(id=other_ids[0]).first() if other_ids else None
-        if other_user and (getattr(other_user, "role", None) == User.Role.ADMIN or getattr(other_user, "is_staff", False) or getattr(other_user, "is_superuser", False)):
-            acct = (getattr(request.user, "account_type", "") or getattr(request.user, "role", "") or "").lower()
+        is_actor_admin = bool(getattr(request.user, "role", None) == User.Role.ADMIN or getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False))
+        is_other_admin = bool(other_user and (getattr(other_user, "role", None) == User.Role.ADMIN or getattr(other_user, "is_staff", False) or getattr(other_user, "is_superuser", False)))
+        if other_user and (is_actor_admin or is_other_admin):
+            non_admin = other_user if is_actor_admin else request.user
+            acct = (getattr(non_admin, "account_type", "") or getattr(non_admin, "role", "") or "").lower()
             thread_type = ChatThread.ThreadType.SELLER_VEHSL if acct == "seller" else ChatThread.ThreadType.BUYER_VEHSL
         elif other_user:
             thread_type = ChatThread.ThreadType.BUYER_SELLER
@@ -2072,6 +2181,17 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminUserListSerializer
 
+    def _deny_if_target_is_admin_and_not_super(self, actor: User, target: User):
+        if (getattr(target, "role", "") or "").lower() == User.Role.ADMIN and not _is_super_admin(actor):
+            return Response({"detail": "Only super admins can manage admin users."}, status=status.HTTP_403_FORBIDDEN)
+        return None
+
+    def _deny_if_payload_promotes_to_admin_and_not_super(self, actor: User, data: dict):
+        role_in = (data.get("role") or "").strip().lower() if isinstance(data, dict) else ""
+        if role_in == User.Role.ADMIN and not _is_super_admin(actor):
+            return Response({"detail": "Only super admins can create or promote admin users."}, status=status.HTTP_403_FORBIDDEN)
+        return None
+
     def get_queryset(self):
         qs = (
             User.objects.select_related("profile", "seller_profile", "admin_profile")
@@ -2124,6 +2244,10 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         return AdminUserListSerializer
 
     def create(self, request, *args, **kwargs):
+        deny = self._deny_if_payload_promotes_to_admin_and_not_super(request.user, request.data or {})
+        if deny is not None:
+            return deny
+
         ser = AdminUserWriteSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -2141,6 +2265,8 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             return Response({"email": ["A user with this email already exists."]}, status=status.HTTP_400_BAD_REQUEST)
         if phone and User.objects.filter(phone=phone).exists():
             return Response({"phone": ["A user with this phone already exists."]}, status=status.HTTP_400_BAD_REQUEST)
+        if not password:
+            return Response({"password": ["Password is required."]}, status=status.HTTP_400_BAD_REQUEST)
 
         user = User(
             email=email,
@@ -2152,7 +2278,7 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             status=status_val,
             is_active=True,
         )
-        user.set_password(password or "Test123!@#")
+        user.set_password(password)
         try:
             with transaction.atomic():
                 user.full_clean()
@@ -2184,10 +2310,18 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
                 AdminProfile.objects.filter(id=prof.id).update(**updates)
 
         out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
+        _audit(request.user, action="admin_user_created", target_type="user", target_id=str(user.id), payload={"role": role, "admin_role": admin_role})
         return Response(out, status=status.HTTP_201_CREATED)
 
     def partial_update(self, request, pk=None):
         user = self.get_object()
+        deny = self._deny_if_target_is_admin_and_not_super(request.user, user)
+        if deny is not None:
+            return deny
+        deny = self._deny_if_payload_promotes_to_admin_and_not_super(request.user, request.data or {})
+        if deny is not None:
+            return deny
+
         ser = AdminUserWriteSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -2240,10 +2374,14 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             if updates:
                 AdminProfile.objects.filter(id=prof.id).update(**updates)
         out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
+        _audit(request.user, action="admin_user_updated", target_type="user", target_id=str(user.id), payload={"fields": list((request.data or {}).keys())})
         return Response(out)
 
     @action(detail=True, methods=["post"], url_path="seller-verify/approve")
     def seller_verify_approve(self, request, pk=None):
+        if not _can_manage_seller_verification(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
         user = self.get_object()
         seller_prof = getattr(user, "seller_profile", None)
         if not seller_prof:
@@ -2264,10 +2402,14 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
         user.refresh_from_db()
         out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
+        _audit(request.user, action="seller_verification_approved", target_type="user", target_id=str(user.id), payload={})
         return Response(out)
 
     @action(detail=True, methods=["post"], url_path="seller-verify/reject")
     def seller_verify_reject(self, request, pk=None):
+        if not _can_manage_seller_verification(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
         user = self.get_object()
         seller_prof = getattr(user, "seller_profile", None)
         if not seller_prof:
@@ -2289,7 +2431,271 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
         user.refresh_from_db()
         out = AdminUserListSerializer(user, context=self.get_serializer_context()).data
+        _audit(request.user, action="seller_verification_rejected", target_type="user", target_id=str(user.id), payload={"reason": reason})
         return Response(out)
+
+    @action(detail=True, methods=["get"], url_path="detail")
+    def user_detail(self, request, pk=None):
+        user = self.get_object()
+
+        try:
+            prof = getattr(user, "profile", None)
+            buyer_prof = getattr(user, "buyer_profile", None)
+            seller_prof = getattr(user, "seller_profile", None)
+            admin_prof = getattr(user, "admin_profile", None)
+
+            settings_obj = None
+            try:
+                settings_obj = UserSettings.objects.filter(user=user).first()
+            except Exception:
+                settings_obj = None
+
+            sec = dict(getattr(settings_obj, "security", None) or {}) if settings_obj else {}
+            recovery_generated = bool(sec.get("recoveryGenerated"))
+            recovery_generated_at = sec.get("recoveryGeneratedAt")
+            totp_enabled = bool(sec.get("totp_enabled"))
+
+            docs_out = []
+            try:
+                docs = list(KycDocument.objects.filter(user=user).order_by("-uploaded_at")[:25])
+                docs_out = [
+                    {
+                        "id": d.id,
+                        "kind": d.kind,
+                        "doc_type": d.doc_type,
+                        "review_status": d.review_status,
+                        "uploaded_at": d.uploaded_at,
+                        "reviewed_at": d.reviewed_at,
+                        "rejection_reason": d.rejection_reason,
+                        "expires_at": d.expires_at,
+                    }
+                    for d in docs
+                ]
+            except Exception:
+                docs_out = []
+
+            commerce = {
+                "buyer_orders_count": 0,
+                "seller_orders_count": 0,
+                "shipments_count": 0,
+                "disputes_count": 0,
+                "payments_count": 0,
+                "payments_total": 0.0,
+            }
+            try:
+                from apps.orders.models import Dispute, Order, Shipment
+
+                commerce["buyer_orders_count"] = Order.objects.filter(buyer=user, deleted_at__isnull=True).count()
+                commerce["seller_orders_count"] = Order.objects.filter(seller=user, deleted_at__isnull=True).count()
+                commerce["shipments_count"] = Shipment.objects.filter(order__buyer=user, deleted_at__isnull=True).count() + Shipment.objects.filter(order__seller=user, deleted_at__isnull=True).count()
+                commerce["disputes_count"] = Dispute.objects.filter(opened_by=user, deleted_at__isnull=True).count()
+            except Exception:
+                pass
+            try:
+                from apps.payments.models import Payment
+
+                qs = Payment.objects.filter(deleted_at__isnull=True).select_related("order")
+                if getattr(user, "account_type", None) == "seller":
+                    qs = qs.filter(order__seller=user)
+                else:
+                    qs = qs.filter(order__buyer=user)
+                commerce["payments_count"] = qs.count()
+                commerce["payments_total"] = float(qs.aggregate(v=Coalesce(Sum("amount"), Value(0)))["v"] or 0)
+            except Exception:
+                pass
+
+            chat_summary = {"threads_count": 0}
+            try:
+                chat_summary["threads_count"] = ChatThread.objects.filter(deleted_at__isnull=True, participants__contains=[user.id]).count()
+            except Exception:
+                pass
+
+            payload = {
+                "user": AdminUserListSerializer(user, context=self.get_serializer_context()).data,
+                "profiles": {
+                    "profile": {
+                        "country": getattr(prof, "country", "") if prof else "",
+                        "province": getattr(prof, "province", "") if prof else "",
+                        "city": getattr(prof, "city", "") if prof else "",
+                        "street": getattr(prof, "street", "") if prof else "",
+                        "address": getattr(prof, "address", "") if prof else "",
+                        "nationality": getattr(prof, "nationality", "") if prof else "",
+                        "gender": getattr(prof, "gender", "") if prof else "",
+                        "date_of_birth": getattr(prof, "date_of_birth", None) if prof else None,
+                    },
+                    "buyer_profile": {
+                        "name": getattr(buyer_prof, "name", "") if buyer_prof else "",
+                        "business_type": getattr(buyer_prof, "business_type", "") if buyer_prof else "",
+                        "default_location": getattr(buyer_prof, "default_location", {}) if buyer_prof else {},
+                        "currency_preference": getattr(buyer_prof, "currency_preference", "") if buyer_prof else "",
+                        "language_preference": getattr(buyer_prof, "language_preference", "") if buyer_prof else "",
+                    },
+                    "seller_profile": {
+                        "business_name": getattr(seller_prof, "business_name", "") if seller_prof else "",
+                        "verification_status": getattr(seller_prof, "verification_status", "") if seller_prof else "",
+                        "country": getattr(seller_prof, "country", "") if seller_prof else "",
+                        "region": getattr(seller_prof, "region", "") if seller_prof else "",
+                        "tax_id": getattr(seller_prof, "tax_id", "") if seller_prof else "",
+                        "sample_low_threshold": getattr(seller_prof, "sample_low_threshold", None) if seller_prof else None,
+                    },
+                    "admin_profile": {
+                        "admin_role": getattr(admin_prof, "admin_role", None) if admin_prof else None,
+                        "department": getattr(admin_prof, "department", "") if admin_prof else "",
+                    },
+                },
+                "kyc": {"documents": docs_out},
+                "commerce": commerce,
+                "chat": chat_summary,
+                "security": {
+                    "two_factor_enabled": bool(getattr(user, "two_factor_enabled", False)),
+                    "totp_enabled": totp_enabled,
+                    "recovery_generated": recovery_generated,
+                    "recovery_generated_at": recovery_generated_at,
+                    "last_login": getattr(user, "last_login", None),
+                    "date_joined": getattr(user, "date_joined", None),
+                },
+            }
+            return Response(payload)
+        except Exception as e:
+            fallback = {
+                "user": AdminUserListSerializer(user, context=self.get_serializer_context()).data,
+                "profiles": {"profile": {}, "buyer_profile": {}, "seller_profile": {}, "admin_profile": {}},
+                "kyc": {"documents": []},
+                "commerce": {
+                    "buyer_orders_count": 0,
+                    "seller_orders_count": 0,
+                    "shipments_count": 0,
+                    "disputes_count": 0,
+                    "payments_count": 0,
+                    "payments_total": 0.0,
+                },
+                "chat": {"threads_count": 0},
+                "security": {
+                    "two_factor_enabled": bool(getattr(user, "two_factor_enabled", False)),
+                    "totp_enabled": False,
+                    "recovery_generated": False,
+                    "recovery_generated_at": None,
+                    "last_login": getattr(user, "last_login", None),
+                    "date_joined": getattr(user, "date_joined", None),
+                },
+                "error": str(e),
+            }
+            return Response(fallback)
+
+    @action(detail=True, methods=["post"], url_path="password-reset-link")
+    def password_reset_link(self, request, pk=None):
+        if not _can_issue_password_reset(request.user):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        user = self.get_object()
+        deny = self._deny_if_target_is_admin_and_not_super(request.user, user)
+        if deny is not None:
+            return deny
+
+        identifier = (user.email or user.phone or "").strip()
+        if not identifier:
+            return Response({"detail": "User has no email or phone."}, status=status.HTTP_400_BAD_REQUEST)
+
+        token = secrets.token_urlsafe(24)
+        now = timezone.now()
+        expires = now + timedelta(hours=24)
+
+        obj, _ = UserSettings.objects.get_or_create(user=user)
+        sec = dict(obj.security or {})
+        sec["password_reset"] = {
+            "token_hash": make_password(token),
+            "expires_at": expires.isoformat(),
+            "issued_at": now.isoformat(),
+            "issued_by": request.user.id,
+        }
+        obj.security = sec
+        obj.save(update_fields=["security", "updated_at"])
+
+        _audit(request.user, action="admin_password_reset_issued", target_type="user", target_id=str(user.id), payload={"identifier": identifier, "expires_at": expires.isoformat()})
+        return Response({"identifier": identifier, "token": token, "expires_at": expires.isoformat()})
+
+    @action(detail=False, methods=["post"], url_path="bulk/status")
+    def bulk_status(self, request):
+        ids = request.data.get("ids") or []
+        status_in = str(request.data.get("status") or "").strip().lower()
+        reason = str(request.data.get("reason") or "").strip()
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+        if status_in not in {"active", "suspended"}:
+            return Response({"detail": "status must be active or suspended."}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user
+        id_ints = [int(x) for x in ids if isinstance(x, int) or (isinstance(x, str) and str(x).isdigit())]
+        qs = User.objects.filter(id__in=id_ints)
+
+        if not _is_super_admin(actor):
+            qs = qs.exclude(role=User.Role.ADMIN)
+
+        status_val = User.Status.SUSPENDED if status_in == "suspended" else User.Status.ACTIVE
+        updated = qs.update(status=status_val)
+        for u in qs.only("id"):
+            _audit(actor, action="admin_user_status_changed", target_type="user", target_id=str(u.id), payload={"status": status_in, "reason": reason})
+        return Response({"updated": updated})
+
+    @action(detail=False, methods=["post"], url_path="bulk/request-reverification")
+    def bulk_request_reverification(self, request):
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        actor = request.user
+        id_ints = [int(x) for x in ids if isinstance(x, int) or (isinstance(x, str) and str(x).isdigit())]
+        users = list(User.objects.filter(id__in=id_ints).select_related("seller_profile"))
+
+        updated = 0
+        for u in users:
+            if (getattr(u, "role", "") or "").lower() == User.Role.ADMIN and not _is_super_admin(actor):
+                continue
+            sp = getattr(u, "seller_profile", None)
+            if sp is None:
+                sp = SellerProfile.objects.create(user=u)
+            SellerProfile.objects.filter(id=sp.id).update(verification_status=SellerProfile.VerificationStatus.PENDING)
+            updated += 1
+            try:
+                Notification.objects.create(
+                    user=u,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="seller_reverification_requested",
+                    payload={"requested_by": actor.id},
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+            _audit(actor, action="seller_reverification_requested", target_type="user", target_id=str(u.id), payload={})
+
+        return Response({"updated": updated})
+
+    @action(detail=False, methods=["get"], url_path="export")
+    def export(self, request):
+        qs = self.get_queryset()
+        qs = self.filter_queryset(qs)
+        rows = list(qs[:5000])
+
+        resp = HttpResponse(content_type="text/csv")
+        resp["Content-Disposition"] = 'attachment; filename="vehsl_users_export.csv"'
+        writer = csv.writer(resp)
+        writer.writerow(["id", "display_name", "email", "phone", "role", "account_type", "status", "admin_role", "orders_count", "last_active_at"])
+        ser = AdminUserListSerializer(rows, many=True, context=self.get_serializer_context())
+        for item in ser.data:
+            writer.writerow([
+                item.get("id"),
+                item.get("display_name"),
+                item.get("email"),
+                item.get("phone"),
+                item.get("role"),
+                item.get("account_type"),
+                item.get("status"),
+                item.get("admin_role"),
+                item.get("orders_count"),
+                item.get("last_active_at"),
+            ])
+        _audit(request.user, action="admin_users_exported", target_type="admin_users", target_id="", payload={"count": len(rows)})
+        return resp
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
@@ -2306,6 +2712,7 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
         return Response(
             {
+                "server_build": SERVER_BUILD,
                 "total_users": total_users,
                 "active": active,
                 "pending_review": pending_review,
