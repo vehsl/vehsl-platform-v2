@@ -1,7 +1,7 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
@@ -77,6 +77,8 @@ export function AdminUsers() {
   const [resetLinkData, setResetLinkData] = useState<{ url: string; expires_at: string } | null>(null);
 
   const [menuUserId, setMenuUserId] = useState<number | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [saving, setSaving] = useState(false);
@@ -167,6 +169,21 @@ export function AdminUsers() {
     return data;
   };
 
+  const copyToClipboard = useCallback(
+    async (text: string, successMsg: string) => {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        setSuccess(successMsg);
+      } catch {
+        try {
+          window.prompt("Copy to clipboard:", text);
+        } catch {}
+      }
+    },
+    []
+  );
+
   const buildUsersParams = (opts?: { search?: string; roleFilter?: string; statusFilter?: string; page?: number }) => {
     const params = new URLSearchParams();
     const s = (opts?.search ?? search).trim();
@@ -243,10 +260,17 @@ export function AdminUsers() {
   }, [search, roleFilter, statusFilter]);
 
   useEffect(() => {
-    const onDoc = () => setMenuUserId(null);
-    document.addEventListener("click", onDoc);
-    return () => document.removeEventListener("click", onDoc);
-  }, []);
+    if (menuUserId == null) return;
+    const onPointerDown = (e: Event) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (menuRef.current && menuRef.current.contains(t)) return;
+      if (menuButtonRef.current && menuButtonRef.current.contains(t)) return;
+      setMenuUserId(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [menuUserId]);
 
   const openCreate = () => {
     setFormMode("create");
@@ -410,7 +434,8 @@ export function AdminUsers() {
         setError("Failed to start chat.");
         return;
       }
-      window.open(`/messages?thread=${encodeURIComponent(String(threadId))}`, "_blank", "noopener,noreferrer");
+      const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+      window.open(`/messages?thread=${encodeURIComponent(String(threadId))}&returnTo=${rt}`, "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setError(e?.message || "Failed to start chat.");
     }
@@ -746,6 +771,9 @@ export function AdminUsers() {
                 <div className="relative">
                   <button
                     className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer"
+                    ref={(el) => {
+                      if (menuUserId === user.id) menuButtonRef.current = el;
+                    }}
                     onClick={e => {
                       e.stopPropagation();
                       setMenuUserId(prev => (prev === user.id ? null : user.id));
@@ -761,9 +789,45 @@ export function AdminUsers() {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 6, scale: 0.98 }}
                         transition={{ duration: 0.15 }}
-                        className="absolute right-0 top-11 z-20 w-44 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        className="absolute right-0 top-11 z-20 w-56 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        ref={(el) => {
+                          if (menuUserId === user.id) menuRef.current = el;
+                        }}
                         onClick={e => e.stopPropagation()}
                       >
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            setMenuUserId(null);
+                            openUserDetail(user);
+                          }}
+                        >
+                          <Eye size={14} className="text-muted-foreground/60" />
+                          View details
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            setMenuUserId(null);
+                            messageUser(user.id);
+                          }}
+                        >
+                          <Mail size={14} className="text-muted-foreground/60" />
+                          Message
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2 disabled:opacity-60"
+                          onClick={() => {
+                            const idOrEmail = (user.email || user.phone || "").toString();
+                            void copyToClipboard(idOrEmail, "Copied user identifier.");
+                            setMenuUserId(null);
+                          }}
+                          disabled={!(user.email || user.phone)}
+                        >
+                          <Copy size={14} className="text-muted-foreground/60" />
+                          Copy email/phone
+                        </button>
+                        <div className="h-px bg-border/30" />
                         <button
                           className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
                           onClick={() => {
@@ -776,7 +840,10 @@ export function AdminUsers() {
                         </button>
                         <button
                           className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
-                          onClick={() => generatePasswordResetLink(user)}
+                          onClick={() => {
+                            setMenuUserId(null);
+                            generatePasswordResetLink(user);
+                          }}
                         >
                           <Lock size={14} className="text-muted-foreground/60" />
                           Reset Link

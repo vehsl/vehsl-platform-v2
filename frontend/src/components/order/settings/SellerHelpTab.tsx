@@ -410,7 +410,10 @@ export function SellerHelpTab({
     const openSupport = useCallback(async () => {
         if (!authedFetch) {
             if (openSupportChat) { await openSupportChat(); return; }
-            try { window.location.href = '/messages'; } catch { }
+            try {
+                const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+                window.location.href = `/messages?returnTo=${rt}`;
+            } catch { }
             return;
         }
         try {

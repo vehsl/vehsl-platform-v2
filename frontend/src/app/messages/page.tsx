@@ -181,19 +181,37 @@ export default function Page() {
     [refreshAccess]
   );
 
+  const returnTo = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const raw = (params.get("returnTo") || "").trim();
+      if (!raw) return "";
+      if (!raw.startsWith("/")) return "";
+      if (raw.startsWith("//")) return "";
+      return raw;
+    } catch {
+      return "";
+    }
+  }, []);
+
   const goDashboard = useCallback(() => {
     try {
+      if (returnTo) {
+        window.location.href = returnTo;
+        return;
+      }
       const user = readUser();
-      const acct = (user?.account_type || user?.role || "").toString().toLowerCase();
-      if (acct === "seller") {
-        window.location.href = "/orders/1?tab=orders";
+      const role = (user?.role || "").toString().toLowerCase();
+      const acct = (user?.account_type || "").toString().toLowerCase();
+      if (role === "admin") {
+        window.location.href = "/admin";
         return;
       }
       window.location.href = "/orders/1?tab=orders";
     } catch {
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = returnTo || "/orders/1?tab=orders";
     }
-  }, []);
+  }, [returnTo]);
 
   const fetchThreads = useCallback(async () => {
     setLoadingThreads(true);

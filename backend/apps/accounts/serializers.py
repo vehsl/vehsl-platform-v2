@@ -257,7 +257,11 @@ class AdminUserWriteSerializer(serializers.Serializer):
         email = (attrs.get("email") or "").strip()
         phone = (attrs.get("phone") or "").strip()
         if not email and not phone:
-            raise serializers.ValidationError({"email": "Email or phone is required."})
+            if getattr(self, "partial", False):
+                if "email" in attrs or "phone" in attrs:
+                    raise serializers.ValidationError({"email": "Email or phone is required."})
+            else:
+                raise serializers.ValidationError({"email": "Email or phone is required."})
 
         role = attrs.get("role")
         account_type = (attrs.get("account_type") or "").strip()
