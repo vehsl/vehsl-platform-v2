@@ -25,13 +25,13 @@ const roleNavs: Record<string, { title: string; emoji: string; items: NavItem[] 
     title: "Admin",
     emoji: "shield",
     items: [
-      { icon: <LayoutDashboard size={20} />, label: "Overview", path: "/admin" },
-      { icon: <Users size={20} />, label: "Users", path: "/admin/users" },
-      { icon: <Package size={20} />, label: "Products", path: "/admin/products" },
-      { icon: <Truck size={20} />, label: "Logistics", path: "/admin/logistics" },
-      { icon: <ClipboardCheck size={20} />, label: "Quality", path: "/admin/quality" },
-      { icon: <Fingerprint size={20} />, label: "Verification", path: "/admin/verification" },
-      { icon: <Settings size={20} />, label: "Settings", path: "/admin/settings" },
+      { icon: <LayoutDashboard size={20} />, label: "Overview", path: "/" },
+      { icon: <Users size={20} />, label: "Users", path: "/users" },
+      { icon: <Package size={20} />, label: "Products", path: "/products" },
+      { icon: <Truck size={20} />, label: "Logistics", path: "/logistics" },
+      { icon: <ClipboardCheck size={20} />, label: "Quality", path: "/quality" },
+      { icon: <Fingerprint size={20} />, label: "Verification", path: "/verification" },
+      { icon: <Settings size={20} />, label: "Settings", path: "/settings" },
     ],
   },
   management: {
@@ -117,7 +117,11 @@ export function Layout() {
     { key: string; title: string; body: string; occurred_at?: string; unread: boolean; level?: string; path?: string }[]
   >([]);
 
-  const currentRole = location.pathname.split("/")[1] || "admin";
+  const currentRole = useMemo(() => {
+    const seg = location.pathname.split("/")[1] || "";
+    if (seg && Object.prototype.hasOwnProperty.call(roleNavs, seg)) return seg;
+    return "admin";
+  }, [location.pathname]);
   const nav = roleNavs[currentRole] || roleNavs.admin;
 
   const [user, setUser] = useState<any>(null);
@@ -305,10 +309,10 @@ export function Layout() {
     const base = nav.items || [];
     if (currentRole !== "admin") return base;
     return base.map((it) => {
-      if (it.path === "/admin/verification") return { ...it, badge: verificationBadge || undefined };
-      if (it.path === "/admin/users") return { ...it, badge: usersBadge || undefined };
-      if (it.path === "/admin/products") return { ...it, badge: productsBadge || undefined };
-      if (it.path === "/admin/quality") return { ...it, badge: qualityBadge || undefined };
+      if (it.path === "/verification") return { ...it, badge: verificationBadge || undefined };
+      if (it.path === "/users") return { ...it, badge: usersBadge || undefined };
+      if (it.path === "/products") return { ...it, badge: productsBadge || undefined };
+      if (it.path === "/quality") return { ...it, badge: qualityBadge || undefined };
       return it;
     });
   }, [nav.items, currentRole, verificationBadge, usersBadge, productsBadge, qualityBadge]);
@@ -420,7 +424,7 @@ export function Layout() {
   useEffect(() => {
     if (allowedRoleNavKeys.length === 0) return;
     if (!allowedRoleNavKeys.includes(currentRole)) {
-      navigate(`/${allowedRoleNavKeys[0]}`, { replace: true });
+      navigate(allowedRoleNavKeys[0] === "admin" ? "/" : `/${allowedRoleNavKeys[0]}`, { replace: true });
     }
   }, [allowedRoleNavKeys, currentRole, navigate]);
 
@@ -483,7 +487,7 @@ export function Layout() {
           {(allowedRoleNavKeys.length ? allowedRoleNavKeys : Object.keys(roleNavs)).map((role) => (
             <motion.button
               key={role}
-              onClick={() => navigate(`/${role}`)}
+              onClick={() => navigate(role === "admin" ? "/" : `/${role}`)}
               className={`relative flex-1 flex items-center justify-center gap-1.5 py-2 rounded-full text-[0.6875rem] transition-colors duration-300 cursor-pointer ${
                 currentRole === role
                   ? "text-foreground"
@@ -625,7 +629,7 @@ export function Layout() {
                 {(allowedRoleNavKeys.length ? allowedRoleNavKeys : Object.keys(roleNavs)).map((role) => (
                   <button
                     key={role}
-                    onClick={() => { navigate(`/${role}`); setMobileOpen(false); }}
+                    onClick={() => { navigate(role === "admin" ? "/" : `/${role}`); setMobileOpen(false); }}
                     className={`flex-1 flex items-center justify-center py-2 rounded-xl text-[0.6875rem] transition-all duration-300 cursor-pointer capitalize ${
                       currentRole === role
                         ? "bg-card text-foreground shadow-sm"
@@ -877,7 +881,7 @@ export function Layout() {
                             type="button"
                             className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[0.8125rem] text-foreground/80 hover:bg-black/[0.02] transition-colors cursor-pointer"
                             onClick={() => {
-                              navigate("/admin/settings");
+                              navigate("/settings");
                               setProfileOpen(false);
                             }}
                           >

@@ -1,16 +1,17 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
   Package, Eye, Edit3, Trash2, CheckCircle2, XCircle, Clock,
   Truck, MapPin, Fuel, AlertTriangle, ArrowRight, Calendar,
   Settings, Bell, Lock, Palette, Globe, Database, Mail,
-  ChevronRight, ArrowUpRight, TrendingUp, BarChart3, Star, X,
+  ChevronRight, ArrowUpRight, TrendingUp, BarChart3, Star, X, Copy,
   ClipboardCheck, Camera, Download, Upload, FileText, Hash,
 } from "lucide-react";
+import { getApiBase, authedFetch } from "@/lib/api";
 import { StatCard } from "./StatCard";
 import { StatusPill } from "./StatusPill";
 import { BounceButton } from "./BounceButton";
@@ -57,26 +58,6 @@ const roleColors: Record<string, string> = {
 };
 
 export function AdminUsers() {
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
-  const getAccess = () => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  };
-
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | "buyer" | "seller" | "partner" | "manager">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending" | "review" | "suspended">("all");
@@ -85,8 +66,19 @@ export function AdminUsers() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailData, setDetailData] = useState<any>(null);
+  const [resetLinkOpen, setResetLinkOpen] = useState(false);
+  const [resetLinkData, setResetLinkData] = useState<{ url: string; expires_at: string } | null>(null);
 
   const [menuUserId, setMenuUserId] = useState<number | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [saving, setSaving] = useState(false);
@@ -145,21 +137,15 @@ export function AdminUsers() {
   };
 
   const fetchJson = async (path: string, init?: RequestInit) => {
-    const access = getAccess();
-    const res = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        ...(access ? { Authorization: `Bearer ${access}` } : {}),
-      },
-    });
+    const res = await authedFetch(path, init);
     if (res.status === 401) {
       try {
         window.location.assign("/?signin=1");
       } catch {}
     }
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : null;
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    const isJson = ct.includes("application/json");
+    const data = isJson ? await res.json().catch(() => null) : await res.text().catch(() => null);
     if (!res.ok) {
       const pickMsg = (x: any): string => {
         if (!x) return "";
@@ -183,11 +169,27 @@ export function AdminUsers() {
     return data;
   };
 
-  const buildUsersParams = (opts?: { search?: string; roleFilter?: string; statusFilter?: string }) => {
+  const copyToClipboard = useCallback(
+    async (text: string, successMsg: string) => {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        setSuccess(successMsg);
+      } catch {
+        try {
+          window.prompt("Copy to clipboard:", text);
+        } catch {}
+      }
+    },
+    []
+  );
+
+  const buildUsersParams = (opts?: { search?: string; roleFilter?: string; statusFilter?: string; page?: number }) => {
     const params = new URLSearchParams();
     const s = (opts?.search ?? search).trim();
     const rf = (opts?.roleFilter ?? roleFilter).toString();
     const sf = (opts?.statusFilter ?? statusFilter).toString();
+    const p = opts?.page ?? 1;
     if (s) params.set("q", s);
     if (rf !== "all") {
       if (rf === "manager") {
@@ -198,13 +200,16 @@ export function AdminUsers() {
       }
     }
     if (sf !== "all") params.set("admin_status", sf);
+    if (p && p !== 1) params.set("page", String(p));
     return params;
   };
 
-  const fetchUsersList = async (opts?: { search?: string; roleFilter?: string; statusFilter?: string }) => {
+  const fetchUsersList = async (opts?: { search?: string; roleFilter?: string; statusFilter?: string; page?: number }) => {
     const params = buildUsersParams(opts);
-    const data = await fetchJson(`/api/v1/admin/users?${params.toString()}`);
-    return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+    const data = await fetchJson(`/api/v1/admin/users/?${params.toString()}`);
+    if (Array.isArray(data)) return { items: data, hasMore: false };
+    if (Array.isArray(data?.results)) return { items: data.results, hasMore: !!data?.next };
+    return { items: [], hasMore: false };
   };
 
   useEffect(() => {
@@ -226,11 +231,17 @@ export function AdminUsers() {
     let cancelled = false;
     setError("");
     setLoading(true);
+    setPage(1);
+    setHasMore(false);
+    setSelectedIds([]);
     const t = setTimeout(() => {
       (async () => {
         try {
-          const rows = await fetchUsersList();
-          if (!cancelled) setUsers(rows);
+          const res = await fetchUsersList({ page: 1 });
+          if (!cancelled) {
+            setUsers(res.items);
+            setHasMore(res.hasMore);
+          }
         } catch (e: any) {
           if (!cancelled) {
             setUsers([]);
@@ -249,10 +260,17 @@ export function AdminUsers() {
   }, [search, roleFilter, statusFilter]);
 
   useEffect(() => {
-    const onDoc = () => setMenuUserId(null);
-    document.addEventListener("click", onDoc);
-    return () => document.removeEventListener("click", onDoc);
-  }, []);
+    if (menuUserId == null) return;
+    const onPointerDown = (e: Event) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (menuRef.current && menuRef.current.contains(t)) return;
+      if (menuButtonRef.current && menuButtonRef.current.contains(t)) return;
+      setMenuUserId(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [menuUserId]);
 
   const openCreate = () => {
     setFormMode("create");
@@ -304,15 +322,18 @@ export function AdminUsers() {
   };
 
   const saveUser = async () => {
-    setSaving(true);
     setFormError("");
+    const passwordToSend = (form.password || "").trim();
+    if (formMode === "create" && !passwordToSend) {
+      setFormError("Password is required for new users.");
+      return;
+    }
+    setSaving(true);
     try {
       setSuccess("");
       const roleRaw = (form.role || "buyer").toString().toLowerCase();
       const isManager = roleRaw === "manager";
       const roleToSend = isManager ? "admin" : roleRaw;
-      const defaultPassword = "Test123!@#";
-      const passwordToSend = (form.password || "").trim() || (formMode === "create" ? defaultPassword : "");
       const payload: any = {
         first_name: form.first_name || "",
         last_name: form.last_name || "",
@@ -339,10 +360,7 @@ export function AdminUsers() {
 
       upsertUser(data);
       setFormOpen(false);
-      if (formMode === "create" && !(form.password || "").trim()) {
-        const identifier = ((payload.email as string) || (payload.phone as string) || "").toString();
-        setSuccess(`User created. Login with ${identifier || "the provided email/phone"} and password: ${defaultPassword}`);
-      }
+      setSuccess(formMode === "create" ? "User created." : "User updated.");
       try {
         const newStats = await fetchJson("/api/v1/admin/users/stats");
         setStats(newStats);
@@ -372,19 +390,133 @@ export function AdminUsers() {
     }
   };
 
-  const resetPassword = async (u: any) => {
-    const ok = typeof window !== "undefined" ? window.confirm("Reset password to Test123!@# ?") : false;
-    if (!ok) return;
+  const generatePasswordResetLink = async (u: any) => {
     try {
-      const data = await fetchJson(`/api/v1/admin/users/${u.id}/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: "Test123!@#" }),
-      });
-      upsertUser(data);
+      const data = await fetchJson(`/api/v1/admin/users/${u.id}/password-reset-link/`, { method: "POST" });
+      const identifier = encodeURIComponent(data?.identifier || "");
+      const token = encodeURIComponent(data?.token || "");
+      const expires_at = (data?.expires_at || "").toString();
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const url = `${origin}/?reset=1&identifier=${identifier}&token=${token}`;
+      setResetLinkData({ url, expires_at });
+      setResetLinkOpen(true);
       setMenuUserId(null);
     } catch (e: any) {
-      setError(e?.message || "Failed to reset password.");
+      setError(e?.message || "Failed to generate reset link.");
+    }
+  };
+
+  const openUserDetail = async (u: any) => {
+    if (!u?.id) return;
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailData(null);
+    try {
+      const data = await fetchJson(`/api/v1/admin/users/${u.id}/detail/`);
+      setDetailData(data);
+    } catch (e: any) {
+      setError(e?.message || "Failed to load user details.");
+      setDetailOpen(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const messageUser = async (userId: number) => {
+    try {
+      const data = await fetchJson("/api/v1/chat/threads/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ participants: [userId] }),
+      });
+      const threadId = data?.id;
+      if (!threadId) {
+        setError("Failed to start chat.");
+        return;
+      }
+      const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+      window.open(`/messages?thread=${encodeURIComponent(String(threadId))}&returnTo=${rt}`, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      setError(e?.message || "Failed to start chat.");
+    }
+  };
+
+  const toggleSelected = (id: number) => {
+    setSelectedIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+  };
+
+  const toggleSelectAll = () => {
+    const ids = users.map(u => u?.id).filter((x: any) => typeof x === "number") as number[];
+    setSelectedIds(prev => (prev.length === ids.length ? [] : ids));
+  };
+
+  const bulkStatus = async (nextStatus: "active" | "suspended") => {
+    if (!selectedIds.length) return;
+    try {
+      await fetchJson("/api/v1/admin/users/bulk/status/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds, status: nextStatus }),
+      });
+      const res = await fetchUsersList({ page: 1 });
+      setUsers(res.items);
+      setHasMore(res.hasMore);
+      setPage(1);
+      setSelectedIds([]);
+      try {
+        const newStats = await fetchJson("/api/v1/admin/users/stats");
+        setStats(newStats);
+      } catch {}
+      setSuccess(`Updated ${nextStatus} for ${selectedIds.length} users.`);
+    } catch (e: any) {
+      setError(e?.message || "Bulk update failed.");
+    }
+  };
+
+  const bulkRequestReverification = async () => {
+    if (!selectedIds.length) return;
+    try {
+      await fetchJson("/api/v1/admin/users/bulk/request-reverification/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      const res = await fetchUsersList({ page: 1 });
+      setUsers(res.items);
+      setHasMore(res.hasMore);
+      setPage(1);
+      setSelectedIds([]);
+      try {
+        const newStats = await fetchJson("/api/v1/admin/users/stats");
+        setStats(newStats);
+      } catch {}
+      setSuccess("Re-verification requested.");
+    } catch (e: any) {
+      setError(e?.message || "Bulk re-verification failed.");
+    }
+  };
+
+  const exportCsv = () => {
+    const params = buildUsersParams({ page: 1 });
+    const url = `${getApiBase()}/api/v1/admin/users/export/?${params.toString()}`;
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {}
+  };
+
+  const loadMoreUsers = async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const res = await fetchUsersList({ page: nextPage });
+      setUsers(prev => [...prev, ...res.items]);
+      setPage(nextPage);
+      setHasMore(res.hasMore);
+    } catch (e: any) {
+      setError(e?.message || "Failed to load more users.");
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -422,8 +554,10 @@ export function AdminUsers() {
         setStats(newStats);
       } catch {}
       try {
-        const rows = await fetchUsersList();
-        setUsers(rows);
+        const res = await fetchUsersList({ page: 1 });
+        setUsers(res.items);
+        setHasMore(res.hasMore);
+        setPage(1);
       } catch {}
     } catch (e: any) {
       setError(e?.message || "Failed to update seller verification.");
@@ -520,6 +654,51 @@ export function AdminUsers() {
             </div>
           </div>
 
+          {selectedIds.length > 0 && (
+            <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 rounded-2xl bg-muted/15 border border-border/30">
+              <div className="flex items-center gap-3 text-[0.8125rem]">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.length === users.length && users.length > 0}
+                    onChange={toggleSelectAll}
+                  />
+                  <span className="text-muted-foreground/70">{selectedIds.length} selected</span>
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-muted/25 hover:bg-muted/35 text-[0.8125rem]"
+                  onClick={() => bulkStatus("active")}
+                >
+                  Activate
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-muted/25 hover:bg-muted/35 text-[0.8125rem]"
+                  onClick={() => bulkStatus("suspended")}
+                >
+                  Suspend
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-muted/25 hover:bg-muted/35 text-[0.8125rem]"
+                  onClick={bulkRequestReverification}
+                >
+                  Request re-verification
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-muted/25 hover:bg-muted/35 text-[0.8125rem]"
+                  onClick={exportCsv}
+                >
+                  Export CSV
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* User List */}
           {error && (
             <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
@@ -557,8 +736,15 @@ export function AdminUsers() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.03, duration: 0.3 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group cursor-pointer"
+                onClick={() => openUserDetail(user)}
               >
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(user.id)}
+                  onChange={() => toggleSelected(user.id)}
+                  onClick={e => e.stopPropagation()}
+                />
                 <div
                   className="w-10 h-10 rounded-2xl flex items-center justify-center text-[0.75rem] text-white/90"
                   style={{ backgroundColor: roleColor }}
@@ -585,6 +771,9 @@ export function AdminUsers() {
                 <div className="relative">
                   <button
                     className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity p-2 rounded-xl hover:bg-muted/30 cursor-pointer"
+                    ref={(el) => {
+                      if (menuUserId === user.id) menuButtonRef.current = el;
+                    }}
                     onClick={e => {
                       e.stopPropagation();
                       setMenuUserId(prev => (prev === user.id ? null : user.id));
@@ -600,9 +789,45 @@ export function AdminUsers() {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 6, scale: 0.98 }}
                         transition={{ duration: 0.15 }}
-                        className="absolute right-0 top-11 z-20 w-44 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        className="absolute right-0 top-11 z-20 w-56 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        ref={(el) => {
+                          if (menuUserId === user.id) menuRef.current = el;
+                        }}
                         onClick={e => e.stopPropagation()}
                       >
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            setMenuUserId(null);
+                            openUserDetail(user);
+                          }}
+                        >
+                          <Eye size={14} className="text-muted-foreground/60" />
+                          View details
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            setMenuUserId(null);
+                            messageUser(user.id);
+                          }}
+                        >
+                          <Mail size={14} className="text-muted-foreground/60" />
+                          Message
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2 disabled:opacity-60"
+                          onClick={() => {
+                            const idOrEmail = (user.email || user.phone || "").toString();
+                            void copyToClipboard(idOrEmail, "Copied user identifier.");
+                            setMenuUserId(null);
+                          }}
+                          disabled={!(user.email || user.phone)}
+                        >
+                          <Copy size={14} className="text-muted-foreground/60" />
+                          Copy email/phone
+                        </button>
+                        <div className="h-px bg-border/30" />
                         <button
                           className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
                           onClick={() => {
@@ -615,10 +840,13 @@ export function AdminUsers() {
                         </button>
                         <button
                           className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
-                          onClick={() => resetPassword(user)}
+                          onClick={() => {
+                            setMenuUserId(null);
+                            generatePasswordResetLink(user);
+                          }}
                         >
                           <Lock size={14} className="text-muted-foreground/60" />
-                          Reset Password
+                          Reset Link
                         </button>
                         {needsSellerReview && (
                           <>
@@ -662,8 +890,21 @@ export function AdminUsers() {
               </motion.div>
             )})}
           </div>
+            {!loading && hasMore && (
+              <div className="pt-3">
+                <button
+                  type="button"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/15 hover:bg-muted/25 text-[0.8125rem] text-muted-foreground/80"
+                  onClick={loadMoreUsers}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? "Loading…" : "Load more"}
+                </button>
+              </div>
+            )}
         </SectionCard>
       </motion.div>
+
 
       <AnimatePresence>
         {formOpen && (
@@ -772,7 +1013,7 @@ export function AdminUsers() {
                 <input
                   value={form.password}
                   onChange={e => setForm((p: any) => ({ ...p, password: e.target.value }))}
-                  placeholder={formMode === "create" ? "Password (optional)" : "New password (optional)"}
+                  placeholder={formMode === "create" ? "Password (required)" : "New password (optional)"}
                   type="password"
                   className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                 />
@@ -876,6 +1117,172 @@ export function AdminUsers() {
                   {reviewSaving ? "Saving…" : reviewMode === "approve" ? "Approve" : "Reject"}
                 </BounceButton>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {resetLinkOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setResetLinkOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[620px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-5">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">Password reset link</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    Expires: {resetLinkData?.expires_at ? new Date(resetLinkData.expires_at).toLocaleString() : "—"}
+                  </p>
+                </div>
+                <button
+                  className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60"
+                  onClick={() => setResetLinkOpen(false)}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-muted/15 border border-border/30 p-4">
+                <div className="text-[0.75rem] text-muted-foreground/70 mb-2">Share this link with the user:</div>
+                <div className="text-[0.8125rem] break-all text-foreground/90">{resetLinkData?.url || "—"}</div>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-5">
+                <BounceButton variant="ghost" size="sm" onClick={() => setResetLinkOpen(false)}>
+                  Close
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    const url = resetLinkData?.url || "";
+                    if (!url) return;
+                    navigator.clipboard?.writeText?.(url);
+                    setSuccess("Reset link copied.");
+                    setResetLinkOpen(false);
+                  }}
+                  icon={<Copy size={14} />}
+                >
+                  Copy link
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {detailOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/30"
+            onClick={() => setDetailOpen(false)}
+          >
+            <motion.div
+              initial={{ x: 40, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 40, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="absolute right-0 top-0 h-full w-full max-w-[560px] bg-card border-l border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="min-w-0">
+                  <div className="text-[0.75rem] text-muted-foreground/60">User 360</div>
+                  <h2 className="text-foreground tracking-tight truncate">
+                    {detailData?.user?.display_name || detailData?.user?.email || detailData?.user?.phone || "—"}
+                  </h2>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setDetailOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {detailLoading ? (
+                <div className="px-4 py-3 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/70">Loading…</div>
+              ) : (
+                <>
+                  <div className="flex gap-2 mb-4">
+                    <BounceButton
+                      variant="primary"
+                      size="sm"
+                      onClick={() => messageUser(detailData?.user?.id)}
+                      icon={<Mail size={14} />}
+                    >
+                      Message
+                    </BounceButton>
+                    <BounceButton
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => generatePasswordResetLink(detailData?.user)}
+                      icon={<Lock size={14} />}
+                    >
+                      Reset link
+                    </BounceButton>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/30 p-4">
+                      <div className="text-[0.75rem] text-muted-foreground/70 mb-2">Profile</div>
+                      <div className="text-[0.8125rem] text-foreground/90">
+                        <div>Email: {detailData?.user?.email || "—"}</div>
+                        <div>Phone: {detailData?.user?.phone || "—"}</div>
+                        <div>Role: {detailData?.user?.role || "—"}</div>
+                        <div>Status: {detailData?.user?.status || "—"}</div>
+                        <div>Last active: {detailData?.user?.last_active_at ? relativeTime(detailData.user.last_active_at) : "—"}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-muted/10 border border-border/30 p-4">
+                      <div className="text-[0.75rem] text-muted-foreground/70 mb-2">Commerce</div>
+                      <div className="grid grid-cols-2 gap-2 text-[0.8125rem] text-foreground/90">
+                        <div>Buyer orders: {formatNumber(detailData?.commerce?.buyer_orders_count)}</div>
+                        <div>Seller orders: {formatNumber(detailData?.commerce?.seller_orders_count)}</div>
+                        <div>Shipments: {formatNumber(detailData?.commerce?.shipments_count)}</div>
+                        <div>Disputes: {formatNumber(detailData?.commerce?.disputes_count)}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-muted/10 border border-border/30 p-4">
+                      <div className="text-[0.75rem] text-muted-foreground/70 mb-2">Security</div>
+                      <div className="grid grid-cols-2 gap-2 text-[0.8125rem] text-foreground/90">
+                        <div>2FA: {detailData?.security?.two_factor_enabled ? "Enabled" : "Off"}</div>
+                        <div>Recovery codes: {detailData?.security?.recovery_generated ? "Generated" : "Not generated"}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-muted/10 border border-border/30 p-4">
+                      <div className="text-[0.75rem] text-muted-foreground/70 mb-2">KYC Documents</div>
+                      {(detailData?.kyc?.documents || []).length ? (
+                        <div className="space-y-2">
+                          {(detailData.kyc.documents || []).slice(0, 8).map((d: any) => (
+                            <div key={d.id} className="flex items-center justify-between text-[0.8125rem]">
+                              <div className="text-foreground/90">{d.doc_type || d.kind || "Document"}</div>
+                              <div className="text-muted-foreground/70">{d.review_status || "—"}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[0.8125rem] text-muted-foreground/70">No documents.</div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </motion.div>
           </motion.div>
         )}

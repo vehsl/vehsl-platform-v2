@@ -35,10 +35,6 @@ import { WorkersTasks, WorkersRoutes, WorkersInspections, WorkersPackaging } fro
 export const router = createBrowserRouter([
   {
     path: "/",
-    loader: () => redirect("/admin"),
-  },
-  {
-    path: "/admin",
     Component: Layout,
     children: [
       { index: true, Component: AdminDashboard },
@@ -51,7 +47,7 @@ export const router = createBrowserRouter([
     ],
   },
   {
-    path: "/management",
+    path: "management",
     Component: Layout,
     children: [
       { index: true, Component: ManagementDashboard },
@@ -68,7 +64,7 @@ export const router = createBrowserRouter([
     ],
   },
   {
-    path: "/workers",
+    path: "workers",
     Component: Layout,
     children: [
       { index: true, Component: WorkersPortal },
@@ -79,7 +75,7 @@ export const router = createBrowserRouter([
     ],
   },
   {
-    path: "/legal",
+    path: "legal",
     Component: Layout,
     children: [
       { index: true, Component: LegalDashboard },
@@ -92,7 +88,7 @@ export const router = createBrowserRouter([
     ],
   },
   {
-    path: "/support",
+    path: "support",
     Component: Layout,
     children: [
       { index: true, Component: SupportCenter },
@@ -100,7 +96,7 @@ export const router = createBrowserRouter([
     ],
   },
   {
-    path: "/inspector",
+    path: "inspector",
     Component: Layout,
     children: [
       { index: true, Component: InspectorPortal },
@@ -108,6 +104,6 @@ export const router = createBrowserRouter([
   },
   {
     path: "*",
-    loader: () => redirect("/admin"),
+    loader: () => redirect("/"),
   },
 ], { basename: "/admin" });

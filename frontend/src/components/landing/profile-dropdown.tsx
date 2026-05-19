@@ -363,7 +363,7 @@ export function ProfileDropdown() {
                   {/* Nav items */}
                   <div className="space-y-0.5 py-1">
                     <MenuItem icon={ShoppingBag} label="My orders" sub={`${ordersOnWay} on the way`} onClick={() => { window.location.href = "/orders"; }} />
-                    <MenuItem icon={MessageCircle} label="Messages" sub={`${unreadMessages} unread`} onClick={() => { window.location.href = "/messages"; }} />
+                    <MenuItem icon={MessageCircle} label="Messages" sub={`${unreadMessages} unread`} onClick={() => { const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`); window.location.href = `/messages?returnTo=${rt}`; }} />
                     <MenuItem icon={Heart} label="Wishlist" sub={`${wishlistItems} items`} onClick={() => { window.location.href = "/wishlist"; }} />
                     <MenuItem
                       icon={Store}

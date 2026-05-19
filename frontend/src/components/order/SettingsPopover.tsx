@@ -659,7 +659,8 @@ function ProfilePopover({
         }
         if (item.key === 'messages') {
             onClose();
-            window.location.href = '/messages';
+            const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+            window.location.href = `/messages?returnTo=${rt}`;
             return;
         }
         if (item.key === 'help') {

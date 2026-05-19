@@ -571,28 +571,28 @@ export function AdminDashboard() {
               label: "Add User",
               color: "#0171E3",
               desc: "Invite team member",
-              path: "/admin/users",
+              path: "/users",
             },
             {
               icon: <Package size={20} />,
               label: "New Product",
               color: "#3B82F6",
               desc: "Create listing",
-              path: "/admin/products",
+              path: "/products",
             },
             {
               icon: <Truck size={20} />,
               label: "Track Delivery",
               color: "#30A46C",
               desc: "Live tracking",
-              path: "/admin/logistics",
+              path: "/logistics",
             },
             {
               icon: <BarChart3 size={20} />,
               label: "View Reports",
               color: "#D97706",
               desc: "Analytics & insights",
-              path: "/admin",
+              path: "/",
             },
           ].map((action) => (
             <motion.button
