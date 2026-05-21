@@ -48,6 +48,7 @@ from .models import (
     UserProfile,
     UserSettings,
 )
+from .admin_utils import audit as _audit
 from .serializers import (
     AdminProfileUpdateSerializer,
     AdminKycDocumentSerializer,
@@ -80,6 +81,7 @@ from .dashboard_serializers import (
     WarehouseReleaseRequestSerializer,
     WarehouseReleaseRecordSerializer,
 )
+from .admin_utils import AdminPageNumberPagination, response_list
 
 SERVER_BUILD = os.environ.get("VEHSL_SERVER_BUILD") or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -92,20 +94,6 @@ def _is_super_admin(user: User) -> bool:
     if getattr(user, "is_superuser", False):
         return True
     return _admin_role(user) == AdminProfile.AdminRole.SUPER_ADMIN
-
-
-def _audit(actor: User | None, *, action: str, target_type: str, target_id: str = "", payload: dict | None = None):
-    try:
-        AuditLog.objects.create(
-            actor=actor,
-            actor_role=(getattr(actor, "role", "") or "").lower() if actor else "",
-            action=action,
-            target_type=target_type,
-            target_id=str(target_id or ""),
-            payload=payload or {},
-        )
-    except Exception:
-        pass
 
 
 def _can_manage_admin_users(actor: User) -> bool:
@@ -409,6 +397,13 @@ class AdminPlatformSettingsView(APIView):
 
         obj.updated_by = request.user
         obj.save(update_fields=["general", "notifications", "security", "updated_at", "updated_by"])
+        _audit(
+            request.user,
+            action="admin_platform_settings_updated",
+            target_type="admin_settings",
+            target_id="global",
+            payload={"fields": list((request.data or {}).keys())},
+        )
 
         general = {**defaults["general"], **(obj.general or {})}
         notifications = {**defaults["notifications"], **(obj.notifications or {})}
@@ -2332,12 +2327,32 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
         q = (self.request.query_params.get("q") or "").strip()
         if q:
-            qs = qs.filter(
-                Q(email__icontains=q)
-                | Q(phone__icontains=q)
-                | Q(first_name__icontains=q)
-                | Q(last_name__icontains=q)
-            )
+            qv = q.strip()
+            qn = qv.lower()
+            is_email = "@" in qn and "." in qn
+            phoneish = qn.replace("+", "").replace(" ", "").replace("-", "").isdigit()
+            parts = [p for p in qv.split(" ") if p]
+
+            if is_email:
+                qs = qs.filter(email__icontains=qv)
+            elif phoneish:
+                qs = qs.filter(phone__icontains=qv)
+            elif len(parts) >= 2:
+                first = parts[0]
+                last = " ".join(parts[1:])
+                qs = qs.filter(
+                    Q(first_name__icontains=first, last_name__icontains=last)
+                    | Q(first_name__icontains=last, last_name__icontains=first)
+                    | Q(email__icontains=qv)
+                    | Q(phone__icontains=qv)
+                )
+            else:
+                qs = qs.filter(
+                    Q(first_name__icontains=qv)
+                    | Q(last_name__icontains=qv)
+                    | Q(email__icontains=qv)
+                    | Q(phone__icontains=qv)
+                )
 
         role = (self.request.query_params.get("role") or "").strip().lower()
         if role in {"buyer", "seller", "admin", "partner"}:
@@ -2854,6 +2869,7 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminVerificationUserSerializer
+    pagination_class = AdminPageNumberPagination
 
     def _base_users_queryset(self):
         qs = User.objects.select_related("profile", "seller_profile")
@@ -2900,12 +2916,7 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
         )
 
     def list(self, request, *args, **kwargs):
-        page = self.paginate_queryset(self.get_queryset())
-        if page is not None:
-            ser = AdminVerificationUserSerializer(page, many=True, context={"request": request})
-            return self.get_paginated_response(ser.data)
-        ser = AdminVerificationUserSerializer(self.get_queryset(), many=True, context={"request": request})
-        return Response(ser.data)
+        return response_list(self, qs=self.get_queryset(), serializer_class=AdminVerificationUserSerializer, request=request)
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
@@ -3064,6 +3075,7 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
             SellerProfile.objects.get_or_create(user=user)
             SellerProfile.objects.filter(user=user).update(verification_status=SellerProfile.VerificationStatus.PENDING)
 
+        _audit(request.user, action="admin_kyc_documents_requested", target_type="user", target_id=str(user.id), payload={"missing_groups": missing})
         return Response({"requested": True, "missing_groups": missing})
 
 
@@ -3091,6 +3103,7 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
         )
         doc.refresh_from_db()
         _sync_seller_verification_status(doc.user)
+        _audit(request.user, action="admin_kyc_document_approved", target_type="kyc_document", target_id=str(doc.id), payload={"user_id": doc.user_id})
         return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="reject")
@@ -3113,6 +3126,7 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
         )
         doc.refresh_from_db()
         _sync_seller_verification_status(doc.user)
+        _audit(request.user, action="admin_kyc_document_rejected", target_type="kyc_document", target_id=str(doc.id), payload={"user_id": doc.user_id, "reason": reason})
         return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)
 
 class SellerDashboardViewSet(viewsets.ViewSet):

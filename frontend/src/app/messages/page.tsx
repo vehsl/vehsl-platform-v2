@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { ArrowLeft, Search, Plus, Send, Paperclip, MoreHorizontal, X, Check } from "lucide-react";
+import { authedFetch, fetchJsonAuthed } from "@/lib/api";
 
 type ThreadUser = {
   id: number;
@@ -38,30 +39,6 @@ type ChatThread = {
 
 type UserSearchResult = ThreadUser;
 
-function apiBase() {
-  const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-  const normalize = (u: string) => u.replace(/\/$/, "");
-  if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
-  const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
-  return normalize(`${window.location.protocol}//${host}:8000`);
-}
-
-function readAccessToken() {
-  try {
-    return window.localStorage.getItem("vehsl.access") || "";
-  } catch {
-    return "";
-  }
-}
-
-function readRefreshToken() {
-  try {
-    return window.localStorage.getItem("vehsl.refresh") || "";
-  } catch {
-    return "";
-  }
-}
-
 function readUser() {
   try {
     const raw = window.localStorage.getItem("vehsl.user");
@@ -69,14 +46,6 @@ function readUser() {
   } catch {
     return null;
   }
-}
-
-function clearAuth() {
-  try {
-    window.localStorage.removeItem("vehsl.access");
-    window.localStorage.removeItem("vehsl.refresh");
-    window.localStorage.removeItem("vehsl.user");
-  } catch {}
 }
 
 export default function Page() {
@@ -128,59 +97,6 @@ export default function Page() {
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const refreshAccess = useCallback(async () => {
-    const refresh = readRefreshToken();
-    if (!refresh) return "";
-    try {
-      const res = await fetch(`${apiBase()}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh }),
-      });
-      const data = await res.json().catch(() => null);
-      const nextAccess = (data?.access || "").toString();
-      if (!res.ok || !nextAccess) return "";
-      try {
-        window.localStorage.setItem("vehsl.access", nextAccess);
-      } catch {}
-      return nextAccess;
-    } catch {
-      return "";
-    }
-  }, []);
-
-  const authedFetch = useCallback(
-    async (path: string, init?: RequestInit) => {
-      const doFetch = async (access: string) =>
-        fetch(`${apiBase()}${path}`, {
-          ...init,
-          headers: {
-            ...(init?.headers || {}),
-            ...(access ? { Authorization: `Bearer ${access}` } : {}),
-          },
-          cache: "no-store",
-        });
-
-      let access = readAccessToken();
-      let res = await doFetch(access);
-      if (res.status !== 401) return res;
-
-      const nextAccess = await refreshAccess();
-      if (!nextAccess) {
-        clearAuth();
-        try {
-          window.location.assign("/?signin=1");
-        } catch {}
-        return res;
-      }
-
-      access = nextAccess;
-      res = await doFetch(access);
-      return res;
-    },
-    [refreshAccess]
-  );
-
   const returnTo = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -216,9 +132,7 @@ export default function Page() {
   const fetchThreads = useCallback(async () => {
     setLoadingThreads(true);
     try {
-      const res = await authedFetch(`/api/v1/chat/threads/`);
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+      const data = await fetchJsonAuthed(`/api/v1/chat/threads/`);
       const items = Array.isArray(data) ? (data as ChatThread[]) : [];
       setThreads(items);
       if (activeThreadId == null && items.length) setActiveThreadId(items[0].id);
@@ -227,15 +141,13 @@ export default function Page() {
     } finally {
       setLoadingThreads(false);
     }
-  }, [activeThreadId, authedFetch]);
+  }, [activeThreadId]);
 
   const fetchMessages = useCallback(
     async (threadId: number) => {
       setLoadingMessages(true);
       try {
-        const res = await authedFetch(`/api/v1/chat/threads/${threadId}/messages/?limit=200`);
-        const data = await res.json().catch(() => null);
-        if (!res.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+        const data = await fetchJsonAuthed(`/api/v1/chat/threads/${threadId}/messages/?limit=200`);
         const items = Array.isArray(data) ? (data as ChatMessage[]) : [];
         setMessages(items);
         setMenuMsgId(null);
@@ -251,7 +163,7 @@ export default function Page() {
         setLoadingMessages(false);
       }
     },
-    [authedFetch]
+    []
   );
 
   useEffect(() => {
@@ -280,19 +192,17 @@ export default function Page() {
       fd.set("content", composer.trim());
       files.forEach((f) => fd.append("files", f));
 
-      const res = await authedFetch(`/api/v1/chat/threads/${activeThreadId}/messages/`, {
+      const data = (await fetchJsonAuthed(`/api/v1/chat/threads/${activeThreadId}/messages/`, {
         method: "POST",
         body: fd,
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+      })) as ChatMessage;
 
       setComposer("");
       setFiles([]);
-      setMessages((prev) => [...prev, data as ChatMessage]);
+      setMessages((prev) => [...prev, data]);
       setThreads((prev) =>
         prev.map((t) =>
-          t.id === activeThreadId ? { ...t, last_message: data as ChatMessage, updated_at: (data as ChatMessage).sent_at } : t
+          t.id === activeThreadId ? { ...t, last_message: data, updated_at: data.sent_at } : t
         )
       );
       window.setTimeout(() => {
@@ -303,7 +213,7 @@ export default function Page() {
     } finally {
       setSending(false);
     }
-  }, [activeThreadId, authedFetch, composer, files, sending]);
+  }, [activeThreadId, composer, files, sending]);
 
   const beginEdit = useCallback(
     (m: ChatMessage) => {
@@ -317,13 +227,10 @@ export default function Page() {
   const saveEdit = useCallback(async () => {
     if (!editingMsgId) return;
     try {
-      const res = await authedFetch(`/api/v1/chat/messages/${editingMsgId}/`, {
+      const data = (await fetchJsonAuthed(`/api/v1/chat/messages/${editingMsgId}/`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: editingText }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+      })) as ChatMessage;
       setMessages((prev) => prev.map((x) => (x.id === editingMsgId ? (data as ChatMessage) : x)));
       setThreads((prev) =>
         prev.map((t) => (t.id === (data as ChatMessage).thread ? { ...t, last_message: t.last_message?.id === editingMsgId ? (data as ChatMessage) : t.last_message } : t))
@@ -333,7 +240,7 @@ export default function Page() {
     } catch (e: any) {
       toast("Could not edit message", { description: e?.message || "Try again." });
     }
-  }, [authedFetch, editingMsgId, editingText]);
+  }, [editingMsgId, editingText]);
 
   const deleteMessage = useCallback(
     async (id: number) => {
@@ -349,18 +256,16 @@ export default function Page() {
         toast("Could not delete message", { description: e?.message || "Try again." });
       }
     },
-    [authedFetch]
+    []
   );
 
   const searchUsers = useCallback(
     async (q: string, offset: number) => {
       setSearchingUsers(true);
       try {
-        const res = await authedFetch(
+        const data = await fetchJsonAuthed(
           `/api/v1/chat/threads/users/?q=${encodeURIComponent(q)}&limit=50&offset=${encodeURIComponent(String(offset))}`
         );
-        const data = await res.json().catch(() => null);
-        if (!res.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
         const items = Array.isArray(data?.results) ? (data.results as UserSearchResult[]) : [];
         const hasMore = !!data?.has_more;
         const nextOffset = Number(data?.next_offset || 0);
@@ -377,7 +282,7 @@ export default function Page() {
         setSearchingUsers(false);
       }
     },
-    [authedFetch]
+    []
   );
 
   useEffect(() => {
@@ -415,13 +320,10 @@ export default function Page() {
   const createThreadWith = useCallback(
     async (u: UserSearchResult) => {
       try {
-        const res = await authedFetch(`/api/v1/chat/threads/`, {
+        const data = (await fetchJsonAuthed(`/api/v1/chat/threads/`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ participants: [u.id] }),
-        });
-        const data = await res.json().catch(() => null);
-        if (!res.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${res.status}`);
+        })) as ChatThread;
         const thread = data as ChatThread;
         setCreating(false);
         setUserSearch("");
@@ -432,7 +334,7 @@ export default function Page() {
         toast("Could not start chat", { description: e?.message || "Try again." });
       }
     },
-    [authedFetch, fetchThreads]
+    [fetchThreads]
   );
 
   return (

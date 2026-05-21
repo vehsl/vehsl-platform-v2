@@ -14,6 +14,7 @@ import {
   Microscope,
   LogOut,
 } from "lucide-react";
+import { authedFetch } from "@/lib/api";
 
 /*
  * PLATONIC RoleSelector
@@ -125,18 +126,6 @@ export function RoleSelector() {
     return roles.filter((r) => allow.has(r.id));
   }, [allowedRoleIds, user]);
 
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
   const logout = async () => {
     const refresh = (() => {
       try {
@@ -145,21 +134,9 @@ export function RoleSelector() {
         return "";
       }
     })();
-    const access = (() => {
-      try {
-        return window.localStorage.getItem("vehsl.access") || "";
-      } catch {
-        return "";
-      }
-    })();
-
     try {
-      await fetch(`${apiBase()}/api/v1/auth/logout`, {
+      await authedFetch(`/api/v1/auth/logout`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(access ? { Authorization: `Bearer ${access}` } : {}),
-        },
         body: JSON.stringify({ refresh }),
       });
     } catch {}

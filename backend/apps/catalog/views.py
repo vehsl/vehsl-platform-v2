@@ -5,12 +5,11 @@ from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
+from apps.accounts.admin_utils import AdminPageNumberPagination, audit
 from apps.accounts.permissions import IsAdmin, IsSeller
-from apps.accounts.models import AuditLog
 from apps.accounts.models import User
 
 from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
@@ -28,24 +27,6 @@ from .serializers import (
     TrademarkSerializer,
 )
 
-def _audit(actor: User | None, *, action: str, target_type: str, target_id: str = "", payload: dict | None = None):
-    try:
-        AuditLog.objects.create(
-            actor=actor,
-            actor_role=(getattr(actor, "role", "") or "").lower() if actor else "",
-            action=action,
-            target_type=target_type,
-            target_id=str(target_id or ""),
-            payload=payload or {},
-        )
-    except Exception:
-        pass
-
-class AdminProductPagination(PageNumberPagination):
-    page_size = 20
-    page_size_query_param = "page_size"
-    max_page_size = 100
-
 
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
@@ -57,6 +38,25 @@ class CategoryViewSet(viewsets.ModelViewSet):
         if self.action in {"create", "update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.AllowAny()]
+
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit(self.request.user, action="admin_category_created", target_type="category", target_id=str(obj.id), payload={})
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        audit(
+            self.request.user,
+            action="admin_category_updated",
+            target_type="category",
+            target_id=str(obj.id),
+            payload={"fields": list((self.request.data or {}).keys())},
+        )
+
+    def perform_destroy(self, instance):
+        obj_id = getattr(instance, "id", "")
+        audit(self.request.user, action="admin_category_deleted", target_type="category", target_id=str(obj_id), payload={})
+        super().perform_destroy(instance)
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -299,11 +299,36 @@ class ComplianceRuleViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.AllowAny()]
 
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit(
+            self.request.user,
+            action="admin_compliance_rule_created",
+            target_type="compliance_rule",
+            target_id=str(obj.id),
+            payload={"category_id": str(getattr(obj, "category_id", ""))},
+        )
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        audit(
+            self.request.user,
+            action="admin_compliance_rule_updated",
+            target_type="compliance_rule",
+            target_id=str(obj.id),
+            payload={"fields": list((self.request.data or {}).keys())},
+        )
+
+    def perform_destroy(self, instance):
+        obj_id = getattr(instance, "id", "")
+        audit(self.request.user, action="admin_compliance_rule_deleted", target_type="compliance_rule", target_id=str(obj_id), payload={})
+        super().perform_destroy(instance)
+
 
 class AdminProductViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminProductListSerializer
-    pagination_class = AdminProductPagination
+    pagination_class = AdminPageNumberPagination
 
     def _low_stock_threshold(self) -> int:
         raw = (self.request.query_params.get("low_stock_threshold") or "").strip()
@@ -410,7 +435,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             ser = AdminProductListSerializer(page, many=True, context={"low_stock_threshold": threshold})
             return self.get_paginated_response(ser.data)
         ser = AdminProductListSerializer(qs, many=True, context={"low_stock_threshold": threshold})
-        return Response(ser.data)
+        return Response({"count": len(ser.data), "next": None, "previous": None, "results": ser.data})
 
     def retrieve(self, request, pk=None):
         threshold = self._low_stock_threshold()
@@ -458,7 +483,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             )
 
         obj = self.get_queryset().get(id=product.id)
-        _audit(
+        audit(
             request.user,
             action="admin_product_created",
             target_type="product",
@@ -507,7 +532,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             )
 
         obj = self.get_queryset().get(id=product.id)
-        _audit(
+        audit(
             request.user,
             action="admin_product_updated",
             target_type="product",
@@ -551,7 +576,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
     def export(self, request):
         threshold = self._low_stock_threshold()
         qs = self.get_queryset()
-        _audit(
+        audit(
             request.user,
             action="admin_products_exported",
             target_type="admin_products",

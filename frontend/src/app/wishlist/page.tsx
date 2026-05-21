@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Toaster, toast } from "sonner";
 import { Heart, Search, Trash2, RefreshCw, ArrowLeft } from "lucide-react";
 import { ImageWithFallback } from "@/components/landing/figma/ImageWithFallback";
+import { authedFetch, fetchJsonAuthed } from "@/lib/api";
 
 type WishlistItem = {
   id: number;
@@ -26,38 +27,6 @@ type ProductSearchResult = {
   image_url: string;
   in_wishlist: boolean;
 };
-
-function apiBase() {
-  const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-  const normalize = (u: string) => u.replace(/\/$/, "");
-  if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
-  const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
-  return normalize(`${window.location.protocol}//${host}:8000`);
-}
-
-function readAccessToken() {
-  try {
-    return window.localStorage.getItem("vehsl.access") || "";
-  } catch {
-    return "";
-  }
-}
-
-function readRefreshToken() {
-  try {
-    return window.localStorage.getItem("vehsl.refresh") || "";
-  } catch {
-    return "";
-  }
-}
-
-function clearAuth() {
-  try {
-    window.localStorage.removeItem("vehsl.access");
-    window.localStorage.removeItem("vehsl.refresh");
-    window.localStorage.removeItem("vehsl.user");
-  } catch {}
-}
 
 function fmtMoney(currency: string, amount: string) {
   const num = Number(amount);
@@ -91,59 +60,6 @@ export default function Page() {
     }
   }, []);
 
-  const refreshAccess = useCallback(async () => {
-    const refresh = readRefreshToken();
-    if (!refresh) return "";
-    try {
-      const res = await fetch(`${apiBase()}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh }),
-      });
-      const data = await res.json().catch(() => null);
-      const nextAccess = (data?.access || "").toString();
-      if (!res.ok || !nextAccess) return "";
-      try {
-        window.localStorage.setItem("vehsl.access", nextAccess);
-      } catch {}
-      return nextAccess;
-    } catch {
-      return "";
-    }
-  }, []);
-
-  const authedFetch = useCallback(
-    async (path: string, init?: RequestInit) => {
-      const doFetch = async (access: string) =>
-        fetch(`${apiBase()}${path}`, {
-          ...init,
-          headers: {
-            ...(init?.headers || {}),
-            ...(access ? { Authorization: `Bearer ${access}` } : {}),
-          },
-          cache: "no-store",
-        });
-
-      let access = readAccessToken();
-      let res = await doFetch(access);
-      if (res.status !== 401) return res;
-
-      const nextAccess = await refreshAccess();
-      if (!nextAccess) {
-        clearAuth();
-        try {
-          window.location.assign("/?signin=1");
-        } catch {}
-        return res;
-      }
-
-      access = nextAccess;
-      res = await doFetch(access);
-      return res;
-    },
-    [refreshAccess]
-  );
-
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return items;
@@ -156,19 +72,14 @@ export default function Page() {
   const fetchWishlist = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await authedFetch(`/api/v1/wishlist/`);
-      if (!res.ok) {
-        const msg = await res.text();
-        throw new Error(msg || `HTTP ${res.status}`);
-      }
-      const data = (await res.json()) as WishlistItem[];
+      const data = (await fetchJsonAuthed(`/api/v1/wishlist/`)) as WishlistItem[];
       setItems(Array.isArray(data) ? data : []);
     } catch (e: any) {
       toast("Could not load wishlist", { description: e?.message || "Try again." });
     } finally {
       setLoading(false);
     }
-  }, [authedFetch]);
+  }, []);
 
   useEffect(() => {
     void fetchWishlist();
@@ -177,12 +88,7 @@ export default function Page() {
   const fetchProductSearch = useCallback(async (q: string) => {
     setSearchingProducts(true);
     try {
-      const res = await authedFetch(`/api/v1/wishlist/search/?q=${encodeURIComponent(q)}&limit=12`);
-      if (!res.ok) {
-        const msg = await res.text();
-        throw new Error(msg || `HTTP ${res.status}`);
-      }
-      const data = await res.json().catch(() => null);
+      const data = await fetchJsonAuthed(`/api/v1/wishlist/search/?q=${encodeURIComponent(q)}&limit=12`);
       const results = Array.isArray(data?.results) ? (data.results as ProductSearchResult[]) : [];
       setProductResults(results);
     } catch (e: any) {
@@ -191,7 +97,7 @@ export default function Page() {
     } finally {
       setSearchingProducts(false);
     }
-  }, [authedFetch]);
+  }, []);
 
   useEffect(() => {
     const q = search.trim();
@@ -209,22 +115,18 @@ export default function Page() {
   const toggleWishlist = useCallback(
     async (productId: number) => {
       try {
-        const res = await authedFetch(`/api/v1/wishlist/toggle/`, {
+        await fetchJsonAuthed(`/api/v1/wishlist/toggle/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ product_id: productId }),
         });
-        if (!res.ok) {
-          const msg = await res.text();
-          throw new Error(msg || `HTTP ${res.status}`);
-        }
         setProductResults((xs) => xs.map((x) => (x.id === productId ? { ...x, in_wishlist: !x.in_wishlist } : x)));
         await fetchWishlist();
       } catch (e: any) {
         toast("Could not update wishlist", { description: e?.message || "Try again." });
       }
     },
-    [authedFetch, fetchWishlist]
+    [fetchWishlist]
   );
 
   const removeItem = useCallback(
@@ -232,19 +134,18 @@ export default function Page() {
       const prev = items;
       setItems((xs) => xs.filter((x) => x.product_id !== productId));
       try {
-        const res = await authedFetch(`/api/v1/wishlist/toggle/`, {
+        await fetchJsonAuthed(`/api/v1/wishlist/toggle/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ product_id: productId }),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setProductResults((xs) => xs.map((x) => (x.id === productId ? { ...x, in_wishlist: false } : x)));
       } catch (e: any) {
         setItems(prev);
         toast("Could not remove item", { description: e?.message || "Try again." });
       }
     },
-    [authedFetch, items]
+    [items]
   );
 
   const clearAll = useCallback(async () => {
@@ -260,7 +161,7 @@ export default function Page() {
       setItems(prev);
       toast("Could not clear wishlist", { description: e?.message || "Try again." });
     }
-  }, [authedFetch, items]);
+  }, [items]);
 
   return (
     <div className="min-h-dvh font-urbanist selection:bg-blue-500/15 selection:text-blue-600 relative overflow-x-hidden">

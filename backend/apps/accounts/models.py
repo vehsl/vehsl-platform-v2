@@ -97,6 +97,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email or self.phone or f"user:{self.pk}"
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "date_joined"]),
+            models.Index(fields=["role", "date_joined"]),
+        ]
+
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")

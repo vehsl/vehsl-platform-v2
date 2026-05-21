@@ -11,7 +11,8 @@ import {
   ChevronRight, ArrowUpRight, TrendingUp, BarChart3, Star, X, Copy,
   ClipboardCheck, Camera, Download, Upload, FileText, Hash,
 } from "lucide-react";
-import { getApiBase, authedFetch } from "@/lib/api";
+import { getApiBase, authedFetch, fetchJsonAuthed } from "@/lib/api";
+import { usePaginatedList } from "@/lib/usePaginatedList";
 import { StatCard } from "./StatCard";
 import { StatusPill } from "./StatusPill";
 import { BounceButton } from "./BounceButton";
@@ -45,37 +46,6 @@ function SectionCard({ children, className = "" }: { children: React.ReactNode; 
   );
 }
 
-async function fetchJsonAuthed(path: string, init?: RequestInit) {
-  const res = await authedFetch(path, init);
-  if (res.status === 401) {
-    try {
-      window.location.assign("/?signin=1");
-    } catch {}
-  }
-  const ct = (res.headers.get("content-type") || "").toLowerCase();
-  const isJson = ct.includes("application/json");
-  const data = isJson ? await res.json().catch(() => null) : await res.text().catch(() => null);
-  if (!res.ok) {
-    const pickMsg = (x: any): string => {
-      if (!x) return "";
-      if (typeof x === "string") return x;
-      if (typeof x?.detail === "string") return x.detail;
-      if (typeof x?.error === "string") return x.error;
-      if (typeof x === "object") {
-        for (const k of Object.keys(x)) {
-          const v = (x as any)[k];
-          if (typeof v === "string" && v.trim()) return v;
-          if (Array.isArray(v) && v.length && typeof v[0] === "string") return v[0];
-        }
-      }
-      return "";
-    };
-    const msg = pickMsg(data) || `Request failed (${res.status})`;
-    throw new Error(msg);
-  }
-  return data;
-}
-
 // ════════════════════════════════════════════════════════════
 //  ADMIN → USERS
 // ════════════════════════════════════════════════════════════
@@ -94,12 +64,8 @@ export function AdminUsers() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending" | "review" | "suspended">("all");
   const [stats, setStats] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -169,6 +135,45 @@ export function AdminUsers() {
 
   const fetchJson = fetchJsonAuthed;
 
+  const listFilters = useMemo(() => {
+    const f: any = {};
+    const s = search.trim();
+    if (s) f.q = s;
+    if (roleFilter !== "all") {
+      if (roleFilter === "manager") {
+        f.role = "admin";
+        f.admin_role = "manager";
+      } else {
+        f.role = roleFilter;
+      }
+    }
+    if (statusFilter !== "all") f.admin_status = statusFilter;
+    return f;
+  }, [search, roleFilter, statusFilter]);
+
+  const {
+    rows: listRows,
+    count: totalCount,
+    loading: loading,
+    error: listError,
+    page,
+    pageSize,
+    setPage,
+    refresh: refreshUsers,
+    totalPages,
+  } = usePaginatedList<any>({
+    endpoint: "/api/v1/admin/users/",
+    filters: listFilters,
+    initialOrdering: "",
+    initialPageSize: 20,
+    debounceMs: 250,
+  });
+
+  useEffect(() => {
+    setUsers(listRows);
+    setSelectedIds([]);
+  }, [listRows]);
+
   const copyToClipboard = useCallback(
     async (text: string, successMsg: string) => {
       if (!text) return;
@@ -204,14 +209,6 @@ export function AdminUsers() {
     return params;
   };
 
-  const fetchUsersList = async (opts?: { search?: string; roleFilter?: string; statusFilter?: string; page?: number }) => {
-    const params = buildUsersParams(opts);
-    const data = await fetchJson(`/api/v1/admin/users/?${params.toString()}`);
-    if (Array.isArray(data)) return { items: data, hasMore: false };
-    if (Array.isArray(data?.results)) return { items: data.results, hasMore: !!data?.next };
-    return { items: [], hasMore: false };
-  };
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -226,38 +223,6 @@ export function AdminUsers() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setError("");
-    setLoading(true);
-    setPage(1);
-    setHasMore(false);
-    setSelectedIds([]);
-    const t = setTimeout(() => {
-      (async () => {
-        try {
-          const res = await fetchUsersList({ page: 1 });
-          if (!cancelled) {
-            setUsers(res.items);
-            setHasMore(res.hasMore);
-          }
-        } catch (e: any) {
-          if (!cancelled) {
-            setUsers([]);
-            setError(e?.message || "Failed to load users.");
-          }
-        } finally {
-          if (!cancelled) setLoading(false);
-        }
-      })();
-    }, 250);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [search, roleFilter, statusFilter]);
 
   useEffect(() => {
     if (menuUserId == null) return;
@@ -458,11 +423,9 @@ export function AdminUsers() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: selectedIds, status: nextStatus }),
       });
-      const res = await fetchUsersList({ page: 1 });
-      setUsers(res.items);
-      setHasMore(res.hasMore);
       setPage(1);
       setSelectedIds([]);
+      refreshUsers();
       try {
         const newStats = await fetchJson("/api/v1/admin/users/stats");
         setStats(newStats);
@@ -481,11 +444,9 @@ export function AdminUsers() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: selectedIds }),
       });
-      const res = await fetchUsersList({ page: 1 });
-      setUsers(res.items);
-      setHasMore(res.hasMore);
       setPage(1);
       setSelectedIds([]);
+      refreshUsers();
       try {
         const newStats = await fetchJson("/api/v1/admin/users/stats");
         setStats(newStats);
@@ -502,22 +463,6 @@ export function AdminUsers() {
     try {
       window.open(url, "_blank", "noopener,noreferrer");
     } catch {}
-  };
-
-  const loadMoreUsers = async () => {
-    if (loadingMore || !hasMore) return;
-    setLoadingMore(true);
-    try {
-      const nextPage = page + 1;
-      const res = await fetchUsersList({ page: nextPage });
-      setUsers(prev => [...prev, ...res.items]);
-      setPage(nextPage);
-      setHasMore(res.hasMore);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load more users.");
-    } finally {
-      setLoadingMore(false);
-    }
   };
 
   const openSellerReview = (u: any, mode: "approve" | "reject") => {
@@ -554,10 +499,8 @@ export function AdminUsers() {
         setStats(newStats);
       } catch {}
       try {
-        const res = await fetchUsersList({ page: 1 });
-        setUsers(res.items);
-        setHasMore(res.hasMore);
         setPage(1);
+        refreshUsers();
       } catch {}
     } catch (e: any) {
       setError(e?.message || "Failed to update seller verification.");
@@ -700,9 +643,9 @@ export function AdminUsers() {
           )}
 
           {/* User List */}
-          {error && (
+          {(error || listError) && (
             <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
-              {error}
+              {error || listError}
             </div>
           )}
           {success && (
@@ -890,18 +833,39 @@ export function AdminUsers() {
               </motion.div>
             )})}
           </div>
-            {!loading && hasMore && (
-              <div className="pt-3">
+          {!loading && users.length > 0 && (
+            <div className="pt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="text-[0.75rem] text-muted-foreground/60">
+                {(() => {
+                  const start = (page - 1) * pageSize + 1;
+                  const end = start + users.length - 1;
+                  if (totalCount != null) return `Showing ${start}-${end} of ${formatNumber(totalCount)}`;
+                  return `Showing ${start}-${end}`;
+                })()}
+              </div>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="w-full px-4 py-3 rounded-2xl bg-muted/15 hover:bg-muted/25 text-[0.8125rem] text-muted-foreground/80"
-                  onClick={loadMoreUsers}
-                  disabled={loadingMore}
+                  className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 text-[0.75rem] text-muted-foreground/80 disabled:opacity-50"
+                  onClick={() => setPage((p: number) => Math.max(1, p - 1))}
+                  disabled={loading || page <= 1}
                 >
-                  {loadingMore ? "Loading…" : "Load more"}
+                  Prev
+                </button>
+                <div className="text-[0.75rem] text-muted-foreground/60">
+                  Page {page}{totalPages ? ` / ${totalPages}` : ""}
+                </div>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 text-[0.75rem] text-muted-foreground/80 disabled:opacity-50"
+                  onClick={() => setPage((p: number) => p + 1)}
+                  disabled={loading || (totalPages != null ? page >= totalPages : users.length < pageSize)}
+                >
+                  Next
                 </button>
               </div>
-            )}
+            </div>
+          )}
         </SectionCard>
       </motion.div>
 
@@ -1324,15 +1288,38 @@ export function AdminProducts() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "review">("all");
-  const [ordering, setOrdering] = useState<string>("-created_at");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [totalCount, setTotalCount] = useState<number | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
-  const [products, setProducts] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>("");
+  const [actionError, setActionError] = useState<string>("");
+  const listFilters = useMemo(() => {
+    const f: any = {};
+    const q = search.trim();
+    if (q) f.q = q;
+    if (catFilter !== "all") f.category = catFilter;
+    if (statusFilter !== "all") f.admin_status = statusFilter;
+    return f;
+  }, [search, catFilter, statusFilter]);
+
+  const {
+    rows: products,
+    count: totalCount,
+    loading,
+    error,
+    page,
+    pageSize,
+    ordering,
+    setPage,
+    setPageSize,
+    setOrdering,
+    refresh: refreshProducts,
+    totalPages,
+  } = usePaginatedList<any>({
+    endpoint: "/api/v1/admin/products/",
+    filters: listFilters,
+    initialOrdering: "-created_at",
+    initialPageSize: 20,
+    debounceMs: 250,
+  });
 
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1372,49 +1359,6 @@ export function AdminProducts() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    setError("");
-    setLoading(true);
-    const t = setTimeout(() => {
-      (async () => {
-        try {
-          const params = new URLSearchParams();
-          if (search.trim()) params.set("q", search.trim());
-          if (catFilter !== "all") params.set("category", catFilter);
-          if (statusFilter !== "all") params.set("admin_status", statusFilter);
-          if (ordering) params.set("ordering", ordering);
-          params.set("page", String(page));
-          params.set("page_size", String(pageSize));
-          const data = await fetchJson(`/api/v1/admin/products/?${params.toString()}`);
-          const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
-          const count = typeof data?.count === "number" ? Number(data.count) : Array.isArray(data) ? data.length : null;
-          if (!cancelled) {
-            setProducts(rows);
-            setTotalCount(Number.isFinite(count as any) ? (count as any) : null);
-          }
-        } catch (e: any) {
-          if (!cancelled) {
-            setProducts([]);
-            setTotalCount(null);
-            setError(e?.message || "Failed to load products.");
-          }
-        } finally {
-          if (!cancelled) setLoading(false);
-        }
-      })();
-    }, 250);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [search, catFilter, statusFilter, ordering, page, pageSize]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [search, catFilter, statusFilter, ordering, pageSize]);
-
   const refreshStats = async () => {
     try {
       const statsData = await fetchJson("/api/v1/admin/products/stats");
@@ -1453,19 +1397,15 @@ export function AdminProducts() {
       const stock = (form.stock_units || "").toString().trim();
       if (stock !== "") payload.stock_units = Number(stock);
 
-      const created = await fetchJson("/api/v1/admin/products/", {
+      await fetchJson("/api/v1/admin/products/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      if (page === 1 && ordering === "-created_at") {
-        setProducts(prev => [created, ...prev].slice(0, pageSize));
-      } else {
-        setPage(1);
-      }
-      setTotalCount(c => (typeof c === "number" ? c + 1 : c));
       setFormOpen(false);
+      setPage(1);
+      refreshProducts();
       await refreshStats();
     } catch (e: any) {
       setFormError(e?.message || "Failed to add product.");
@@ -1493,7 +1433,7 @@ export function AdminProducts() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (e: any) {
-      setError(e?.message || "Export failed.");
+      setActionError(e?.message || "Export failed.");
     }
   };
 
@@ -1501,7 +1441,7 @@ export function AdminProducts() {
   const startIdx = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const endIdx = total === 0 ? 0 : Math.min(page * pageSize, total);
   const hasPrev = page > 1;
-  const hasNext = typeof totalCount === "number" ? page * pageSize < totalCount : false;
+  const hasNext = totalPages != null ? page < totalPages : products.length === pageSize;
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
@@ -1586,9 +1526,9 @@ export function AdminProducts() {
             </div>
           </div>
 
-          {error && (
+          {(actionError || error) && (
             <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
-              {error}
+              {actionError || error}
             </div>
           )}
 
