@@ -612,7 +612,7 @@ class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
         cleared = 0
         blocked = 0
         ready_to_ship = 0
-        for o in orders_qs.iterator():
+        for o in orders_qs.iterator(chunk_size=200):
             conds = list(o.release_conditions.all())
             if not conds:
                 blocked += 1

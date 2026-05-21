@@ -171,7 +171,7 @@ class AdminUiNotificationsView(APIView):
 
             blocked = 0
             latest_blocked = None
-            for o in orders_qs.iterator():
+            for o in orders_qs.iterator(chunk_size=200):
                 conds = list(o.release_conditions.all())
                 if not conds:
                     blocked += 1
@@ -1344,9 +1344,59 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
     return groups
 
 
+def _valid_kyc_docs_for_user(user: User) -> list[KycDocument]:
+    docs: list[KycDocument] = []
+    seen_kinds: set[str] = set()
+    for doc in KycDocument.objects.filter(user=user).select_related("reviewed_by").order_by("-uploaded_at"):
+        try:
+            kind = (getattr(doc, "kind", "") or "").lower()
+            if kind and kind in seen_kinds:
+                continue
+            name = getattr(doc.file, "name", "") or ""
+            if name and default_storage.exists(name):
+                docs.append(doc)
+                if kind:
+                    seen_kinds.add(kind)
+        except Exception:
+            continue
+    return docs
+
+
+def _required_kyc_is_verified(user: User) -> bool:
+    docs = _valid_kyc_docs_for_user(user)
+    groups = _kyc_requirement_groups_for_user(user)
+    for group in groups:
+        if not group.get("required"):
+            continue
+        required_count = int(group.get("required_count") or 1)
+        kinds = {o["kind"] for o in (group.get("options") or [])}
+        group_docs = [d for d in docs if (d.kind or "") in kinds]
+        verified_count = sum(1 for d in group_docs if d.review_status == KycDocument.ReviewStatus.VERIFIED)
+        if verified_count < required_count:
+            return False
+    return True
+
+
+def _sync_seller_verification_status(user: User):
+    role = (getattr(user, "account_type", "") or getattr(user, "role", "") or "").lower()
+    if role != User.AccountType.SELLER and role != User.Role.SELLER:
+        return
+
+    SellerProfile.objects.get_or_create(user=user)
+    docs = _valid_kyc_docs_for_user(user)
+    if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in docs):
+        next_status = SellerProfile.VerificationStatus.REJECTED
+    elif _required_kyc_is_verified(user):
+        next_status = SellerProfile.VerificationStatus.APPROVED
+    else:
+        next_status = SellerProfile.VerificationStatus.PENDING
+
+    SellerProfile.objects.filter(user=user).update(verification_status=next_status)
+
+
 def _kyc_requirements_payload(user: User, request) -> dict:
     groups = _kyc_requirement_groups_for_user(user)
-    docs = list(KycDocument.objects.filter(user=user).select_related("reviewed_by").order_by("-uploaded_at"))
+    docs = _valid_kyc_docs_for_user(user)
 
     def docs_for_group(g: dict) -> list[KycDocument]:
         kinds = [o["kind"] for o in (g.get("options") or [])]
@@ -1355,14 +1405,19 @@ def _kyc_requirements_payload(user: User, request) -> dict:
 
     out_groups: list[dict] = []
     missing_groups: list[str] = []
+    unverified_groups: list[str] = []
 
     for g in groups:
         gdocs = docs_for_group(g)
         required_count = int(g.get("required_count") or (1 if g.get("required") else 0))
         uploaded_count = len(gdocs)
+        verified_count = sum(1 for d in gdocs if d.review_status == KycDocument.ReviewStatus.VERIFIED)
         has_enough = uploaded_count >= required_count
+        has_verified_enough = verified_count >= required_count
         if g.get("required") and not has_enough:
             missing_groups.append(g["key"])
+        if g.get("required") and not has_verified_enough:
+            unverified_groups.append(g["key"])
 
         out_groups.append(
             {
@@ -1371,6 +1426,7 @@ def _kyc_requirements_payload(user: User, request) -> dict:
                 "required": bool(g.get("required")),
                 "required_count": required_count,
                 "uploaded_count": uploaded_count,
+                "verified_count": verified_count,
                 "options": g.get("options") or [],
                 "documents": KycDocumentSelfSerializer(gdocs, many=True, context={"request": request}).data,
                 "status": (
@@ -1381,19 +1437,31 @@ def _kyc_requirements_payload(user: User, request) -> dict:
                     else "pending"
                     if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
                     else "verified"
-                    if all(d.review_status == KycDocument.ReviewStatus.VERIFIED for d in gdocs)
+                    if has_verified_enough
                     else "pending"
                 ),
             }
         )
 
     all_required_uploaded = len(missing_groups) == 0
+    all_required_verified = len(unverified_groups) == 0
+    role = (getattr(user, "role", "") or "").lower()
+    account_type = (getattr(user, "account_type", "") or "").lower()
+    seller_profile = getattr(user, "seller_profile", None)
+    seller_verification_status = (getattr(seller_profile, "verification_status", "") or "").lower() if seller_profile else ""
+    is_seller = account_type == User.AccountType.SELLER or role == User.Role.SELLER
+    can_access_dashboard = all_required_verified and (not is_seller or seller_verification_status == SellerProfile.VerificationStatus.APPROVED)
+
     return {
-        "role": (getattr(user, "role", "") or "").lower(),
-        "account_type": (getattr(user, "account_type", "") or "").lower(),
+        "role": role,
+        "account_type": account_type,
         "groups": out_groups,
         "missing_groups": missing_groups,
+        "unverified_groups": unverified_groups,
         "all_required_uploaded": all_required_uploaded,
+        "all_required_verified": all_required_verified,
+        "seller_verification_status": seller_verification_status,
+        "can_access_dashboard": can_access_dashboard,
     }
 
 
@@ -1409,28 +1477,63 @@ class KycDocumentsMeView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        qs = KycDocument.objects.filter(user=request.user).select_related("reviewed_by").order_by("-uploaded_at")
-        return Response(KycDocumentSelfSerializer(qs, many=True, context={"request": request}).data)
+        docs: list[KycDocument] = []
+        seen_kinds: set[str] = set()
+        for doc in KycDocument.objects.filter(user=request.user).select_related("reviewed_by").order_by("-uploaded_at"):
+            try:
+                kind = (getattr(doc, "kind", "") or "").lower()
+                if kind and kind in seen_kinds:
+                    continue
+                name = getattr(doc.file, "name", "") or ""
+                if name and default_storage.exists(name):
+                    docs.append(doc)
+                    if kind:
+                        seen_kinds.add(kind)
+            except Exception:
+                continue
+        return Response(KycDocumentSelfSerializer(docs, many=True, context={"request": request}).data)
 
     def post(self, request):
         ser = KycDocumentUploadSerializer(data=request.data, context={"user": request.user})
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         f = data.get("file")
+        kind = data["kind"]
 
-        doc = KycDocument(
-            user=request.user,
-            kind=data["kind"],
-            doc_type=(data.get("doc_type") or "").strip(),
-            file=f,
-            original_name=getattr(f, "name", "") or "",
-            content_type=getattr(f, "content_type", "") or "",
-            size_bytes=int(getattr(f, "size", 0) or 0),
-            review_status=KycDocument.ReviewStatus.PENDING,
-            expires_at=data.get("expires_at"),
-        )
-        doc.full_clean()
-        doc.save()
+        with transaction.atomic():
+            User.objects.select_for_update().filter(id=request.user.id).exists()
+
+            existing_docs = list(KycDocument.objects.filter(user=request.user, kind=kind).order_by("-uploaded_at"))
+            valid_existing: list[KycDocument] = []
+            for existing in existing_docs:
+                try:
+                    name = getattr(existing.file, "name", "") or ""
+                    if name and default_storage.exists(name):
+                        valid_existing.append(existing)
+                    else:
+                        existing.delete()
+                except Exception:
+                    continue
+
+            if valid_existing:
+                return Response(
+                    {"detail": "Only one document can be uploaded for this field. Remove the existing document first."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            doc = KycDocument(
+                user=request.user,
+                kind=kind,
+                doc_type=(data.get("doc_type") or "").strip(),
+                file=f,
+                original_name=getattr(f, "name", "") or "",
+                content_type=getattr(f, "content_type", "") or "",
+                size_bytes=int(getattr(f, "size", 0) or 0),
+                review_status=KycDocument.ReviewStatus.PENDING,
+                expires_at=data.get("expires_at"),
+            )
+            doc.full_clean()
+            doc.save()
 
         role = (getattr(request.user, "account_type", "") or getattr(request.user, "role", "") or "").lower()
         if role == User.AccountType.SELLER or role == User.Role.SELLER:
@@ -1438,6 +1541,32 @@ class KycDocumentsMeView(APIView):
             SellerProfile.objects.filter(user=request.user).update(verification_status=SellerProfile.VerificationStatus.PENDING)
 
         return Response(KycDocumentSelfSerializer(doc, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+class KycDocumentMeDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        doc = KycDocument.objects.filter(id=pk, user=request.user).first()
+        if not doc:
+            return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+        if doc.review_status == KycDocument.ReviewStatus.VERIFIED:
+            return Response({"detail": "Verified documents cannot be removed. Request re-verification first."}, status=status.HTTP_400_BAD_REQUEST)
+
+        file_name = getattr(doc.file, "name", "") or ""
+        doc.delete()
+        if file_name:
+            try:
+                default_storage.delete(file_name)
+            except Exception:
+                pass
+
+        role = (getattr(request.user, "account_type", "") or getattr(request.user, "role", "") or "").lower()
+        if role == User.AccountType.SELLER or role == User.Role.SELLER:
+            SellerProfile.objects.get_or_create(user=request.user)
+            SellerProfile.objects.filter(user=request.user).update(verification_status=SellerProfile.VerificationStatus.PENDING)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class BuyerProfileMeView(generics.RetrieveUpdateAPIView):
@@ -2849,8 +2978,17 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
             return Response(
                 {"detail": "Missing required documents.", "missing_groups": reqs.get("missing_groups")}, status=status.HTTP_400_BAD_REQUEST
             )
+        valid_doc_ids = []
+        for doc in KycDocument.objects.filter(user=user):
+            try:
+                name = getattr(doc.file, "name", "") or ""
+                if name and default_storage.exists(name):
+                    valid_doc_ids.append(doc.id)
+            except Exception:
+                continue
+
         now = timezone.now()
-        KycDocument.objects.filter(user=user, review_status__in=["pending", "under_review"]).update(
+        KycDocument.objects.filter(id__in=valid_doc_ids, review_status__in=["pending", "under_review"]).update(
             review_status=KycDocument.ReviewStatus.VERIFIED,
             reviewed_at=now,
             reviewed_by=request.user,
@@ -2937,6 +3075,13 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
         doc = self.get_object()
+        try:
+            name = getattr(doc.file, "name", "") or ""
+            if not name or not default_storage.exists(name):
+                return Response({"detail": "Document file is missing. Ask the user to upload it again."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"detail": "Document file is missing. Ask the user to upload it again."}, status=status.HTTP_400_BAD_REQUEST)
+
         now = timezone.now()
         KycDocument.objects.filter(id=doc.id).update(
             review_status=KycDocument.ReviewStatus.VERIFIED,
@@ -2945,11 +3090,19 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
             rejection_reason="",
         )
         doc.refresh_from_db()
+        _sync_seller_verification_status(doc.user)
         return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
         doc = self.get_object()
+        try:
+            name = getattr(doc.file, "name", "") or ""
+            if not name or not default_storage.exists(name):
+                return Response({"detail": "Document file is missing. Ask the user to upload it again."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({"detail": "Document file is missing. Ask the user to upload it again."}, status=status.HTTP_400_BAD_REQUEST)
+
         reason = (request.data.get("reason") or "").strip()
         now = timezone.now()
         KycDocument.objects.filter(id=doc.id).update(
@@ -2959,13 +3112,27 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
             rejection_reason=reason,
         )
         doc.refresh_from_db()
+        _sync_seller_verification_status(doc.user)
         return Response(AdminKycDocumentSerializer(doc, context={"request": request}).data)
 
 class SellerDashboardViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSeller]
 
+    def _kyc_gate(self, request):
+        _sync_seller_verification_status(request.user)
+        profile = getattr(request.user, "seller_profile", None)
+        if getattr(profile, "verification_status", "") != SellerProfile.VerificationStatus.APPROVED:
+            return Response(
+                {"detail": "Seller verification is pending admin approval.", "code": "kyc_pending"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
+
     @action(detail=False, methods=["get"])
     def metrics(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         user = request.user
         total_pending = Order.objects.filter(seller=user, status__in=[Order.Status.CREATED, Order.Status.ACCEPTED, Order.Status.SHIPPED]).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
         last_paid = 12912.00  # Mock or fetch from payments app if implemented
@@ -2993,6 +3160,9 @@ class SellerDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def orders(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         user = request.user
         orders = Order.objects.filter(seller=user).exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED])
         
@@ -3027,6 +3197,9 @@ class SellerDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def activities(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         user = request.user
         qs = Notification.objects.filter(user=user).order_by("-created_at")[:10]
         ser = SellerActivitySerializer(qs, many=True)
@@ -3034,6 +3207,9 @@ class SellerDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def products(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         user = request.user
         qs = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
         ser = SellerProductSerializer(qs, many=True)
@@ -3042,8 +3218,21 @@ class SellerDashboardViewSet(viewsets.ViewSet):
 class WarehouseDashboardViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSeller]
 
+    def _kyc_gate(self, request):
+        _sync_seller_verification_status(request.user)
+        profile = getattr(request.user, "seller_profile", None)
+        if getattr(profile, "verification_status", "") != SellerProfile.VerificationStatus.APPROVED:
+            return Response(
+                {"detail": "Seller verification is pending admin approval.", "code": "kyc_pending"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
+
     @action(detail=False, methods=["get"])
     def list_warehouses(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         # Mock warehouses for now as there is no Warehouse model yet
         # In a real scenario, you'd fetch from a Warehouse model
         from .dashboard_serializers import WarehouseSerializer
@@ -3077,6 +3266,9 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def inventory(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         warehouse_id = request.query_params.get("warehouse_id")
         user = request.user
         products = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
@@ -3103,6 +3295,9 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def release_requests(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         # Mock release requests
         data = [
             {
@@ -3121,6 +3316,9 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def release_records(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
         # Mock release records
         data = [
             {

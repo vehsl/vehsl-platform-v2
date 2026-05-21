@@ -7,6 +7,7 @@ import time
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.storage import default_storage
 from django.db.models import Q
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -309,6 +310,9 @@ class AdminKycDocumentSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj: KycDocument):
         try:
+            name = getattr(obj.file, "name", "") or ""
+            if not name or not default_storage.exists(name):
+                return ""
             url = obj.file.url
         except Exception:
             return ""
@@ -393,6 +397,18 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
     def _full_name(self, u: User):
         return f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
 
+    def _valid_kyc_docs(self, obj: User):
+        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        out = []
+        for doc in docs:
+            try:
+                name = getattr(doc.file, "name", "") or ""
+                if name and default_storage.exists(name):
+                    out.append(doc)
+            except Exception:
+                continue
+        return out
+
     def get_type(self, obj: User):
         role = (getattr(obj, "account_type", "") or getattr(obj, "role", "") or "").lower()
         return "seller" if role == "seller" else "buyer"
@@ -423,7 +439,7 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
         return ", ".join(parts) if parts else "—"
 
     def get_documents(self, obj: User):
-        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        docs = self._valid_kyc_docs(obj)
         out = []
         for d in docs:
             kind = (d.kind or "").lower()
@@ -463,6 +479,8 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
                     "type": dtype,
                     "label": label,
                     "status": d.review_status,
+                    "originalName": d.original_name,
+                    "contentType": d.content_type,
                     "uploadedAt": d.uploaded_at,
                     "verifiedAt": d.reviewed_at,
                     "expiresAt": d.expires_at,
@@ -474,10 +492,12 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
         return out
 
     def get_overallStatus(self, obj: User):
-        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        docs = self._valid_kyc_docs(obj)
         seller = getattr(obj, "seller_profile", None)
         seller_status = (getattr(seller, "verification_status", "") or "").lower() if seller else ""
-        if seller_status == SellerProfile.VerificationStatus.APPROVED:
+        if seller_status == SellerProfile.VerificationStatus.APPROVED and docs and all(
+            d.review_status == KycDocument.ReviewStatus.VERIFIED for d in docs
+        ):
             return "verified"
         if seller_status == SellerProfile.VerificationStatus.REJECTED:
             return "rejected"
@@ -494,7 +514,7 @@ class AdminVerificationUserSerializer(serializers.ModelSerializer):
         return "pending"
 
     def get_kycLevel(self, obj: User):
-        docs = list(getattr(obj, "kyc_documents", []).all()) if hasattr(obj, "kyc_documents") else []
+        docs = self._valid_kyc_docs(obj)
         verified = sum(1 for d in docs if d.review_status == KycDocument.ReviewStatus.VERIFIED)
         if verified >= 3:
             return 3

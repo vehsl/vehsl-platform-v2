@@ -180,15 +180,17 @@ function RatingStars({ rating, size = 14 }: { rating: number; size?: number }) {
 interface Props {
     sellerName?: string;
     onComplete: () => void;
+    initialStep?: FullStep;
+    showWelcome?: boolean;
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) {
+export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialStep, showWelcome = true }: Props) {
     const wBounce = useWeightedBounce();
 
     // Navigation & progress
-    const [step, setStep] = useState<FullStep>('welcome');
+    const [step, setStep] = useState<FullStep>(initialStep ?? (showWelcome ? 'welcome' : 'request'));
     const [completed, setCompleted] = useState<Set<StepId>>(new Set());
     const [celebrating, setCelebrating] = useState(false);
 
@@ -510,7 +512,10 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete }: Props) 
         >
             <div className="flex items-center justify-between mb-8">
                 <button
-                    onClick={() => setStep('welcome')}
+                    onClick={() => {
+                        if (showWelcome) setStep('welcome');
+                        else onComplete();
+                    }}
                     className="flex items-center gap-1.5 text-[12px] font-semibold text-[#1A1A1A]/25 hover:text-[#1A1A1A]/50 transition-colors bg-transparent border-none cursor-pointer px-0"
                 >
                     <span>\u2190 Back</span>

@@ -37,6 +37,7 @@ export function SellerDashboard() {
     const { bounce, ripple } = useBounce();
     const pageRef = useRef<HTMLDivElement>(null);
     const [isNewSeller, setIsNewSeller] = useState(false);
+    const [showNewProductForm, setShowNewProductForm] = useState(false);
     const [orders, setOrders] = useState<ActionOrder[]>([]);
     const [products, setProducts] = useState<ListedProduct[]>([]);
     const [metrics, setMetrics] = useState({ totalPending: 0, lastPaid: 12912, unreadMessages: 0, activeOrders: 0, protectionScore: 68 });
@@ -429,6 +430,20 @@ export function SellerDashboard() {
 
     if (!mounted) return null;
 
+    if (showNewProductForm) {
+        return (
+            <NewSellerOnboarding
+                sellerName="Noah"
+                showWelcome={false}
+                initialStep="request"
+                onComplete={() => {
+                    setShowNewProductForm(false);
+                    fetchDashboardData();
+                }}
+            />
+        );
+    }
+
     // ── New seller onboarding ────────────────────────────────────────────────
     if (isNewSeller) {
         return (
@@ -456,14 +471,33 @@ export function SellerDashboard() {
                     <p className="text-[13px] font-semibold text-[#1A1A1A]/30 tracking-wide">
                         {greet()}, Noah
                     </p>
-                    {/* Demo toggle — preview new seller onboarding */}
-                    <button
-                        onClick={() => setIsNewSeller(true)}
-                        className="text-[11px] font-semibold text-[#1A1A1A]/22 hover:text-[#0171E3] transition-colors bg-transparent border-none cursor-pointer px-2 py-1 rounded-full"
-                        style={{ border: '0.5px solid rgba(0,0,0,0.06)' }}
-                    >
-                        ← New seller view
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <motion.button
+                            whileHover={{ scale: 1.03 }}
+                            whileTap={{ scale: 0.97 }}
+                            onClick={(e) => {
+                                bounce(e.currentTarget);
+                                setShowNewProductForm(true);
+                            }}
+                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full border-none cursor-pointer"
+                            style={{
+                                background: '#1A1A1A',
+                                color: '#fff',
+                                boxShadow: '0 2px 6px rgba(0,0,0,0.1), 0 6px 16px -6px rgba(0,0,0,0.14)',
+                            }}
+                        >
+                            <Plus size={13} strokeWidth={2.5} />
+                            <span className="hidden sm:inline text-[11px] font-bold">Add New Product</span>
+                            <span className="sm:hidden text-[11px] font-bold">New</span>
+                        </motion.button>
+                        <button
+                            onClick={() => setIsNewSeller(true)}
+                            className="text-[11px] font-semibold text-[#1A1A1A]/22 hover:text-[#0171E3] transition-colors bg-transparent border-none cursor-pointer px-2 py-1 rounded-full"
+                            style={{ border: '0.5px solid rgba(0,0,0,0.06)' }}
+                        >
+                            ← New seller view
+                        </button>
+                    </div>
                 </div>
             </motion.div>
 
@@ -3183,7 +3217,7 @@ export function SellerDashboard() {
                         whileTap={{ scale: 0.97 }}
                         onClick={(e) => {
                             bounce(e.currentTarget);
-                            setShowListingForm(true);
+                            setShowNewProductForm(true);
                         }}
                         className="flex items-center gap-1.5 px-3.5 py-2 rounded-full border-none cursor-pointer"
                         style={{

@@ -1,6 +1,6 @@
 import csv
 
-from django.db.models import Count, IntegerField, Q, Sum, Value
+from django.db.models import CharField, Count, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import filters, permissions, status, viewsets
@@ -304,6 +304,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                     "seller__email",
                     "seller__phone",
                     Value(""),
+                    output_field=CharField(),
                 ),
             )
             .order_by("-created_at")

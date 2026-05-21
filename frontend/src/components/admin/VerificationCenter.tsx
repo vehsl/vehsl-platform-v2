@@ -33,6 +33,8 @@ interface Document {
   type: DocType;
   label: string;
   status: VerificationStatus;
+  originalName?: string;
+  contentType?: string;
   uploadedAt: string;
   verifiedAt?: string;
   expiresAt?: string;
@@ -352,6 +354,62 @@ function ProfileDetail({
   onApproveAll: () => void;
   onRequestReverification: () => void;
 }) {
+  const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
+  const [previewObjectUrl, setPreviewObjectUrl] = useState("");
+  const [previewError, setPreviewError] = useState("");
+
+  const canPreviewAsImage = (doc: Document) => {
+    const ct = (doc.contentType || "").toLowerCase();
+    const name = `${doc.originalName || doc.imageUrl || ""}`.toLowerCase();
+    return ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
+  };
+
+  const browserUrl = (url: string) => {
+    if (!url || typeof window === "undefined") return url;
+    try {
+      const next = new URL(url, window.location.href);
+      if (next.hostname === "0.0.0.0" && window.location.hostname !== "0.0.0.0") {
+        next.hostname = window.location.hostname;
+      }
+      return next.toString();
+    } catch {
+      return url;
+    }
+  };
+
+  useEffect(() => {
+    if (!previewDoc?.imageUrl) {
+      setPreviewObjectUrl("");
+      setPreviewError("");
+      return;
+    }
+
+    let alive = true;
+    let objectUrl = "";
+    setPreviewObjectUrl("");
+    setPreviewError("");
+
+    fetch(browserUrl(previewDoc.imageUrl))
+      .then((res) => {
+        if (!res.ok) throw new Error(`Document failed to load (${res.status})`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (!alive) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewObjectUrl(objectUrl);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setPreviewError(e instanceof Error ? e.message : "Document failed to load.");
+      });
+
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [previewDoc]);
+
   const fmt = (d: any) => {
     if (!d) return "—";
     const dt = new Date(d);
@@ -488,9 +546,15 @@ function ProfileDetail({
               <FileText size={14} />
               Documents ({profile.documents.length})
             </h4>
+            {profile.documents.length === 0 && (
+              <div className="p-5 rounded-2xl border border-border/30 bg-muted/10 text-[0.8125rem] text-muted-foreground">
+                No uploaded documents found.
+              </div>
+            )}
             <div className="space-y-3">
               {profile.documents.map((doc) => {
                 const dcfg = docTypeConfig[doc.type];
+                const hasFile = !!doc.imageUrl;
                 return (
                   <div
                     key={doc.id}
@@ -505,7 +569,13 @@ function ProfileDetail({
                     <div className="flex items-start gap-4">
                       {/* Doc Preview */}
                       <div className="w-16 h-12 rounded-xl overflow-hidden bg-muted/20 flex-shrink-0 border border-border/20">
-                        <ImageWithFallback src={doc.imageUrl} alt={doc.label} className="w-full h-full object-cover" />
+                        {hasFile && canPreviewAsImage(doc) ? (
+                          <ImageWithFallback src={doc.imageUrl} alt={doc.label} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-muted-foreground/35">
+                            <FileText size={18} />
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex-1 min-w-0">
@@ -523,6 +593,9 @@ function ProfileDetail({
                         {doc.rejectionReason && (
                           <p className="text-[0.625rem] text-[#E5484D] mt-0.5">Reason: {doc.rejectionReason}</p>
                         )}
+                        {!hasFile && (
+                          <p className="text-[0.625rem] text-[#E5484D] mt-0.5">File missing. Request a new upload.</p>
+                        )}
                       </div>
 
                       <StatusPill
@@ -537,7 +610,7 @@ function ProfileDetail({
                     </div>
 
                     {/* Action buttons for pending/under_review */}
-                    {(doc.status === "pending" || doc.status === "under_review") && (
+                    {hasFile && (doc.status === "pending" || doc.status === "under_review") && (
                       <div className="flex gap-2 mt-3 pt-3 border-t border-border/15">
                         <BounceButton
                           variant="success"
@@ -551,8 +624,15 @@ function ProfileDetail({
                         <BounceButton variant="ghost" size="sm" icon={<ThumbsDown size={13} />} onClick={() => onRejectDoc(doc.id)}>
                           Reject
                         </BounceButton>
-                        <BounceButton variant="secondary" size="sm" icon={<Eye size={13} />}>
+                        <BounceButton variant="secondary" size="sm" icon={<Eye size={13} />} onClick={() => setPreviewDoc(doc)}>
                           View Full
+                        </BounceButton>
+                      </div>
+                    )}
+                    {!hasFile && (doc.status === "pending" || doc.status === "under_review") && (
+                      <div className="flex gap-2 mt-3 pt-3 border-t border-border/15">
+                        <BounceButton variant="secondary" size="sm" icon={<Upload size={13} />} onClick={onRequestReverification}>
+                          Request Upload
                         </BounceButton>
                       </div>
                     )}
@@ -561,6 +641,56 @@ function ProfileDetail({
               })}
             </div>
           </div>
+
+          <AnimatePresence>
+            {previewDoc && (
+              <>
+                <motion.div
+                  className="fixed inset-0 z-[70] bg-black/30 backdrop-blur-sm"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => setPreviewDoc(null)}
+                />
+                <motion.div
+                  className="fixed left-1/2 top-1/2 z-[71] w-[min(940px,94vw)] h-[min(760px,88vh)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl bg-card shadow-2xl border border-border/30"
+                  initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.96, y: 8 }}
+                  transition={{ type: "spring", stiffness: 420, damping: 32 }}
+                >
+                  <div className="flex items-center justify-between gap-3 border-b border-border/30 px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-[0.875rem] text-foreground">{previewDoc.originalName || previewDoc.label}</div>
+                      <div className="text-[0.6875rem] text-muted-foreground">{previewDoc.contentType || "Document"}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDoc(null)}
+                      className="rounded-xl p-2 text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="h-[calc(100%-57px)] bg-muted/10">
+                    {previewError ? (
+                      <div className="flex h-full items-center justify-center px-6 text-center text-[0.8125rem] text-[#E5484D]/80">
+                        {previewError}
+                      </div>
+                    ) : !previewObjectUrl ? (
+                      <div className="flex h-full items-center justify-center text-[0.8125rem] text-muted-foreground">
+                        Loading document…
+                      </div>
+                    ) : canPreviewAsImage(previewDoc) ? (
+                      <img src={previewObjectUrl} alt={previewDoc.label} className="h-full w-full object-contain" />
+                    ) : (
+                      <iframe src={previewObjectUrl} title={previewDoc.label} className="h-full w-full border-0" />
+                    )}
+                  </div>
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
 
           {/* Overall Actions */}
           <div className="flex flex-wrap gap-2 pt-4 border-t border-border/30">
