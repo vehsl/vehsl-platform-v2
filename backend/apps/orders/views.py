@@ -9,6 +9,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.admin_utils import AdminPageNumberPagination, response_list, audit
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 from apps.catalog.models import Product, ProductMedia
 
@@ -558,6 +559,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = ReleaseOrderSerializer
+    pagination_class = AdminPageNumberPagination
 
     def get_queryset(self):
         qs = (
@@ -576,23 +578,39 @@ class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
 
         q = (self.request.query_params.get("q") or "").strip()
         if q:
-            qs = qs.filter(
-                Q(id__icontains=q)
-                | Q(buyer__email__icontains=q)
-                | Q(buyer__phone__icontains=q)
-                | Q(buyer__first_name__icontains=q)
-                | Q(buyer__last_name__icontains=q)
-                | Q(items__product__name__icontains=q)
-                | Q(items__product__hs_code__icontains=q)
-            ).distinct()
+            qv = q.strip()
+            qn = qv.lower()
+            is_email = "@" in qn and "." in qn
+            phoneish = qn.replace("+", "").replace(" ", "").replace("-", "").isdigit()
+
+            extracted_id = qn.replace("#", "").replace("ord-", "").replace("vh-", "")
+            if extracted_id.isdigit():
+                try:
+                    qs = qs.filter(id=int(extracted_id))
+                    return qs
+                except Exception:
+                    pass
+
+            if is_email:
+                qs = qs.filter(Q(buyer__email__icontains=qv) | Q(seller__email__icontains=qv))
+            elif phoneish:
+                qs = qs.filter(Q(buyer__phone__icontains=qv) | Q(seller__phone__icontains=qv))
+            elif qn.isdigit() and len(qn) >= 4:
+                qs = qs.filter(Q(items__product__hs_code__istartswith=qv) | Q(items__product__name__icontains=qv)).distinct()
+            else:
+                qs = qs.filter(
+                    Q(buyer__first_name__icontains=qv)
+                    | Q(buyer__last_name__icontains=qv)
+                    | Q(buyer__email__icontains=qv)
+                    | Q(buyer__phone__icontains=qv)
+                    | Q(items__product__name__icontains=qv)
+                    | Q(items__product__hs_code__istartswith=qv)
+                ).distinct()
 
         return qs
 
     def list(self, request):
-        page = self.paginate_queryset(self.get_queryset())
-        if page is not None:
-            return self.get_paginated_response(ReleaseOrderSerializer(page, many=True, context={"request": request}).data)
-        return Response(ReleaseOrderSerializer(self.get_queryset(), many=True, context={"request": request}).data)
+        return response_list(self, qs=self.get_queryset(), serializer_class=ReleaseOrderSerializer, request=request)
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
@@ -658,6 +676,7 @@ class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
 
         Order.objects.filter(id=order.id).update(release_authorized_at=timezone.now(), release_authorized_by=request.user)
         order.refresh_from_db()
+        audit(request.user, action="admin_release_order_authorized", target_type="order", target_id=str(order.id), payload={})
         return Response(ReleaseOrderSerializer(order, context={"request": request}).data)
 
 
@@ -702,4 +721,5 @@ class AdminReleaseConditionViewSet(viewsets.GenericViewSet):
             .prefetch_related("items", "items__product", "release_conditions", "release_conditions__proofs", "release_conditions__satisfied_by")
             .get(id=cond.order_id)
         )
+        audit(request.user, action="admin_release_condition_satisfied", target_type="release_condition", target_id=str(cond.id), payload={"order_id": str(cond.order_id)})
         return Response(ReleaseOrderSerializer(order, context={"request": request}).data)

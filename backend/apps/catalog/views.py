@@ -1,6 +1,6 @@
 import csv
 
-from django.db.models import CharField, Count, IntegerField, Q, Sum, Value
+from django.db.models import CharField, Count, DecimalField, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import filters, permissions, status, viewsets
@@ -8,6 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
+from apps.accounts.admin_utils import AdminPageNumberPagination, audit
 from apps.accounts.permissions import IsAdmin, IsSeller
 from apps.accounts.models import User
 
@@ -37,6 +38,25 @@ class CategoryViewSet(viewsets.ModelViewSet):
         if self.action in {"create", "update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.AllowAny()]
+
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit(self.request.user, action="admin_category_created", target_type="category", target_id=str(obj.id), payload={})
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        audit(
+            self.request.user,
+            action="admin_category_updated",
+            target_type="category",
+            target_id=str(obj.id),
+            payload={"fields": list((self.request.data or {}).keys())},
+        )
+
+    def perform_destroy(self, instance):
+        obj_id = getattr(instance, "id", "")
+        audit(self.request.user, action="admin_category_deleted", target_type="category", target_id=str(obj_id), payload={})
+        super().perform_destroy(instance)
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -279,10 +299,36 @@ class ComplianceRuleViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.AllowAny()]
 
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit(
+            self.request.user,
+            action="admin_compliance_rule_created",
+            target_type="compliance_rule",
+            target_id=str(obj.id),
+            payload={"category_id": str(getattr(obj, "category_id", ""))},
+        )
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        audit(
+            self.request.user,
+            action="admin_compliance_rule_updated",
+            target_type="compliance_rule",
+            target_id=str(obj.id),
+            payload={"fields": list((self.request.data or {}).keys())},
+        )
+
+    def perform_destroy(self, instance):
+        obj_id = getattr(instance, "id", "")
+        audit(self.request.user, action="admin_compliance_rule_deleted", target_type="compliance_rule", target_id=str(obj_id), payload={})
+        super().perform_destroy(instance)
+
 
 class AdminProductViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminProductListSerializer
+    pagination_class = AdminPageNumberPagination
 
     def _low_stock_threshold(self) -> int:
         raw = (self.request.query_params.get("low_stock_threshold") or "").strip()
@@ -299,6 +345,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             .select_related("category", "seller", "seller__seller_profile")
             .annotate(
                 stock_units=Coalesce(Sum("samples__available_quantity"), Value(0), output_field=IntegerField()),
+                vehsl_rating_num=Coalesce("vehsl_rating", Value(0), output_field=DecimalField(max_digits=4, decimal_places=2)),
                 seller_name=Coalesce(
                     "seller__seller_profile__business_name",
                     "seller__email",
@@ -307,20 +354,37 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                     output_field=CharField(),
                 ),
             )
-            .order_by("-created_at")
         )
 
         q = (self.request.query_params.get("q") or "").strip()
         if q:
-            qs = qs.filter(
-                Q(name__icontains=q)
-                | Q(title__icontains=q)
-                | Q(sku__icontains=q)
-                | Q(hs_code__icontains=q)
-                | Q(description__icontains=q)
-                | Q(seller__email__icontains=q)
-                | Q(seller__phone__icontains=q)
-            )
+            qv = q.strip()
+            qn = qv.lower()
+            is_email = "@" in qn and "." in qn
+            phoneish = qn.replace("+", "").replace(" ", "").replace("-", "").isdigit()
+            is_numeric = qn.isdigit()
+            skuish = len(qn) >= 3 and qn.replace("-", "").replace("_", "").isalnum()
+
+            if is_email:
+                qs = qs.filter(seller__email__icontains=qv)
+            elif phoneish:
+                qs = qs.filter(seller__phone__icontains=qv)
+            elif is_numeric:
+                qs = qs.filter(
+                    Q(hs_code__istartswith=qv) | Q(sku__istartswith=qv) | Q(name__icontains=qv) | Q(title__icontains=qv)
+                )
+            elif skuish:
+                qs = qs.filter(Q(sku__istartswith=qv) | Q(name__icontains=qv) | Q(title__icontains=qv) | Q(hs_code__istartswith=qv))
+            else:
+                qs = qs.filter(
+                    Q(name__icontains=qv)
+                    | Q(title__icontains=qv)
+                    | Q(description__icontains=qv)
+                    | Q(sku__istartswith=qv)
+                    | Q(hs_code__istartswith=qv)
+                    | Q(seller__email__icontains=qv)
+                    | Q(seller__phone__icontains=qv)
+                )
 
         category = (self.request.query_params.get("category") or "").strip()
         if category:
@@ -343,6 +407,24 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         elif admin_status == "active":
             qs = qs.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
 
+        ordering_raw = (self.request.query_params.get("ordering") or "").strip()
+        allowed = {"created_at", "price", "stock_units", "vehsl_rating_num", "name"}
+        ordering: list[str] = []
+        if ordering_raw:
+            for part in ordering_raw.split(","):
+                p = (part or "").strip()
+                if not p:
+                    continue
+                desc = p.startswith("-")
+                field = p[1:] if desc else p
+                if field == "vehsl_rating":
+                    field = "vehsl_rating_num"
+                if field in allowed:
+                    ordering.append(("-" if desc else "") + field)
+        if not ordering:
+            ordering = ["-created_at"]
+        qs = qs.order_by(*ordering)
+
         return qs
 
     def list(self, request):
@@ -353,7 +435,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             ser = AdminProductListSerializer(page, many=True, context={"low_stock_threshold": threshold})
             return self.get_paginated_response(ser.data)
         ser = AdminProductListSerializer(qs, many=True, context={"low_stock_threshold": threshold})
-        return Response(ser.data)
+        return Response({"count": len(ser.data), "next": None, "previous": None, "results": ser.data})
 
     def retrieve(self, request, pk=None):
         threshold = self._low_stock_threshold()
@@ -401,6 +483,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             )
 
         obj = self.get_queryset().get(id=product.id)
+        audit(
+            request.user,
+            action="admin_product_created",
+            target_type="product",
+            target_id=str(product.id),
+            payload={"fields": list(data.keys())},
+        )
         return Response(AdminProductListSerializer(obj, context={"low_stock_threshold": threshold}).data, status=201)
 
     def partial_update(self, request, pk=None):
@@ -443,6 +532,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             )
 
         obj = self.get_queryset().get(id=product.id)
+        audit(
+            request.user,
+            action="admin_product_updated",
+            target_type="product",
+            target_id=str(product.id),
+            payload={"fields": list((request.data or {}).keys())},
+        )
         return Response(AdminProductListSerializer(obj, context={"low_stock_threshold": threshold}).data)
 
     @action(detail=False, methods=["get"], url_path="stats")
@@ -480,6 +576,20 @@ class AdminProductViewSet(viewsets.GenericViewSet):
     def export(self, request):
         threshold = self._low_stock_threshold()
         qs = self.get_queryset()
+        audit(
+            request.user,
+            action="admin_products_exported",
+            target_type="admin_products",
+            target_id="",
+            payload={
+                "filters": {
+                    "q": (request.query_params.get("q") or "").strip(),
+                    "category": (request.query_params.get("category") or "").strip(),
+                    "admin_status": (request.query_params.get("admin_status") or "").strip(),
+                    "ordering": (request.query_params.get("ordering") or "").strip(),
+                }
+            },
+        )
 
         resp = HttpResponse(content_type="text/csv")
         resp["Content-Disposition"] = 'attachment; filename="admin_products.csv"'

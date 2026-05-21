@@ -9,6 +9,7 @@ from rest_framework.response import Response
 
 from apps.accounts.permissions import IsBuyer, IsSeller
 from apps.accounts.permissions import IsAdmin
+from apps.accounts.admin_utils import audit
 from apps.accounts.models import User
 from apps.catalog.models import Product
 
@@ -180,5 +181,12 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
             status=data.get("status") or QualityInspection.Status.IN_PROGRESS,
             score=int(data.get("score") or 0),
             inspected_at=data.get("inspected_at") if "inspected_at" in data else None,
+        )
+        audit(
+            request.user,
+            action="admin_quality_inspection_created",
+            target_type="quality_inspection",
+            target_id=str(ins.id),
+            payload={"product_id": str(product.id), "seller_id": str(seller.id)},
         )
         return Response(AdminQualityInspectionListSerializer(ins).data, status=status.HTTP_201_CREATED)

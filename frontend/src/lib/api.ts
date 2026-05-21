@@ -18,21 +18,113 @@ export function getApiBase() {
     return 'http://localhost:8000';
 }
 
+function readAuthTokens() {
+    try {
+        return {
+            access: window.localStorage.getItem('vehsl.access') || '',
+            refresh: window.localStorage.getItem('vehsl.refresh') || '',
+        };
+    } catch {
+        return { access: '', refresh: '' };
+    }
+}
+
+function writeAccessToken(access: string) {
+    try {
+        if (!access) return;
+        window.localStorage.setItem('vehsl.access', access);
+    } catch {}
+}
+
+function clearAuthTokens() {
+    try {
+        window.localStorage.removeItem('vehsl.access');
+        window.localStorage.removeItem('vehsl.refresh');
+        window.localStorage.removeItem('vehsl.user');
+    } catch {}
+}
+
+async function refreshAccessToken(base: string, refresh: string) {
+    if (!refresh) return '';
+    try {
+        const res = await fetch(`${base}/api/v1/auth/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh }),
+        });
+        const data = await res.json().catch(() => null);
+        const nextAccess = (data?.access || '').toString();
+        if (!res.ok || !nextAccess) return '';
+        writeAccessToken(nextAccess);
+        return nextAccess;
+    } catch {
+        return '';
+    }
+}
+
 export async function authedFetch(input: RequestInfo | URL, init?: RequestInit) {
     const base = getApiBase();
-    const url = typeof input === 'string' && !input.startsWith('http') ? `${base}${input}` : input;
-    
-    let access = '';
-    if (typeof window !== 'undefined') {
-        access = window.localStorage.getItem('vehsl.access') || '';
+    const url = typeof input === 'string' && !input.toString().startsWith('http') ? `${base}${input}` : input;
+
+    const doFetch = (access: string) => {
+        const headers = new Headers(init?.headers || undefined);
+        if (access) headers.set('Authorization', `Bearer ${access}`);
+        const body = init?.body as any;
+        const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+        if (!isFormData && !headers.has('Content-Type')) {
+            headers.set('Content-Type', 'application/json');
+        }
+        return fetch(url, { ...init, headers });
+    };
+
+    const { access, refresh } = typeof window !== 'undefined' ? readAuthTokens() : { access: '', refresh: '' };
+    let res = await doFetch(access);
+    if (res.status !== 401) return res;
+
+    const nextAccess = typeof window !== 'undefined' ? await refreshAccessToken(base, refresh) : '';
+    if (!nextAccess) {
+        if (typeof window !== 'undefined') {
+            clearAuthTokens();
+            try {
+                window.location.assign('/?signin=1');
+            } catch {}
+        }
+        return res;
     }
 
-    return fetch(url, {
-        ...init,
-        headers: {
-            'Authorization': access ? `Bearer ${access}` : '',
-            'Content-Type': 'application/json',
-            ...init?.headers,
-        },
-    });
+    res = await doFetch(nextAccess);
+    return res;
+}
+
+export async function fetchJsonAuthed(path: string, init?: RequestInit) {
+    const res = await authedFetch(path, init);
+    if (res.status === 401) {
+        if (typeof window !== 'undefined') {
+            try {
+                window.location.assign('/?signin=1');
+            } catch {}
+        }
+    }
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    const isJson = ct.includes('application/json');
+    const data = isJson ? await res.json().catch(() => null) : await res.text().catch(() => null);
+    if (!res.ok) {
+        const pickMsg = (x: any): string => {
+            if (!x) return '';
+            if (typeof x === 'string') return x;
+            if (typeof x?.detail === 'string') return x.detail;
+            if (typeof x?.error === 'string') return x.error;
+            if (typeof x === 'object') {
+                for (const k of Object.keys(x)) {
+                    const v = (x as any)[k];
+                    if (typeof v === 'string' && v.trim()) return v;
+                    if (Array.isArray(v) && v.length && typeof v[0] === 'string') return v[0];
+                }
+            }
+            return '';
+        };
+        const msg = pickMsg(data) || `Request failed (${res.status})`;
+        throw new Error(msg);
+    }
+    return data;
 }

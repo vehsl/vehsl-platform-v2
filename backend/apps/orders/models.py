@@ -95,6 +95,7 @@ class Order(models.Model):
         indexes = [
             models.Index(fields=["seller", "status"]),
             models.Index(fields=["buyer", "status"]),
+            models.Index(fields=["status", "created_at"]),
         ]
 
     def __str__(self):
