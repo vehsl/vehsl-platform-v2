@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   TrendingUp,
   Activity,
+  Search,
   UserPlus,
   AlertCircle,
   ArrowUpRight,
@@ -19,6 +20,7 @@ import {
 import { StatCard } from "./StatCard";
 import { StatusPill } from "./StatusPill";
 import { BounceButton } from "./BounceButton";
+import { fetchJsonAuthed } from "@/lib/api";
 import {
   CustomAreaChart,
   GaugeChart,
@@ -68,26 +70,7 @@ export function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [overview, setOverview] = useState<any>(null);
-
-  const apiBase = useMemo(() => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  }, []);
-
-  const access = useMemo(() => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  }, []);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const formatCompact = (n: any) => {
     const v = Number(n);
@@ -119,37 +102,25 @@ export function AdminDashboard() {
   };
 
   useEffect(() => {
-    if (!access) {
-      setError("Not signed in.");
-      setOverview(null);
-      return;
-    }
     const ctrl = new AbortController();
     (async () => {
       try {
         setLoading(true);
         setError("");
-        const res = await fetch(`${apiBase}/api/v1/admin/overview?period=${encodeURIComponent(selectedPeriod)}`, {
-          headers: { Authorization: `Bearer ${access}` },
+        const data = await fetchJsonAuthed(`/api/v1/admin/overview?period=${encodeURIComponent(selectedPeriod)}`, {
           signal: ctrl.signal,
-        });
-        if (!res.ok) {
-          setError("Failed to load overview.");
-          setOverview(null);
-          return;
-        }
-        const data = await res.json();
+        } as any);
         setOverview(data);
       } catch (e: any) {
         if (e?.name === "AbortError") return;
-        setError("Network error.");
+        setError(e?.message || "Network error.");
         setOverview(null);
       } finally {
         setLoading(false);
       }
     })();
     return () => ctrl.abort();
-  }, [access, apiBase, selectedPeriod]);
+  }, [selectedPeriod, refreshNonce]);
 
   const hero = overview?.hero || {};
   const totalRevenue = hero?.total_revenue || {};
@@ -185,6 +156,57 @@ export function AdminDashboard() {
 
   const alerts = overview?.alerts || [];
   const activities = overview?.activity || [];
+  const [alertsQuery, setAlertsQuery] = useState("");
+  const [alertsType, setAlertsType] = useState<"all" | "warning" | "info">("all");
+  const [alertsPage, setAlertsPage] = useState(1);
+  const alertsPageSize = 5;
+
+  const [activityQuery, setActivityQuery] = useState("");
+  const [activityGroup, setActivityGroup] = useState<"all" | "users" | "verification" | "quality" | "logistics" | "other">("all");
+  const [activityPage, setActivityPage] = useState(1);
+  const activityPageSize = 10;
+
+  useEffect(() => {
+    setAlertsPage(1);
+    setActivityPage(1);
+    setAlertsQuery("");
+    setAlertsType("all");
+    setActivityQuery("");
+    setActivityGroup("all");
+  }, [selectedPeriod, refreshNonce]);
+
+  const filteredAlerts = useMemo(() => {
+    const q = alertsQuery.trim().toLowerCase();
+    return (alerts || []).filter((a: any) => {
+      const t = (a?.type || "").toString().toLowerCase();
+      if (alertsType !== "all" && t !== alertsType) return false;
+      if (!q) return true;
+      const hay = `${a?.message || ""} ${a?.action || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [alerts, alertsQuery, alertsType]);
+
+  const filteredActivities = useMemo(() => {
+    const q = activityQuery.trim().toLowerCase();
+    return (activities || []).filter((a: any) => {
+      const path = (a?.path || "").toString();
+      const group =
+        path.includes("/admin/users") ? "users" :
+        path.includes("/admin/verification") ? "verification" :
+        path.includes("/admin/quality") ? "quality" :
+        path.includes("/admin/logistics") ? "logistics" :
+        "other";
+      if (activityGroup !== "all" && group !== activityGroup) return false;
+      if (!q) return true;
+      const hay = `${a?.user || ""} ${a?.action || ""} ${a?.target || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [activities, activityQuery, activityGroup]);
+
+  const alertsTotalPages = Math.max(1, Math.ceil(filteredAlerts.length / alertsPageSize));
+  const activityTotalPages = Math.max(1, Math.ceil(filteredActivities.length / activityPageSize));
+  const pagedAlerts = filteredAlerts.slice((alertsPage - 1) * alertsPageSize, alertsPage * alertsPageSize);
+  const pagedActivities = filteredActivities.slice((activityPage - 1) * activityPageSize, activityPage * activityPageSize);
 
   return (
     <div className="space-y-7">
@@ -208,20 +230,30 @@ export function AdminDashboard() {
             Everything happening across TradeFlow, at a glance.
           </motion.p>
         </div>
-        <div className="flex items-center gap-1.5 bg-black/[0.025] rounded-2xl p-1.5">
-          {["24h", "7d", "30d", "90d"].map((period) => (
-            <button
-              key={period}
-              onClick={() => setSelectedPeriod(period)}
-              className={`px-4 py-2 rounded-xl text-[0.75rem] transition-all duration-400 cursor-pointer ${
-                selectedPeriod === period
-                  ? "bg-card text-foreground shadow-[0_1px_4px_rgba(0,0,0,0.06)]"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {period}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setRefreshNonce((n) => n + 1)}
+            className="px-4 py-2 rounded-xl text-[0.75rem] bg-black/[0.025] hover:bg-black/[0.04] text-muted-foreground hover:text-foreground transition-all duration-300 disabled:opacity-50"
+            disabled={loading}
+          >
+            Retry
+          </button>
+          <div className="flex items-center gap-1.5 bg-black/[0.025] rounded-2xl p-1.5">
+            {["24h", "7d", "30d", "90d"].map((period) => (
+              <button
+                key={period}
+                onClick={() => setSelectedPeriod(period)}
+                className={`px-4 py-2 rounded-xl text-[0.75rem] transition-all duration-400 cursor-pointer ${
+                  selectedPeriod === period
+                    ? "bg-card text-foreground shadow-[0_1px_4px_rgba(0,0,0,0.06)]"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {period}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -233,58 +265,73 @@ export function AdminDashboard() {
 
       {/* ─── Hero Stats — THE most important numbers ──── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <StatCard
-          label="Total Revenue"
-          value={`$${formatCompact(totalRevenue?.total)}`}
-          change={`${Number(totalRevenue?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(totalRevenue?.change_pct)}`}
-          changeType={Number(totalRevenue?.change_pct || 0) > 0 ? "positive" : Number(totalRevenue?.change_pct || 0) < 0 ? "negative" : "neutral"}
-          icon={<TrendingUp size={20} className="text-primary" />}
-          iconBg="bg-primary/8"
-          index={0}
-          subtitle={`B2B $${formatCompact(totalRevenue?.b2b)} · B2C $${formatCompact(totalRevenue?.b2c)}`}
-          sparklineData={totalRevenue?.sparkline || []}
-          sparklineColor="#0171E3"
-          accentColor="#0171E3"
-        />
-        <StatCard
-          label="Active Orders"
-          value={(Number(activeOrders?.total) || 0).toLocaleString()}
-          change={`${Number(activeOrders?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(activeOrders?.change_pct)}`}
-          changeType={Number(activeOrders?.change_pct || 0) > 0 ? "positive" : Number(activeOrders?.change_pct || 0) < 0 ? "negative" : "neutral"}
-          icon={<Package size={20} className="text-[#3B82F6]" />}
-          iconBg="bg-[#3B82F6]/8"
-          index={1}
-          subtitle={`${Number(activeOrders?.b2b || 0).toLocaleString()} B2B · ${Number(activeOrders?.b2c || 0).toLocaleString()} B2C`}
-          sparklineData={activeOrders?.sparkline || []}
-          sparklineColor="#3B82F6"
-          accentColor="#3B82F6"
-        />
-        <StatCard
-          label="Users Online"
-          value={(Number(usersOnline?.total) || 0).toLocaleString()}
-          change={`${Number(usersOnline?.change_abs || 0) >= 0 ? "+" : ""}${Number(usersOnline?.change_abs || 0).toLocaleString()}`}
-          changeType={Number(usersOnline?.change_abs || 0) > 0 ? "positive" : Number(usersOnline?.change_abs || 0) < 0 ? "negative" : "neutral"}
-          icon={<Users size={20} className="text-[#30A46C]" />}
-          iconBg="bg-[#30A46C]/8"
-          index={2}
-          subtitle={`${Number(usersOnline?.sellers || 0)} sellers · ${Number(usersOnline?.workers || 0)} workers · ${Number(usersOnline?.buyers || 0)} buyers`}
-          sparklineData={usersOnline?.sparkline || []}
-          sparklineColor="#30A46C"
-          accentColor="#30A46C"
-        />
-        <StatCard
-          label="Quality Score"
-          value={`${(Number(qualityScore?.value) || 0).toFixed(1)}%`}
-          change={`${Number(qualityScore?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(qualityScore?.change_pct)}`}
-          changeType={Number(qualityScore?.change_pct || 0) > 0 ? "positive" : Number(qualityScore?.change_pct || 0) < 0 ? "negative" : "neutral"}
-          icon={<ShieldCheck size={20} className="text-[#D97706]" />}
-          iconBg="bg-[#D97706]/8"
-          index={3}
-          subtitle={`Based on ${(Number(qualityScore?.inspections) || 0).toLocaleString()} inspections`}
-          sparklineData={qualityScore?.sparkline || []}
-          sparklineColor="#D97706"
-          accentColor="#D97706"
-        />
+        {loading && !overview ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <div
+              key={i}
+              className="bg-card rounded-[1.25rem] p-7 shadow-[0_0_0_1px_rgba(0,0,0,0.03),0_2px_6px_rgba(0,0,0,0.02),0_8px_24px_rgba(0,0,0,0.03)]"
+            >
+              <div className="h-3 w-24 bg-black/[0.06] rounded animate-pulse" />
+              <div className="mt-4 h-8 w-32 bg-black/[0.06] rounded animate-pulse" />
+              <div className="mt-3 h-3 w-40 bg-black/[0.06] rounded animate-pulse" />
+            </div>
+          ))
+        ) : (
+          <>
+            <StatCard
+              label="Total Revenue"
+              value={`$${formatCompact(totalRevenue?.total)}`}
+              change={`${Number(totalRevenue?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(totalRevenue?.change_pct)}`}
+              changeType={Number(totalRevenue?.change_pct || 0) > 0 ? "positive" : Number(totalRevenue?.change_pct || 0) < 0 ? "negative" : "neutral"}
+              icon={<TrendingUp size={20} className="text-primary" />}
+              iconBg="bg-primary/8"
+              index={0}
+              subtitle={`B2B $${formatCompact(totalRevenue?.b2b)} · B2C $${formatCompact(totalRevenue?.b2c)}`}
+              sparklineData={totalRevenue?.sparkline || []}
+              sparklineColor="#0171E3"
+              accentColor="#0171E3"
+            />
+            <StatCard
+              label="Active Orders"
+              value={(Number(activeOrders?.total) || 0).toLocaleString()}
+              change={`${Number(activeOrders?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(activeOrders?.change_pct)}`}
+              changeType={Number(activeOrders?.change_pct || 0) > 0 ? "positive" : Number(activeOrders?.change_pct || 0) < 0 ? "negative" : "neutral"}
+              icon={<Package size={20} className="text-[#3B82F6]" />}
+              iconBg="bg-[#3B82F6]/8"
+              index={1}
+              subtitle={`${Number(activeOrders?.b2b || 0).toLocaleString()} B2B · ${Number(activeOrders?.b2c || 0).toLocaleString()} B2C`}
+              sparklineData={activeOrders?.sparkline || []}
+              sparklineColor="#3B82F6"
+              accentColor="#3B82F6"
+            />
+            <StatCard
+              label="Users Online"
+              value={(Number(usersOnline?.total) || 0).toLocaleString()}
+              change={`${Number(usersOnline?.change_abs || 0) >= 0 ? "+" : ""}${Number(usersOnline?.change_abs || 0).toLocaleString()}`}
+              changeType={Number(usersOnline?.change_abs || 0) > 0 ? "positive" : Number(usersOnline?.change_abs || 0) < 0 ? "negative" : "neutral"}
+              icon={<Users size={20} className="text-[#30A46C]" />}
+              iconBg="bg-[#30A46C]/8"
+              index={2}
+              subtitle={`${Number(usersOnline?.sellers || 0)} sellers · ${Number(usersOnline?.workers || 0)} workers · ${Number(usersOnline?.buyers || 0)} buyers`}
+              sparklineData={usersOnline?.sparkline || []}
+              sparklineColor="#30A46C"
+              accentColor="#30A46C"
+            />
+            <StatCard
+              label="Quality Score"
+              value={`${(Number(qualityScore?.value) || 0).toFixed(1)}%`}
+              change={`${Number(qualityScore?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(qualityScore?.change_pct)}`}
+              changeType={Number(qualityScore?.change_pct || 0) > 0 ? "positive" : Number(qualityScore?.change_pct || 0) < 0 ? "negative" : "neutral"}
+              icon={<ShieldCheck size={20} className="text-[#D97706]" />}
+              iconBg="bg-[#D97706]/8"
+              index={3}
+              subtitle={`Based on ${(Number(qualityScore?.inspections) || 0).toLocaleString()} inspections`}
+              sparklineData={qualityScore?.sparkline || []}
+              sparklineColor="#D97706"
+              accentColor="#D97706"
+            />
+          </>
+        )}
       </div>
 
       {/* ─── Revenue Story + Platform Health ─────────── */}
@@ -461,48 +508,107 @@ export function AdminDashboard() {
                 Attention Needed
               </p>
               <p className="text-[0.6875rem] text-muted-foreground/50">
-                {alerts.length} items require action
+                {filteredAlerts.length} items require action
               </p>
             </div>
           </div>
 
-          <div className="space-y-2">
-            {alerts.map((alert: any, i: number) => (
-              <motion.div
-                key={`${alert.type}-${alert.message}-${i}`}
-                className="flex items-start gap-3.5 p-4 rounded-2xl bg-black/[0.012] hover:bg-black/[0.025] transition-all duration-400 cursor-pointer group"
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-                onClick={() => navigate(alert.path || "/admin")}
-              >
-                <div
-                  className={`w-[6px] h-[6px] rounded-full mt-2 flex-shrink-0 ${
-                    alert.type === "warning"
-                      ? "bg-[#FFB224]"
-                      : "bg-[#3B82F6]"
-                  }`}
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[0.8125rem] text-foreground/80 leading-relaxed">
-                    {alert.message}
-                  </p>
-                  <p className="text-[0.625rem] text-muted-foreground/40 mt-1.5">
-                    {relativeTime(alert.occurred_at)}
-                  </p>
-                </div>
-                <button
-                  className="text-[0.75rem] text-primary/60 hover:text-primary whitespace-nowrap cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(alert.path || "/admin");
-                  }}
-                >
-                  {alert.action}
-                </button>
-              </motion.div>
-            ))}
+          <div className="flex flex-col sm:flex-row gap-2 mb-4">
+            <div className="flex items-center gap-2 bg-black/[0.012] border border-black/[0.03] rounded-2xl px-4 py-2.5 flex-1">
+              <Search size={14} className="text-muted-foreground/50" />
+              <input
+                value={alertsQuery}
+                onChange={(e) => {
+                  setAlertsQuery(e.target.value);
+                  setAlertsPage(1);
+                }}
+                placeholder="Search alerts..."
+                className="bg-transparent border-none outline-none text-[0.8125rem] text-foreground/80 placeholder:text-muted-foreground/40 w-full"
+              />
+            </div>
+            <select
+              value={alertsType}
+              onChange={(e) => {
+                setAlertsType(e.target.value as any);
+                setAlertsPage(1);
+              }}
+              className="px-4 py-2.5 rounded-2xl text-[0.8125rem] bg-black/[0.012] border border-black/[0.03] text-muted-foreground hover:text-foreground focus:outline-none"
+            >
+              <option value="all">All</option>
+              <option value="warning">Warnings</option>
+              <option value="info">Info</option>
+            </select>
           </div>
+
+          <div className="space-y-2 max-h-[46vh] overflow-y-auto pr-1">
+            {loading && !overview ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="p-4 rounded-2xl bg-black/[0.012]">
+                  <div className="h-3 w-3/4 bg-black/[0.06] rounded animate-pulse" />
+                  <div className="mt-2 h-2 w-24 bg-black/[0.06] rounded animate-pulse" />
+                </div>
+              ))
+            ) : filteredAlerts.length === 0 ? (
+              <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+                No alerts right now.
+              </div>
+            ) : (
+              pagedAlerts.map((alert: any, i: number) => (
+                <motion.div
+                  key={`${alert.type}-${alert.message}-${i}`}
+                  className="flex items-start gap-3.5 p-4 rounded-2xl bg-black/[0.012] hover:bg-black/[0.025] transition-all duration-400 cursor-pointer group"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  onClick={() => navigate(alert.path || "/admin")}
+                >
+                  <div
+                    className={`w-[6px] h-[6px] rounded-full mt-2 flex-shrink-0 ${
+                      alert.type === "warning" ? "bg-[#FFB224]" : "bg-[#3B82F6]"
+                    }`}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.8125rem] text-foreground/80 leading-relaxed">{alert.message}</p>
+                    <p className="text-[0.625rem] text-muted-foreground/40 mt-1.5">{relativeTime(alert.occurred_at)}</p>
+                  </div>
+                  <button
+                    className="text-[0.75rem] text-primary/60 hover:text-primary whitespace-nowrap cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(alert.path || "/admin");
+                    }}
+                  >
+                    {alert.action}
+                  </button>
+                </motion.div>
+              ))
+            )}
+          </div>
+          {!loading && filteredAlerts.length > 0 && (
+            <div className="pt-3 flex items-center justify-between gap-3">
+              <div className="text-[0.75rem] text-muted-foreground/60">
+                Page {alertsPage} / {alertsTotalPages}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setAlertsPage((p) => Math.max(1, p - 1))}
+                  disabled={alertsPage <= 1}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setAlertsPage((p) => Math.min(alertsTotalPages, p + 1))}
+                  disabled={alertsPage >= alertsTotalPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </Section>
 
         {/* Live Activity */}
@@ -524,38 +630,102 @@ export function AdminDashboard() {
             <StatusPill status="success" label="Live" pulse />
           </div>
 
-          <div className="space-y-1">
-            {activities.map((activity: any, i: number) => (
-              <motion.div
-                key={`${activity.user}-${activity.action}-${activity.target}-${i}`}
-                className="flex items-center gap-4 p-3.5 rounded-2xl hover:bg-black/[0.015] transition-all duration-400 cursor-pointer"
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-                onClick={() => navigate(activity.path || "/admin")}
-              >
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center text-white text-[0.625rem] flex-shrink-0">
-                  {activity.avatar}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[0.8125rem] text-foreground/80">
-                    <span>{activity.user}</span>{" "}
-                    <span className="text-muted-foreground/60">
-                      {activity.action}
-                    </span>{" "}
-                    <span className="text-primary/70">{activity.target}</span>
-                  </p>
-                  <p className="text-[0.625rem] text-muted-foreground/40 mt-0.5">
-                    {relativeTime(activity.occurred_at)}
-                  </p>
-                </div>
-                <ArrowUpRight
-                  size={13}
-                  className="text-muted-foreground/20"
-                />
-              </motion.div>
-            ))}
+          <div className="flex flex-col sm:flex-row gap-2 mb-4">
+            <div className="flex items-center gap-2 bg-black/[0.012] border border-black/[0.03] rounded-2xl px-4 py-2.5 flex-1">
+              <Search size={14} className="text-muted-foreground/50" />
+              <input
+                value={activityQuery}
+                onChange={(e) => {
+                  setActivityQuery(e.target.value);
+                  setActivityPage(1);
+                }}
+                placeholder="Search logs..."
+                className="bg-transparent border-none outline-none text-[0.8125rem] text-foreground/80 placeholder:text-muted-foreground/40 w-full"
+              />
+            </div>
+            <select
+              value={activityGroup}
+              onChange={(e) => {
+                setActivityGroup(e.target.value as any);
+                setActivityPage(1);
+              }}
+              className="px-4 py-2.5 rounded-2xl text-[0.8125rem] bg-black/[0.012] border border-black/[0.03] text-muted-foreground hover:text-foreground focus:outline-none"
+            >
+              <option value="all">All</option>
+              <option value="users">Users</option>
+              <option value="verification">Verification</option>
+              <option value="quality">Quality</option>
+              <option value="logistics">Logistics</option>
+              <option value="other">Other</option>
+            </select>
           </div>
+
+          <div className="space-y-1 max-h-[46vh] overflow-y-auto pr-1">
+            {loading && !overview ? (
+              Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-4 p-3.5 rounded-2xl bg-black/[0.012]">
+                  <div className="w-9 h-9 rounded-full bg-black/[0.06] animate-pulse" />
+                  <div className="flex-1 min-w-0">
+                    <div className="h-3 w-3/4 bg-black/[0.06] rounded animate-pulse" />
+                    <div className="mt-2 h-2 w-24 bg-black/[0.06] rounded animate-pulse" />
+                  </div>
+                </div>
+              ))
+            ) : filteredActivities.length === 0 ? (
+              <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+                No activity yet.
+              </div>
+            ) : (
+              pagedActivities.map((activity: any, i: number) => (
+                <motion.div
+                  key={`${activity.user}-${activity.action}-${activity.target}-${i}`}
+                  className="flex items-center gap-4 p-3.5 rounded-2xl hover:bg-black/[0.015] transition-all duration-400 cursor-pointer"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  onClick={() => navigate(activity.path || "/admin")}
+                >
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center text-white text-[0.625rem] flex-shrink-0">
+                    {activity.avatar}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.8125rem] text-foreground/80">
+                      <span>{activity.user}</span>{" "}
+                      <span className="text-muted-foreground/60">{activity.action}</span>{" "}
+                      <span className="text-primary/70">{activity.target}</span>
+                    </p>
+                    <p className="text-[0.625rem] text-muted-foreground/40 mt-0.5">{relativeTime(activity.occurred_at)}</p>
+                  </div>
+                  <ArrowUpRight size={13} className="text-muted-foreground/20" />
+                </motion.div>
+              ))
+            )}
+          </div>
+          {!loading && filteredActivities.length > 0 && (
+            <div className="pt-3 flex items-center justify-between gap-3">
+              <div className="text-[0.75rem] text-muted-foreground/60">
+                Page {activityPage} / {activityTotalPages}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
+                  disabled={activityPage <= 1}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setActivityPage((p) => Math.min(activityTotalPages, p + 1))}
+                  disabled={activityPage >= activityTotalPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </Section>
       </div>
 

@@ -798,7 +798,7 @@ class AdminPlatformOverviewView(APIView):
                     "occurred_at": now,
                 }
             )
-        alerts = alerts[:6]
+        alerts = alerts[:20]
 
         activities: list[dict] = []
         try:
@@ -809,7 +809,7 @@ class AdminPlatformOverviewView(APIView):
             newest_users = []
 
             if Order is not None:
-                newest_orders = list(Order.objects.filter(deleted_at__isnull=True).select_related("buyer").order_by("-created_at")[:6])
+                newest_orders = list(Order.objects.filter(deleted_at__isnull=True).select_related("buyer").order_by("-created_at")[:25])
                 for o in newest_orders:
                     activities.append(
                         {
@@ -824,7 +824,7 @@ class AdminPlatformOverviewView(APIView):
                 newest_payments = list(
                     Payment.objects.filter(deleted_at__isnull=True, status__in=[Payment.Status.HELD, Payment.Status.RELEASED])
                     .select_related("order", "order__buyer")
-                    .order_by("-created_at")[:6]
+                    .order_by("-created_at")[:25]
                 )
                 for p in newest_payments:
                     activities.append(
@@ -840,7 +840,7 @@ class AdminPlatformOverviewView(APIView):
                 newest_inspections = list(
                     QualityInspection.objects.filter(deleted_at__isnull=True)
                     .select_related("inspector", "product")
-                    .order_by("-created_at")[:6]
+                    .order_by("-created_at")[:25]
                 )
                 for qi in newest_inspections:
                     activities.append(
@@ -852,7 +852,7 @@ class AdminPlatformOverviewView(APIView):
                             "path": "/admin/quality",
                         }
                     )
-            newest_docs = list(KycDocument.objects.select_related("user").order_by("-uploaded_at")[:6])
+            newest_docs = list(KycDocument.objects.select_related("user").order_by("-uploaded_at")[:25])
             for d in newest_docs:
                 activities.append(
                     {
@@ -863,7 +863,7 @@ class AdminPlatformOverviewView(APIView):
                         "path": "/admin/verification",
                     }
                 )
-            newest_users = list(User.objects.order_by("-date_joined")[:6])
+            newest_users = list(User.objects.order_by("-date_joined")[:25])
             for u in newest_users:
                 activities.append(
                     {
@@ -878,7 +878,7 @@ class AdminPlatformOverviewView(APIView):
             activities = []
 
         activities.sort(key=lambda x: x.get("occurred_at") or now, reverse=True)
-        activities = activities[:8]
+        activities = activities[:30]
         activities_out = [
             {
                 "user": (f"{(a.get('user').first_name or '').strip()} {(a.get('user').last_name or '').strip()}".strip() if a.get("user") else "System") or "System",
