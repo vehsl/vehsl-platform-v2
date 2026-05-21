@@ -45,6 +45,37 @@ function SectionCard({ children, className = "" }: { children: React.ReactNode; 
   );
 }
 
+async function fetchJsonAuthed(path: string, init?: RequestInit) {
+  const res = await authedFetch(path, init);
+  if (res.status === 401) {
+    try {
+      window.location.assign("/?signin=1");
+    } catch {}
+  }
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  const isJson = ct.includes("application/json");
+  const data = isJson ? await res.json().catch(() => null) : await res.text().catch(() => null);
+  if (!res.ok) {
+    const pickMsg = (x: any): string => {
+      if (!x) return "";
+      if (typeof x === "string") return x;
+      if (typeof x?.detail === "string") return x.detail;
+      if (typeof x?.error === "string") return x.error;
+      if (typeof x === "object") {
+        for (const k of Object.keys(x)) {
+          const v = (x as any)[k];
+          if (typeof v === "string" && v.trim()) return v;
+          if (Array.isArray(v) && v.length && typeof v[0] === "string") return v[0];
+        }
+      }
+      return "";
+    };
+    const msg = pickMsg(data) || `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
 // ════════════════════════════════════════════════════════════
 //  ADMIN → USERS
 // ════════════════════════════════════════════════════════════
@@ -136,38 +167,7 @@ export function AdminUsers() {
     return { status: "pending", label: x || "unknown" };
   };
 
-  const fetchJson = async (path: string, init?: RequestInit) => {
-    const res = await authedFetch(path, init);
-    if (res.status === 401) {
-      try {
-        window.location.assign("/?signin=1");
-      } catch {}
-    }
-    const ct = (res.headers.get("content-type") || "").toLowerCase();
-    const isJson = ct.includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : await res.text().catch(() => null);
-    if (!res.ok) {
-      const pickMsg = (x: any): string => {
-        if (!x) return "";
-        if (typeof x === "string") return x;
-        if (typeof x?.detail === "string") return x.detail;
-        if (typeof x?.error === "string") return x.error;
-        if (typeof x === "object") {
-          for (const k of Object.keys(x)) {
-            const v = (x as any)[k];
-            if (typeof v === "string" && v.trim()) return v;
-            if (Array.isArray(v) && v.length && typeof v[0] === "string") return v[0];
-          }
-        }
-        return "";
-      };
-      const msg =
-        pickMsg(data) ||
-        `Request failed (${res.status})`;
-      throw new Error(msg);
-    }
-    return data;
-  };
+  const fetchJson = fetchJsonAuthed;
 
   const copyToClipboard = useCallback(
     async (text: string, successMsg: string) => {
@@ -1296,51 +1296,7 @@ export function AdminUsers() {
 // ════════════════════════════════════════════════════════════
 
 export function AdminProducts() {
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
-  const getAccess = () => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  };
-
-  const fetchJson = async (path: string, init?: RequestInit) => {
-    const access = getAccess();
-    const res = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        ...(access ? { Authorization: `Bearer ${access}` } : {}),
-      },
-    });
-    if (res.status === 401) {
-      try {
-        window.location.assign("/?signin=1");
-      } catch {}
-    }
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) {
-      const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
-        `Request failed (${res.status})`;
-      throw new Error(msg);
-    }
-    return data;
-  };
+  const fetchJson = fetchJsonAuthed;
 
   const formatNumber = (v: any) => {
     const n = Number(v);
@@ -1368,6 +1324,10 @@ export function AdminProducts() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "review">("all");
+  const [ordering, setOrdering] = useState<string>("-created_at");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -1423,12 +1383,20 @@ export function AdminProducts() {
           if (search.trim()) params.set("q", search.trim());
           if (catFilter !== "all") params.set("category", catFilter);
           if (statusFilter !== "all") params.set("admin_status", statusFilter);
+          if (ordering) params.set("ordering", ordering);
+          params.set("page", String(page));
+          params.set("page_size", String(pageSize));
           const data = await fetchJson(`/api/v1/admin/products/?${params.toString()}`);
           const rows = Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
-          if (!cancelled) setProducts(rows);
+          const count = typeof data?.count === "number" ? Number(data.count) : Array.isArray(data) ? data.length : null;
+          if (!cancelled) {
+            setProducts(rows);
+            setTotalCount(Number.isFinite(count as any) ? (count as any) : null);
+          }
         } catch (e: any) {
           if (!cancelled) {
             setProducts([]);
+            setTotalCount(null);
             setError(e?.message || "Failed to load products.");
           }
         } finally {
@@ -1441,7 +1409,11 @@ export function AdminProducts() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [search, catFilter, statusFilter]);
+  }, [search, catFilter, statusFilter, ordering, page, pageSize]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, catFilter, statusFilter, ordering, pageSize]);
 
   const refreshStats = async () => {
     try {
@@ -1487,7 +1459,12 @@ export function AdminProducts() {
         body: JSON.stringify(payload),
       });
 
-      setProducts(prev => [created, ...prev]);
+      if (page === 1 && ordering === "-created_at") {
+        setProducts(prev => [created, ...prev].slice(0, pageSize));
+      } else {
+        setPage(1);
+      }
+      setTotalCount(c => (typeof c === "number" ? c + 1 : c));
       setFormOpen(false);
       await refreshStats();
     } catch (e: any) {
@@ -1499,14 +1476,12 @@ export function AdminProducts() {
 
   const exportCsv = async () => {
     try {
-      const access = getAccess();
       const params = new URLSearchParams();
       if (search.trim()) params.set("q", search.trim());
       if (catFilter !== "all") params.set("category", catFilter);
       if (statusFilter !== "all") params.set("admin_status", statusFilter);
-      const res = await fetch(`${apiBase()}/api/v1/admin/products/export/?${params.toString()}`, {
-        headers: access ? { Authorization: `Bearer ${access}` } : {},
-      });
+      if (ordering) params.set("ordering", ordering);
+      const res = await authedFetch(`/api/v1/admin/products/export/?${params.toString()}`);
       if (!res.ok) throw new Error(`Export failed (${res.status})`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -1521,6 +1496,12 @@ export function AdminProducts() {
       setError(e?.message || "Export failed.");
     }
   };
+
+  const total = typeof totalCount === "number" ? totalCount : products.length;
+  const startIdx = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const endIdx = total === 0 ? 0 : Math.min(page * pageSize, total);
+  const hasPrev = page > 1;
+  const hasNext = typeof totalCount === "number" ? page * pageSize < totalCount : false;
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
@@ -1561,6 +1542,29 @@ export function AdminProducts() {
               />
             </div>
             <div className="flex gap-2 flex-wrap">
+              <select
+                value={ordering}
+                onChange={e => setOrdering(e.target.value)}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+              >
+                <option value="-created_at">Newest</option>
+                <option value="created_at">Oldest</option>
+                <option value="-price">Price (high)</option>
+                <option value="price">Price (low)</option>
+                <option value="-stock_units">Stock (high)</option>
+                <option value="stock_units">Stock (low)</option>
+                <option value="-vehsl_rating">Rating (high)</option>
+                <option value="name">Name (A–Z)</option>
+              </select>
+              <select
+                value={String(pageSize)}
+                onChange={e => setPageSize(Number(e.target.value) || 20)}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+              >
+                <option value="20">20 / page</option>
+                <option value="50">50 / page</option>
+                <option value="100">100 / page</option>
+              </select>
               <button
                 key="all"
                 onClick={() => setCatFilter("all")}
@@ -1632,6 +1636,32 @@ export function AdminProducts() {
               </motion.div>
             ))}
           </div>
+          {!loading && typeof totalCount === "number" && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 mt-2 border-t border-border/20">
+              <div className="text-[0.75rem] text-muted-foreground/60">
+                {totalCount === 0 ? "0 products" : `Showing ${startIdx}-${endIdx} of ${formatNumber(totalCount)}`}
+              </div>
+              <div className="flex items-center gap-2">
+                <BounceButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  className={!hasPrev ? "opacity-50 pointer-events-none" : ""}
+                >
+                  Prev
+                </BounceButton>
+                <div className="text-[0.75rem] text-muted-foreground/60 px-2">Page {page}</div>
+                <BounceButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPage(p => p + 1)}
+                  className={!hasNext ? "opacity-50 pointer-events-none" : ""}
+                >
+                  Next
+                </BounceButton>
+              </div>
+            </div>
+          )}
         </SectionCard>
       </motion.div>
 

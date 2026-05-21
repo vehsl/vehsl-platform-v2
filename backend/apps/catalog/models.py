@@ -73,6 +73,8 @@ class Product(models.Model):
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["category", "created_at"]),
             models.Index(fields=["seller", "status"]),
+            models.Index(fields=["sku"]),
+            models.Index(fields=["hs_code"]),
         ]
 
     def __str__(self):
