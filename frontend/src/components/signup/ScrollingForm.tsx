@@ -413,7 +413,7 @@ export function ScrollingForm({
                 window.localStorage.setItem("vehsl.user", JSON.stringify(tokens.user));
               } catch {}
               toast.success("Account created.");
-              router.replace("/");
+              router.replace("/kyc");
               return;
             }
           }
@@ -433,7 +433,7 @@ export function ScrollingForm({
       }
 
       toast.success("Account created.");
-      router.replace("/");
+      router.replace("/kyc");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error.";
       toast.error(message.includes("Failed to fetch") ? "Network error. Check backend URL/CORS." : message);

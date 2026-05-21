@@ -162,6 +162,29 @@ export default function Page() {
     setAuthUser(readUser());
   }, [mounted]);
 
+  useEffect(() => {
+    if (!mounted) return;
+    const access = readAccessToken();
+    if (!access) return;
+
+    let cancelled = false;
+    fetch(`${apiBase()}/api/v1/kyc/requirements`, {
+      headers: { Authorization: `Bearer ${access}` },
+    })
+      .then((res) => res.json().then((data) => ({ ok: res.ok, data })).catch(() => ({ ok: res.ok, data: null })))
+      .then(({ ok, data }) => {
+        if (cancelled || !ok) return;
+        if (data?.can_access_dashboard !== true) {
+          window.location.href = "/kyc";
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted]);
+
   const isSeller = useMemo(() => {
     const t = (authUser?.account_type || authUser?.role || "").toString().toLowerCase();
     return t === "seller";

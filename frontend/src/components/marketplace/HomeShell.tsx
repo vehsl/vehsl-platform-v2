@@ -199,10 +199,10 @@ export function HomeShell() {
           headers: access ? { Authorization: `Bearer ${access}` } : {},
         });
         const reqData = await reqRes.json().catch(() => null);
-        const needsUpload = !!reqData && reqRes.ok && reqData.all_required_uploaded === false;
-        router.push(needsUpload ? "/kyc" : "/orders/1");
+        const canAccessDashboard = !!reqData && reqRes.ok && reqData.can_access_dashboard === true;
+        router.push(canAccessDashboard ? "/orders/1" : "/kyc");
       } catch {
-        router.push("/orders/1");
+        router.push("/kyc");
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error.";
