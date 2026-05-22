@@ -70,6 +70,7 @@ export function AdminUsers() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState<any>(null);
+  const [requestingMedia, setRequestingMedia] = useState(false);
   const [resetLinkOpen, setResetLinkOpen] = useState(false);
   const [resetLinkData, setResetLinkData] = useState<{ url: string; expires_at: string } | null>(null);
 
@@ -1288,7 +1289,7 @@ export function AdminProducts() {
 
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "out" | "review">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "out" | "review" | "compliance">("all");
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
@@ -1297,7 +1298,8 @@ export function AdminProducts() {
     const q = search.trim();
     if (q) f.q = q;
     if (catFilter !== "all") f.category = catFilter;
-    if (statusFilter !== "all") f.admin_status = statusFilter;
+    if (statusFilter === "compliance") f.needs_compliance = 1;
+    else if (statusFilter !== "all") f.admin_status = statusFilter;
     return f;
   }, [search, catFilter, statusFilter]);
 
@@ -1451,6 +1453,26 @@ export function AdminProducts() {
     setStockValue(p?.stock_units != null ? String(p.stock_units) : "");
     setStockOpen(true);
     setMenuProductId(null);
+  };
+
+  const requestMedia = async () => {
+    const id = Number(detailData?.product?.id || 0);
+    if (!id) return;
+    setRequestingMedia(true);
+    try {
+      setActionError("");
+      await fetchJson(`/api/v1/admin/products/${id}/request-media/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Please upload a hero image + at least 3 additional photos. Add HS code and any required compliance documents.",
+        }),
+      });
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to request media.");
+    } finally {
+      setRequestingMedia(false);
+    }
   };
 
   const saveProduct = async () => {
@@ -1709,6 +1731,7 @@ export function AdminProducts() {
               >
                 <option value="-created_at">Newest</option>
                 <option value="created_at">Oldest</option>
+                <option value="-needs_compliance">Needs compliance</option>
                 <option value="-price">Price (high)</option>
                 <option value="price">Price (low)</option>
                 <option value="-stock_units">Stock (high)</option>
@@ -1731,6 +1754,15 @@ export function AdminProducts() {
                 className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
               >
                 All
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter(v => (v === "compliance" ? "all" : "compliance"))}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  statusFilter === "compliance" ? "bg-[#E5484D]/10 text-[#E5484D]/80" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Needs compliance
               </button>
               {categories.map((cat: any) => (
                 <button
@@ -1874,6 +1906,9 @@ export function AdminProducts() {
                   <div className="flex items-center gap-2">
                     <span className="text-[0.875rem] text-foreground truncate">{p.name}</span>
                     {!!p.hs_code && <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hs_code}</span>}
+                    {!!p?.needs_compliance && (
+                      <span className="text-[0.6875rem] text-[#E5484D]/80 hidden sm:inline">Needs compliance</span>
+                    )}
                   </div>
                   <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_name || "—"}</span>
                 </div>
@@ -2268,7 +2303,7 @@ export function AdminProducts() {
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
                       <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Media</div>
                       <div className="text-[0.8125rem] text-foreground/80 mb-3">
-                        {Array.isArray(detailData?.media) ? detailData.media.length : 0} items
+                        {formatNumber(detailData?.readiness?.images_count)} images · {detailData?.readiness?.has_hero_image ? "Hero OK" : "Missing hero"}
                       </div>
                       <div className="flex gap-2 flex-wrap">
                         {(detailData?.media || []).slice(0, 6).map((m: any) => (
@@ -2277,12 +2312,23 @@ export function AdminProducts() {
                           </a>
                         ))}
                       </div>
+                      <div className="flex items-center gap-2 mt-4">
+                        <BounceButton
+                          variant="ghost"
+                          size="sm"
+                          icon={<Upload size={14} />}
+                          onClick={requestingMedia ? undefined : requestMedia}
+                          className={requestingMedia ? "opacity-70 pointer-events-none" : ""}
+                        >
+                          Request upload
+                        </BounceButton>
+                      </div>
                     </div>
 
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
                       <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Compliance</div>
                       <div className="text-[0.8125rem] text-foreground/80 mb-3">
-                        {Array.isArray(detailData?.compliance_rules) ? detailData.compliance_rules.length : 0} rules
+                        {detailData?.readiness?.needs_compliance ? "Needs compliance" : "Looks ready"} · HS {detailData?.readiness?.missing_hs_code ? "missing" : "ok"}
                       </div>
                       <div className="flex gap-2 flex-wrap">
                         {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
@@ -2290,6 +2336,46 @@ export function AdminProducts() {
                             {r.rule_type}
                           </span>
                         ))}
+                      </div>
+                      <div className="mt-4 space-y-1 text-[0.75rem] text-muted-foreground/70">
+                        <div>Legal review: {detailData?.readiness?.legal_review_status || "—"}</div>
+                        <div>Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)}</div>
+                        <div>Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}</div>
+                        {detailData?.listing_request?.id && (
+                          <div>Listing request: #{detailData?.listing_request?.id} · {detailData?.listing_request?.stage}</div>
+                        )}
+                      </div>
+                      <div className="flex gap-2 flex-wrap mt-4">
+                        {detailData?.links?.listing_pipeline && (
+                          <a
+                            href={detailData.links.listing_pipeline}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
+                          >
+                            Listing pipeline
+                          </a>
+                        )}
+                        {detailData?.links?.trade_compliance && (
+                          <a
+                            href={detailData.links.trade_compliance}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
+                          >
+                            Trade compliance
+                          </a>
+                        )}
+                        {detailData?.links?.inspector_portal && (
+                          <a
+                            href={detailData.links.inspector_portal}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
+                          >
+                            Inspector portal
+                          </a>
+                        )}
                       </div>
                     </div>
                   </div>

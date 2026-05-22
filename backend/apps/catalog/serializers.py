@@ -188,6 +188,16 @@ class AdminProductListSerializer(serializers.ModelSerializer):
     category_slug = serializers.CharField(source="category.slug", read_only=True)
     stock_units = serializers.IntegerField(read_only=True)
     admin_status = serializers.SerializerMethodField()
+    images_count = serializers.IntegerField(read_only=True)
+    missing_hs_code = serializers.IntegerField(read_only=True)
+    missing_media = serializers.IntegerField(read_only=True)
+    missing_hero_image = serializers.IntegerField(read_only=True)
+    needs_compliance = serializers.BooleanField(read_only=True)
+    compliance_score = serializers.IntegerField(read_only=True)
+    compliance_rules_count = serializers.IntegerField(read_only=True)
+    compliance_docs_required_count = serializers.IntegerField(read_only=True)
+    compliance_destination_rules_count = serializers.IntegerField(read_only=True)
+    legal_review_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -206,6 +216,16 @@ class AdminProductListSerializer(serializers.ModelSerializer):
             "category_slug",
             "stock_units",
             "admin_status",
+            "images_count",
+            "missing_hs_code",
+            "missing_media",
+            "missing_hero_image",
+            "needs_compliance",
+            "compliance_score",
+            "compliance_rules_count",
+            "compliance_docs_required_count",
+            "compliance_destination_rules_count",
+            "legal_review_status",
         ]
 
     def get_admin_status(self, obj: Product):
@@ -223,6 +243,14 @@ class AdminProductListSerializer(serializers.ModelSerializer):
         if 0 < stock_val < threshold:
             return "low_stock"
         return "active"
+
+    def get_legal_review_status(self, obj: Product):
+        s = (getattr(obj, "status", "") or "").lower()
+        if s in {"draft", "pending", "rejected"}:
+            return "needs_review"
+        if s == "archived":
+            return "archived"
+        return "ok"
 
 
 class AdminProductWriteSerializer(serializers.Serializer):

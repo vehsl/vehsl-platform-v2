@@ -1,6 +1,6 @@
 import csv
 
-from django.db.models import CharField, Count, DecimalField, IntegerField, Q, Sum, Value
+from django.db.models import BooleanField, Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import filters, permissions, status, viewsets
@@ -10,7 +10,7 @@ from rest_framework.response import Response
 
 from apps.accounts.admin_utils import AdminPageNumberPagination, audit
 from apps.accounts.permissions import IsAdmin, IsSeller
-from apps.accounts.models import User
+from apps.accounts.models import Notification, User
 
 from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
 from .serializers import (
@@ -354,6 +354,89 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                     output_field=CharField(),
                 ),
             )
+            .annotate(
+                images_count=Count(
+                    "media",
+                    filter=Q(media__deleted_at__isnull=True, media__media_type=ProductMedia.MediaType.IMAGE),
+                    distinct=True,
+                ),
+                hero_images=Count(
+                    "media",
+                    filter=Q(
+                        media__deleted_at__isnull=True,
+                        media__media_type=ProductMedia.MediaType.IMAGE,
+                        media__position=0,
+                    ),
+                    distinct=True,
+                ),
+                compliance_rules_count=Count(
+                    "category__compliance_rules",
+                    filter=Q(category__compliance_rules__deleted_at__isnull=True),
+                    distinct=True,
+                ),
+                compliance_docs_required_count=Count(
+                    "category__compliance_rules",
+                    filter=Q(
+                        category__compliance_rules__deleted_at__isnull=True,
+                        category__compliance_rules__rule_type__in=[
+                            ComplianceRule.RuleType.PERMIT,
+                            ComplianceRule.RuleType.REGISTRATION,
+                            ComplianceRule.RuleType.LABEL,
+                        ],
+                    ),
+                    distinct=True,
+                ),
+                compliance_destination_rules_count=Count(
+                    "category__compliance_rules",
+                    filter=Q(
+                        category__compliance_rules__deleted_at__isnull=True,
+                        category__compliance_rules__rule_type__in=[
+                            ComplianceRule.RuleType.SHIPPING,
+                            ComplianceRule.RuleType.LOGISTICS,
+                        ],
+                    ),
+                    distinct=True,
+                ),
+            )
+            .annotate(
+                missing_hs_code=Case(
+                    When(Q(hs_code__isnull=True) | Q(hs_code=""), then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                )
+            )
+            .annotate(
+                missing_media=Case(
+                    When(images_count__lte=0, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                ),
+                missing_hero_image=Case(
+                    When(hero_images__lte=0, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                ),
+            )
+            .annotate(
+                compliance_score=ExpressionWrapper(
+                    F("missing_hs_code") * Value(100)
+                    + F("missing_media") * Value(50)
+                    + F("missing_hero_image") * Value(10)
+                    + Case(
+                        When(compliance_docs_required_count__gt=0, then=Value(5)),
+                        default=Value(0),
+                        output_field=IntegerField(),
+                    ),
+                    output_field=IntegerField(),
+                )
+            )
+            .annotate(
+                needs_compliance=Case(
+                    When(compliance_score__gt=0, then=Value(True)),
+                    default=Value(False),
+                    output_field=BooleanField(),
+                )
+            )
         )
 
         q = (self.request.query_params.get("q") or "").strip()
@@ -406,9 +489,28 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             )
         elif admin_status == "active":
             qs = qs.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+        elif admin_status == "compliance":
+            qs = qs.filter(
+                Q(missing_hs_code=1) | Q(missing_media=1) | Q(missing_hero_image=1) | Q(compliance_docs_required_count__gt=0)
+            )
+
+        needs_compliance = (self.request.query_params.get("needs_compliance") or "").strip().lower()
+        if needs_compliance in {"1", "true", "yes", "y"}:
+            qs = qs.filter(
+                Q(missing_hs_code=1) | Q(missing_media=1) | Q(missing_hero_image=1) | Q(compliance_docs_required_count__gt=0)
+            )
 
         ordering_raw = (self.request.query_params.get("ordering") or "").strip()
-        allowed = {"created_at", "price", "stock_units", "vehsl_rating_num", "name"}
+        allowed = {
+            "created_at",
+            "price",
+            "stock_units",
+            "vehsl_rating_num",
+            "name",
+            "images_count",
+            "missing_hs_code",
+            "compliance_score",
+        }
         ordering: list[str] = []
         if ordering_raw:
             for part in ordering_raw.split(","):
@@ -419,6 +521,8 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                 field = p[1:] if desc else p
                 if field == "vehsl_rating":
                     field = "vehsl_rating_num"
+                if field == "needs_compliance":
+                    field = "compliance_score"
                 if field in allowed:
                     ordering.append(("-" if desc else "") + field)
         if not ordering:
@@ -670,6 +774,72 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                     }
                 )
 
+        images_count = int(getattr(obj, "images_count", 0) or 0)
+        hero_images = int(getattr(obj, "hero_images", 0) or 0)
+        missing_hs_code = bool(int(getattr(obj, "missing_hs_code", 0) or 0))
+        missing_media = bool(int(getattr(obj, "missing_media", 0) or 0))
+        missing_hero_image = bool(int(getattr(obj, "missing_hero_image", 0) or 0))
+        compliance_score = int(getattr(obj, "compliance_score", 0) or 0)
+        needs_compliance = bool(getattr(obj, "needs_compliance", False))
+        docs_required_count = int(getattr(obj, "compliance_docs_required_count", 0) or 0)
+        destination_rules_count = int(getattr(obj, "compliance_destination_rules_count", 0) or 0)
+
+        legal_review_status = "ok"
+        status_val = (getattr(obj, "status", "") or "").lower()
+        if status_val in {"draft", "pending", "rejected"}:
+            legal_review_status = "needs_review"
+        elif status_val == "archived":
+            legal_review_status = "archived"
+
+        blocked_destinations: set[str] = set()
+        required_documents: set[str] = set()
+        try:
+            rules = list(ComplianceRule.objects.filter(category_id=obj.category_id, deleted_at__isnull=True).order_by("-created_at")[:200])
+            for r in rules:
+                payload = getattr(r, "payload", None) or {}
+                if isinstance(payload, dict):
+                    for k in ("blocked_countries", "blocked_destinations", "blocked_destinations_countries"):
+                        val = payload.get(k)
+                        if isinstance(val, list):
+                            for item in val:
+                                s = str(item or "").strip()
+                                if s:
+                                    blocked_destinations.add(s.upper())
+                    docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
+                    if isinstance(docs, list):
+                        for item in docs:
+                            s = str(item or "").strip()
+                            if s:
+                                required_documents.add(s)
+                    elif isinstance(docs, str):
+                        s = docs.strip()
+                        if s:
+                            required_documents.add(s)
+
+                if r.rule_type in {ComplianceRule.RuleType.SHIPPING, ComplianceRule.RuleType.LOGISTICS} and isinstance(r.countries, list) and r.countries:
+                    for c in r.countries:
+                        s = str(c or "").strip()
+                        if s:
+                            blocked_destinations.add(s.upper())
+        except Exception:
+            blocked_destinations = set()
+            required_documents = set()
+
+        listing_request = None
+        try:
+            lr = ListingRequest.objects.filter(created_product_id=obj.id).order_by("-created_at").first()
+            if lr:
+                listing_request = {
+                    "id": lr.id,
+                    "stage": lr.stage,
+                    "rating": str(getattr(lr, "rating", "") or ""),
+                    "created_at": lr.created_at,
+                    "updated_at": lr.updated_at,
+                    "folder_uuid": str(getattr(lr, "folder_uuid", "") or ""),
+                }
+        except Exception:
+            listing_request = None
+
         payload = {
             "product": product,
             "seller": {
@@ -686,8 +856,50 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             "sample_requests": sample_requests,
             "quality": inspections,
             "recent_orders": recent_orders,
+            "readiness": {
+                "needs_compliance": needs_compliance,
+                "compliance_score": compliance_score,
+                "missing_hs_code": missing_hs_code,
+                "missing_media": missing_media,
+                "missing_hero_image": missing_hero_image,
+                "images_count": images_count,
+                "has_hero_image": hero_images > 0,
+                "blocked_destinations_count": len(blocked_destinations),
+                "blocked_destinations": sorted(list(blocked_destinations))[:80],
+                "certifications_required_count": max(docs_required_count, len(required_documents)),
+                "required_documents": sorted(list(required_documents))[:80],
+                "missing_certifications": bool(docs_required_count > 0 or required_documents),
+                "destination_rules_count": destination_rules_count,
+                "legal_review_status": legal_review_status,
+            },
+            "listing_request": listing_request,
+            "links": {
+                "listing_pipeline": f"/admin/management/listings?product={obj.id}",
+                "inspector_portal": f"/admin/inspector?product={obj.id}",
+                "trade_compliance": f"/admin/legal/trade-compliance?product={obj.id}",
+            },
         }
         return Response(payload)
+
+    @action(detail=True, methods=["post"], url_path="request-media")
+    def request_media(self, request, pk=None):
+        product = Product.objects.filter(id=pk, deleted_at__isnull=True).select_related("seller").first()
+        if not product:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        seller = getattr(product, "seller", None)
+        msg = (request.data.get("message") or "").strip()
+        try:
+            Notification.objects.create(
+                user=seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="product_media_requested",
+                payload={"product_id": product.id, "message": msg, "requested_by": request.user.id},
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+        audit(request.user, action="admin_product_media_requested", target_type="product", target_id=str(product.id), payload={})
+        return Response({"ok": True})
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
