@@ -66,6 +66,9 @@ export function AdminUsers() {
   const [users, setUsers] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
+  const [unreadMessages, setUnreadMessages] = useState<number>(0);
+  const [messagesOpen, setMessagesOpen] = useState(false);
+  const [messagesUrl, setMessagesUrl] = useState<string>("/messages");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -166,7 +169,7 @@ export function AdminUsers() {
     endpoint: "/api/v1/admin/users/",
     filters: listFilters,
     initialOrdering: "",
-    initialPageSize: 20,
+    initialPageSize: 10,
     debounceMs: 250,
   });
 
@@ -222,6 +225,28 @@ export function AdminUsers() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadUnread = async () => {
+      try {
+        const threads = await fetchJson("/api/v1/chat/threads/");
+        if (cancelled) return;
+        const total = Array.isArray(threads)
+          ? threads.reduce((sum: number, t: any) => sum + (Number(t?.unread_count || 0) || 0), 0)
+          : 0;
+        setUnreadMessages(total);
+      } catch {
+        if (!cancelled) setUnreadMessages(0);
+      }
+    };
+    void loadUnread();
+    const t = window.setInterval(() => void loadUnread(), 20000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
     };
   }, []);
 
@@ -401,7 +426,8 @@ export function AdminUsers() {
         return;
       }
       const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-      window.open(`/messages?thread=${encodeURIComponent(String(threadId))}&returnTo=${rt}`, "_blank", "noopener,noreferrer");
+      setMessagesUrl(`/messages?thread=${encodeURIComponent(String(threadId))}&returnTo=${rt}`);
+      setMessagesOpen(true);
     } catch (e: any) {
       setError(e?.message || "Failed to start chat.");
     }
@@ -520,8 +546,66 @@ export function AdminUsers() {
           <h1 className="text-foreground tracking-tight mb-1.5">Users</h1>
           <p className="text-muted-foreground text-[0.875rem]">Everyone on TradeFlow. Buyers, sellers, and partners.</p>
         </div>
-        <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />} onClick={openCreate}>Add User</BounceButton>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <BounceButton
+              variant="ghost"
+              size="sm"
+              icon={<Mail size={14} />}
+              onClick={() => {
+                const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+                setMessagesUrl(`/messages?returnTo=${rt}`);
+                setMessagesOpen(true);
+              }}
+            >
+              Messages
+            </BounceButton>
+            {unreadMessages > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1.5 rounded-full bg-[#E5484D] text-white text-[0.625rem] flex items-center justify-center tabular-nums">
+                {unreadMessages > 99 ? "99+" : unreadMessages}
+              </span>
+            )}
+          </div>
+          <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />} onClick={openCreate}>Add User</BounceButton>
+        </div>
       </motion.div>
+
+      <AnimatePresence>
+        {messagesOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/30"
+            onClick={() => setMessagesOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[1100px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-border/20">
+                <div className="min-w-0">
+                  <div className="text-foreground tracking-tight">Messages</div>
+                  <div className="text-[0.75rem] text-muted-foreground/60 truncate">{messagesUrl}</div>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setMessagesOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <iframe
+                key={messagesUrl}
+                src={messagesUrl}
+                className="w-full h-[78vh] bg-background"
+                referrerPolicy="no-referrer"
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Stats */}
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">

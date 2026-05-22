@@ -2314,6 +2314,7 @@ class ChatMessageViewSet(mixins.UpdateModelMixin, mixins.DestroyModelMixin, view
 class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminUserListSerializer
+    pagination_class = AdminPageNumberPagination
 
     def _deny_if_target_is_admin_and_not_super(self, actor: User, target: User):
         if (getattr(target, "role", "") or "").lower() == User.Role.ADMIN and not _is_super_admin(actor):
