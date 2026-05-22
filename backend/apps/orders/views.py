@@ -367,6 +367,14 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
 class AdminLogisticsViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    pagination_class = AdminPageNumberPagination
+
+    def _parse_days(self, request, default: int = 7) -> int:
+        days_raw = (request.query_params.get("days") or "").strip()
+        try:
+            return max(2, min(31, int(days_raw or str(default))))
+        except Exception:
+            return default
 
     def _day_labels(self, days: int):
         now = timezone.localdate()
@@ -390,10 +398,11 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
+        days = self._parse_days(request, default=7)
         now = timezone.now()
-        start_this = now - timedelta(days=7)
-        start_prev = now - timedelta(days=14)
-        end_prev = now - timedelta(days=7)
+        start_this = now - timedelta(days=days)
+        start_prev = now - timedelta(days=days * 2)
+        end_prev = now - timedelta(days=days)
 
         qs_this = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_this)
         qs_prev = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_prev, created_at__lt=end_prev)
@@ -435,6 +444,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 
         return Response(
             {
+                "days": days,
                 "active_vehicles": active_vehicles,
                 "total_vehicles": total_vehicles,
                 "in_transit": in_transit,
@@ -447,11 +457,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="flow")
     def flow(self, request):
-        days_raw = (request.query_params.get("days") or "").strip()
-        try:
-            days = max(2, min(31, int(days_raw or "7")))
-        except Exception:
-            days = 7
+        days = self._parse_days(request, default=7)
 
         dates = self._day_labels(days)
         start_date = dates[0]
@@ -500,6 +506,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             limit = max(1, min(50, int(limit_raw or "10")))
         except Exception:
             limit = 10
+        status_filter = (request.query_params.get("status") or "").strip().lower()
 
         qs = (
             Shipment.objects.select_related("order", "order__seller", "order__buyer")
@@ -516,6 +523,8 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
                 last_event = evs[-1] if evs else None
 
             status = self._vehicle_status_from_shipment(sh)
+            if status_filter and status_filter != "all" and status != status_filter:
+                continue
             order_id = getattr(sh, "order_id", None)
             seller = getattr(getattr(sh, "order", None), "seller", None)
             seller_name = (
@@ -543,6 +552,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             items.append(
                 {
                     "id": f"SH-{sh.id}",
+                    "shipment_id": sh.id,
                     "driver": seller_name,
                     "type": "Truck",
                     "plate": plate,
@@ -554,6 +564,134 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             )
 
         return Response(items)
+
+    @action(detail=False, methods=["get"], url_path="shipments")
+    def shipments(self, request):
+        qs = (
+            Shipment.objects.filter(deleted_at__isnull=True)
+            .select_related("order", "order__buyer", "order__seller")
+            .order_by("-created_at")
+        )
+
+        status_filter = (request.query_params.get("status") or "").strip().lower()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qn = q.lower()
+            extracted = qn.replace("#", "").replace("ord-", "").replace("sh-", "")
+            if extracted.isdigit():
+                try:
+                    qs = qs.filter(Q(id=int(extracted)) | Q(order_id=int(extracted)))
+                except Exception:
+                    pass
+            else:
+                qs = qs.filter(
+                    Q(tracking_number__icontains=q)
+                    | Q(carrier_id__icontains=q)
+                    | Q(origin__icontains=q)
+                    | Q(destination__icontains=q)
+                    | Q(order__buyer__email__icontains=q)
+                    | Q(order__seller__email__icontains=q)
+                )
+
+        page = self.paginate_queryset(qs)
+        rows = page if page is not None else list(qs[:50])
+
+        out = []
+        for sh in rows:
+            order = getattr(sh, "order", None)
+            buyer = getattr(order, "buyer", None) if order else None
+            seller = getattr(order, "seller", None) if order else None
+            buyer_label = (getattr(buyer, "email", "") or getattr(buyer, "phone", "") or "—") if buyer else "—"
+            seller_label = (getattr(seller, "email", "") or getattr(seller, "phone", "") or "—") if seller else "—"
+            out.append(
+                {
+                    "id": sh.id,
+                    "order_id": getattr(sh, "order_id", None),
+                    "status": sh.status,
+                    "carrier_id": sh.carrier_id,
+                    "tracking_number": sh.tracking_number,
+                    "origin": sh.origin,
+                    "destination": sh.destination,
+                    "estimated_delivery_at": sh.estimated_delivery_at,
+                    "actual_delivery_at": sh.actual_delivery_at,
+                    "created_at": sh.created_at,
+                    "buyer": buyer_label,
+                    "seller": seller_label,
+                }
+            )
+
+        if page is not None:
+            return self.get_paginated_response(out)
+        return Response({"count": len(out), "next": None, "previous": None, "results": out})
+
+    @action(detail=False, methods=["get"], url_path="shipment-detail")
+    def shipment_detail(self, request):
+        shipment_id = (request.query_params.get("id") or request.query_params.get("shipment_id") or "").strip()
+        if not shipment_id.isdigit():
+            return Response({"id": "id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = (
+            Shipment.objects.filter(deleted_at__isnull=True, id=int(shipment_id))
+            .select_related("order", "order__buyer", "order__seller")
+            .prefetch_related("events")
+            .first()
+        )
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        order = getattr(sh, "order", None)
+        buyer = getattr(order, "buyer", None) if order else None
+        seller = getattr(order, "seller", None) if order else None
+
+        evs = []
+        try:
+            for ev in sh.events.filter(deleted_at__isnull=True).order_by("occurred_at", "id"):
+                evs.append(
+                    {
+                        "id": ev.id,
+                        "type": ev.type,
+                        "location": ev.location,
+                        "occurred_at": ev.occurred_at,
+                        "payload": ev.payload or {},
+                    }
+                )
+        except Exception:
+            evs = []
+
+        audit(request.user, action="admin_logistics_shipment_viewed", target_type="shipment", target_id=str(sh.id), payload={})
+        return Response(
+            {
+                "shipment": {
+                    "id": sh.id,
+                    "order_id": getattr(sh, "order_id", None),
+                    "status": sh.status,
+                    "carrier_id": sh.carrier_id,
+                    "tracking_number": sh.tracking_number,
+                    "origin": sh.origin,
+                    "destination": sh.destination,
+                    "estimated_delivery_at": sh.estimated_delivery_at,
+                    "actual_delivery_at": sh.actual_delivery_at,
+                    "created_at": sh.created_at,
+                },
+                "order": {
+                    "id": getattr(order, "id", None) if order else None,
+                    "status": getattr(order, "status", "") if order else "",
+                    "currency": getattr(order, "currency", "") if order else "",
+                    "total_amount": str(getattr(order, "total_amount", "") or "") if order else "",
+                },
+                "buyer": {
+                    "id": getattr(buyer, "id", None) if buyer else None,
+                    "label": (getattr(buyer, "email", "") or getattr(buyer, "phone", "") or "—") if buyer else "—",
+                },
+                "seller": {
+                    "id": getattr(seller, "id", None) if seller else None,
+                    "label": (getattr(seller, "email", "") or getattr(seller, "phone", "") or "—") if seller else "—",
+                },
+                "events": evs,
+            }
+        )
 
 
 class AdminReleaseOrderViewSet(viewsets.GenericViewSet):

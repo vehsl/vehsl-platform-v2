@@ -215,6 +215,7 @@ class AdminUiNotificationsView(APIView):
 
             threshold = 50
             from django.db.models import Sum
+            from apps.inventory.models import Sample
 
             base = Product.objects.filter(deleted_at__isnull=True).annotate(
                 stock_units=Coalesce(Sum("samples__available_quantity"), Value(0), output_field=IntegerField())
@@ -224,12 +225,19 @@ class AdminUiNotificationsView(APIView):
                 .count()
             )
             if low_stock:
+                occurred_at = (
+                    Sample.objects.filter(deleted_at__isnull=True, low_stock_flag=True)
+                    .order_by("-last_updated")
+                    .values_list("last_updated", flat=True)
+                    .first()
+                    or now
+                )
                 items.append(
                     {
                         "key": "products_low_stock",
                         "title": "Inventory alert",
                         "body": f"{low_stock} products are low on stock",
-                        "occurred_at": now,
+                        "occurred_at": occurred_at,
                         "level": "info",
                         "path": "/admin/products",
                     }

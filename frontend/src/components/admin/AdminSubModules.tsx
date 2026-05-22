@@ -2437,57 +2437,26 @@ const vehicleStatusColor: Record<string, string> = {
 };
 
 export function AdminLogistics() {
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
-  const getAccess = () => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  };
-
-  const fetchJson = async (path: string, init?: RequestInit) => {
-    const access = getAccess();
-    const res = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        ...(access ? { Authorization: `Bearer ${access}` } : {}),
-      },
-    });
-    if (res.status === 401) {
-      try {
-        window.location.assign("/?signin=1");
-      } catch {}
-    }
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) {
-      const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
-        `Request failed (${res.status})`;
-      throw new Error(msg);
-    }
-    return data;
-  };
+  const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
   const [flow, setFlow] = useState<any[]>([]);
   const [fleet, setFleet] = useState<any[]>([]);
+  const [days, setDays] = useState<number>(7);
+  const [fleetStatus, setFleetStatus] = useState<string>("all");
+  const [shipments, setShipments] = useState<any[]>([]);
+  const [shipQ, setShipQ] = useState<string>("");
+  const [shipStatus, setShipStatus] = useState<string>("all");
+  const [shipPage, setShipPage] = useState<number>(1);
+  const [shipTotalPages, setShipTotalPages] = useState<number>(1);
+  const [shipCount, setShipCount] = useState<number>(0);
+  const [shipLoading, setShipLoading] = useState(false);
+  const [shipmentOpen, setShipmentOpen] = useState(false);
+  const [shipmentLoading, setShipmentLoading] = useState(false);
+  const [shipmentDetail, setShipmentDetail] = useState<any>(null);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const fmtVehicles = (a: any, t: any) => {
     const aa = Number(a);
@@ -2528,31 +2497,84 @@ export function AdminLogistics() {
     setLoading(true);
     (async () => {
       try {
+        const fleetParams = new URLSearchParams();
+        fleetParams.set("limit", "8");
+        if (fleetStatus && fleetStatus !== "all") fleetParams.set("status", fleetStatus);
+
+        const shipParams = new URLSearchParams();
+        shipParams.set("page", String(shipPage));
+        shipParams.set("page_size", "10");
+        if (shipQ.trim()) shipParams.set("q", shipQ.trim());
+        if (shipStatus && shipStatus !== "all") shipParams.set("status", shipStatus);
+
         const [s, f, fl] = await Promise.all([
-          fetchJson("/api/v1/admin/logistics/stats"),
-          fetchJson("/api/v1/admin/logistics/flow?days=7"),
-          fetchJson("/api/v1/admin/logistics/fleet?limit=8"),
+          fetchJson(`/api/v1/admin/logistics/stats/?days=${days}`),
+          fetchJson(`/api/v1/admin/logistics/flow/?days=${days}`),
+          fetchJson(`/api/v1/admin/logistics/fleet/?${fleetParams.toString()}`),
         ]);
+        setShipLoading(true);
+        const shipResp = await fetchJson(`/api/v1/admin/logistics/shipments/?${shipParams.toString()}`);
         if (cancelled) return;
         setStats(s);
         setFlow(Array.isArray(f) ? f : []);
         setFleet(Array.isArray(fl) ? fl : []);
+        setShipments(Array.isArray(shipResp?.results) ? shipResp.results : []);
+        const cnt = Number(shipResp?.count || 0);
+        const ps = 10;
+        setShipCount(Number.isFinite(cnt) ? cnt : 0);
+        setShipTotalPages(Math.max(1, Math.ceil((Number.isFinite(cnt) ? cnt : 0) / ps)));
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Failed to load logistics.");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setShipLoading(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [days, fleetStatus, shipPage, shipQ, shipStatus, refreshNonce]);
+
+  const openShipment = async (shipmentId: number) => {
+    if (!shipmentId) return;
+    setShipmentOpen(true);
+    setShipmentLoading(true);
+    setShipmentDetail(null);
+    try {
+      const d = await fetchJson(`/api/v1/admin/logistics/shipment-detail/?id=${shipmentId}`);
+      setShipmentDetail(d);
+    } catch (e: any) {
+      setShipmentDetail(null);
+      setError(e?.message || "Failed to load shipment.");
+      setShipmentOpen(false);
+    } finally {
+      setShipmentLoading(false);
+    }
+  };
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
-      <motion.div variants={stagger.item}>
-        <h1 className="text-foreground tracking-tight mb-1.5">Logistics</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Logistics</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={String(days)}
+            onChange={(e) => setDays(Number(e.target.value) || 7)}
+            className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+          >
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <BounceButton variant="ghost" size="sm" icon={<Clock size={14} />} onClick={() => setRefreshNonce((n) => n + 1)}>
+            Refresh
+          </BounceButton>
+        </div>
       </motion.div>
 
       {error && (
@@ -2623,7 +2645,19 @@ export function AdminLogistics() {
       {/* Fleet */}
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <h2 className="text-foreground text-[0.9375rem] mb-6">Fleet Status</h2>
+          <div className="flex items-center justify-between gap-3 mb-6">
+            <h2 className="text-foreground text-[0.9375rem]">Fleet Status</h2>
+            <select
+              value={fleetStatus}
+              onChange={(e) => setFleetStatus(e.target.value)}
+              className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+            >
+              <option value="all">All</option>
+              <option value="in-transit">In transit</option>
+              <option value="loading">Loading</option>
+              <option value="idle">Idle</option>
+            </select>
+          </div>
           <div className="space-y-2">
             {loading && (
               <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
@@ -2637,7 +2671,8 @@ export function AdminLogistics() {
             )}
             {fleet.map((v, i) => (
               <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
+                onClick={() => openShipment(Number(v.shipment_id || 0))}
               >
                 <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${vehicleStatusColor[v.status]}10` }}>
                   <Truck size={18} style={{ color: vehicleStatusColor[v.status] }} />
@@ -2667,6 +2702,190 @@ export function AdminLogistics() {
           </div>
         </SectionCard>
       </motion.div>
+
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-foreground text-[0.9375rem] mb-1">Shipments</h2>
+              <p className="text-muted-foreground/50 text-[0.75rem]">Search, filter, and inspect shipment history.</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <div className="relative">
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+                <input
+                  value={shipQ}
+                  onChange={(e) => {
+                    setShipQ(e.target.value);
+                    setShipPage(1);
+                  }}
+                  placeholder="Search tracking, order, email…"
+                  className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
+                />
+              </div>
+              <select
+                value={shipStatus}
+                onChange={(e) => {
+                  setShipStatus(e.target.value);
+                  setShipPage(1);
+                }}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="all">All statuses</option>
+                <option value="label_created">Label created</option>
+                <option value="picked_up">Picked up</option>
+                <option value="in_transit">In transit</option>
+                <option value="customs">Customs</option>
+                <option value="out_for_delivery">Out for delivery</option>
+                <option value="delivered">Delivered</option>
+              </select>
+            </div>
+          </div>
+
+          {shipLoading && (
+            <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+              Loading shipments…
+            </div>
+          )}
+
+          {!shipLoading && shipments.length === 0 && (
+            <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+              No shipments found.
+            </div>
+          )}
+
+          {!shipLoading && shipments.length > 0 && (
+            <div className="space-y-2">
+              {shipments.map((s, i) => (
+                <motion.div
+                  key={s.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.03 }}
+                  className="flex items-center justify-between gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
+                  onClick={() => openShipment(Number(s.id))}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-[0.875rem] text-foreground/80 truncate">SH-{s.id}</span>
+                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">ORD-{s.order_id || "—"}</span>
+                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">{s.tracking_number || s.carrier_id || "—"}</span>
+                    </div>
+                    <div className="text-[0.75rem] text-muted-foreground/50 truncate">
+                      {s.origin || "—"} → {s.destination || "—"} · {s.seller || "—"} → {s.buyer || "—"}
+                    </div>
+                  </div>
+                  <StatusPill
+                    status={
+                      s.status === "delivered" ? "success" :
+                        s.status === "customs" ? "warning" :
+                          s.status === "in_transit" || s.status === "out_for_delivery" ? "info" :
+                            "pending"
+                    }
+                    label={(s.status || "").replaceAll("_", " ")}
+                    pulse={s.status === "in_transit" || s.status === "out_for_delivery"}
+                  />
+                </motion.div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between mt-6">
+            <div className="text-[0.75rem] text-muted-foreground/60">
+              {shipCount ? `Showing ${(shipPage - 1) * 10 + 1}-${Math.min(shipPage * 10, shipCount)} of ${shipCount}` : "—"}
+            </div>
+            <div className="flex items-center gap-2">
+              <BounceButton variant="ghost" size="sm" onClick={shipPage <= 1 ? undefined : () => setShipPage((p) => Math.max(1, p - 1))} className={shipPage <= 1 ? "opacity-60 pointer-events-none" : ""}>
+                Prev
+              </BounceButton>
+              <BounceButton variant="ghost" size="sm" onClick={shipPage >= shipTotalPages ? undefined : () => setShipPage((p) => p + 1)} className={shipPage >= shipTotalPages ? "opacity-60 pointer-events-none" : ""}>
+                Next
+              </BounceButton>
+            </div>
+          </div>
+        </SectionCard>
+      </motion.div>
+
+      <AnimatePresence>
+        {shipmentOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setShipmentOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">
+                    {shipmentDetail?.shipment?.id ? `Shipment SH-${shipmentDetail.shipment.id}` : (shipmentLoading ? "Loading…" : "Shipment")}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    ORD-{shipmentDetail?.shipment?.order_id || "—"} · {shipmentDetail?.shipment?.status || "—"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setShipmentOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {shipmentLoading && (
+                <div className="px-5 py-6 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading shipment…
+                </div>
+              )}
+
+              {!shipmentLoading && shipmentDetail && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Tracking</div>
+                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || "—"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Route</div>
+                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.shipment?.origin || "—"} → {shipmentDetail?.shipment?.destination || "—"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Buyer / Seller</div>
+                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.buyer?.label || "—"} · {shipmentDetail?.seller?.label || "—"}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Events</div>
+                    {(shipmentDetail?.events || []).length === 0 ? (
+                      <div className="text-[0.8125rem] text-muted-foreground/60">No events yet.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(shipmentDetail?.events || []).slice(0, 30).map((ev: any) => (
+                          <div key={ev.id} className="flex items-start justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
+                            <div className="min-w-0">
+                              <div className="text-[0.8125rem] text-foreground/80 truncate">{ev.type}</div>
+                              <div className="text-[0.6875rem] text-muted-foreground/50 truncate">{ev.location || "—"}</div>
+                            </div>
+                            <div className="text-[0.6875rem] text-muted-foreground/50 whitespace-nowrap">
+                              {ev.occurred_at ? new Date(ev.occurred_at).toLocaleString() : "—"}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -2676,56 +2895,25 @@ export function AdminLogistics() {
 // ════════════════════════════════════════════════════════════
 
 export function AdminQuality() {
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
-  const getAccess = () => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  };
-
-  const fetchJson = async (path: string, init?: RequestInit) => {
-    const access = getAccess();
-    const res = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        ...(access ? { Authorization: `Bearer ${access}` } : {}),
-      },
-    });
-    if (res.status === 401) {
-      try {
-        window.location.assign("/?signin=1");
-      } catch {}
-    }
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) {
-      const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
-        `Request failed (${res.status})`;
-      throw new Error(msg);
-    }
-    return data;
-  };
+  const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
   const [trend, setTrend] = useState<any[]>([]);
   const [dist, setDist] = useState<any>(null);
-  const [recent, setRecent] = useState<any[]>([]);
+  const [days, setDays] = useState<number>(30);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [q, setQ] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [page, setPage] = useState<number>(1);
+  const pageSize = 10;
+  const [inspections, setInspections] = useState<any[]>([]);
+  const [count, setCount] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(1);
+  const [inspectionOpen, setInspectionOpen] = useState(false);
+  const [inspectionLoading, setInspectionLoading] = useState(false);
+  const [inspectionSaving, setInspectionSaving] = useState(false);
+  const [inspectionDetail, setInspectionDetail] = useState<any>(null);
+  const [editScore, setEditScore] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
 
@@ -2755,23 +2943,73 @@ export function AdminQuality() {
     return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
   };
 
+  const openInspection = async (id: number) => {
+    if (!id) return;
+    setInspectionOpen(true);
+    setInspectionLoading(true);
+    setInspectionDetail(null);
+    try {
+      const data = await fetchJson(`/api/v1/admin/quality/${id}/`);
+      setInspectionDetail(data);
+      setEditScore(data?.score != null ? String(data.score) : "");
+    } catch (e: any) {
+      setInspectionDetail(null);
+      setError(e?.message || "Failed to load inspection.");
+      setInspectionOpen(false);
+    } finally {
+      setInspectionLoading(false);
+    }
+  };
+
+  const setInspection = async (patch: { status?: string; score?: number }) => {
+    const id = Number(inspectionDetail?.id || 0);
+    if (!id) return;
+    setInspectionSaving(true);
+    try {
+      setError("");
+      const data = await fetchJson(`/api/v1/admin/quality/${id}/set/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      setInspectionDetail(data);
+      setEditScore(data?.score != null ? String(data.score) : "");
+      setRefreshNonce((n) => n + 1);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update inspection.");
+    } finally {
+      setInspectionSaving(false);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
     (async () => {
       try {
-        const [s, t, d, r] = await Promise.all([
-          fetchJson("/api/v1/admin/quality/stats"),
-          fetchJson("/api/v1/admin/quality/trend?months=6"),
-          fetchJson("/api/v1/admin/quality/distribution?days=30"),
-          fetchJson("/api/v1/admin/quality/recent?limit=10"),
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("page_size", String(pageSize));
+        if (q.trim()) params.set("q", q.trim());
+        if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+        params.set("days", String(days));
+
+        const [s, t, d, listResp] = await Promise.all([
+          fetchJson(`/api/v1/admin/quality/stats/?days=${days}`),
+          fetchJson(`/api/v1/admin/quality/trend/?days=${Math.min(31, days)}`),
+          fetchJson(`/api/v1/admin/quality/distribution/?days=${days}`),
+          fetchJson(`/api/v1/admin/quality/?${params.toString()}`),
         ]);
         if (cancelled) return;
         setStats(s);
         setTrend(Array.isArray(t) ? t : []);
         setDist(d);
-        setRecent(Array.isArray(r) ? r : []);
+        const rows = Array.isArray(listResp?.results) ? listResp.results : [];
+        const cnt = Number(listResp?.count || 0);
+        setInspections(rows);
+        setCount(Number.isFinite(cnt) ? cnt : 0);
+        setTotalPages(Math.max(1, Math.ceil((Number.isFinite(cnt) ? cnt : 0) / pageSize)));
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Failed to load quality data.");
       } finally {
@@ -2781,13 +3019,32 @@ export function AdminQuality() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [days, page, q, statusFilter, refreshNonce]);
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
-      <motion.div variants={stagger.item}>
-        <h1 className="text-foreground tracking-tight mb-1.5">Quality Control</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Quality Control</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={String(days)}
+            onChange={(e) => {
+              setDays(Number(e.target.value) || 30);
+              setPage(1);
+            }}
+            className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+          >
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <BounceButton variant="ghost" size="sm" icon={<Clock size={14} />} onClick={() => setRefreshNonce((n) => n + 1)}>
+            Refresh
+          </BounceButton>
+        </div>
       </motion.div>
 
       {error && (
@@ -2859,21 +3116,54 @@ export function AdminQuality() {
 
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <h2 className="text-foreground text-[0.9375rem] mb-6">Recent Inspections</h2>
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-foreground text-[0.9375rem] mb-1">Inspections</h2>
+              <p className="text-muted-foreground/50 text-[0.75rem]">Search, filter, and review inspection outcomes.</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <div className="relative">
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+                <input
+                  value={q}
+                  onChange={(e) => {
+                    setQ(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search product, seller, inspector…"
+                  className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
+                />
+              </div>
+              <select
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="all">All statuses</option>
+                <option value="in_progress">Pending</option>
+                <option value="passed">Passed</option>
+                <option value="failed">Failed</option>
+              </select>
+            </div>
+          </div>
           <div className="space-y-2">
             {loading && (
               <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
                 Loading inspections…
               </div>
             )}
-            {!loading && recent.length === 0 && (
+            {!loading && inspections.length === 0 && (
               <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
                 No inspections yet.
               </div>
             )}
-            {recent.map((qi, i) => (
+            {inspections.map((qi, i) => (
               <motion.div key={qi.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
+                onClick={() => openInspection(Number(qi.id))}
               >
                 <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ backgroundColor: qi.score >= 90 ? "#30A46C10" : qi.score >= 70 ? "#FFB22410" : "#E5484D10" }}>
                   <span className="text-[0.875rem]" style={{ color: qi.score >= 90 ? "#30A46C" : qi.score >= 70 ? "#D97706" : "#E5484D" }}>{qi.score}</span>
@@ -2891,8 +3181,139 @@ export function AdminQuality() {
               </motion.div>
             ))}
           </div>
+
+          <div className="flex items-center justify-between mt-6">
+            <div className="text-[0.75rem] text-muted-foreground/60">
+              {count ? `Showing ${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, count)} of ${count}` : "—"}
+            </div>
+            <div className="flex items-center gap-2">
+              <BounceButton variant="ghost" size="sm" onClick={page <= 1 ? undefined : () => setPage((p) => Math.max(1, p - 1))} className={page <= 1 ? "opacity-60 pointer-events-none" : ""}>
+                Prev
+              </BounceButton>
+              <BounceButton variant="ghost" size="sm" onClick={page >= totalPages ? undefined : () => setPage((p) => p + 1)} className={page >= totalPages ? "opacity-60 pointer-events-none" : ""}>
+                Next
+              </BounceButton>
+            </div>
+          </div>
         </SectionCard>
       </motion.div>
+
+      <AnimatePresence>
+        {inspectionOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setInspectionOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">
+                    {inspectionDetail?.product_name || (inspectionLoading ? "Loading…" : "Inspection")}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {inspectionDetail?.seller_name || "—"} · {inspectionDetail?.inspector_display || "—"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setInspectionOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {inspectionLoading && (
+                <div className="px-5 py-6 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading inspection…
+                </div>
+              )}
+
+              {!inspectionLoading && inspectionDetail && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Inspection ID</div>
+                      <div className="text-[0.875rem] text-foreground/80">{inspectionDetail?.id}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Status</div>
+                      <div className="text-[0.875rem] text-foreground/80">{(inspectionDetail?.status || "—").toString().replaceAll("_", " ")}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Score</div>
+                      <div className="text-[0.875rem] text-foreground/80">{fmtScore(inspectionDetail?.score)}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-4">Update</div>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <input
+                        value={editScore}
+                        onChange={(e) => setEditScore(e.target.value)}
+                        placeholder="Score (0-100)"
+                        inputMode="numeric"
+                        className="flex-1 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                      />
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        icon={<Clock size={14} />}
+                        onClick={inspectionSaving ? undefined : () => setInspection({ status: "in_progress" })}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Pending
+                      </BounceButton>
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        icon={<CheckCircle2 size={14} />}
+                        onClick={inspectionSaving ? undefined : () => {
+                          const n = Number(editScore);
+                          const patch: any = { status: "passed" };
+                          if (Number.isFinite(n)) patch.score = n;
+                          void setInspection(patch);
+                        }}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Pass
+                      </BounceButton>
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        icon={<XCircle size={14} />}
+                        onClick={inspectionSaving ? undefined : () => {
+                          const n = Number(editScore);
+                          const patch: any = { status: "failed" };
+                          if (Number.isFinite(n)) patch.score = n;
+                          void setInspection(patch);
+                        }}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Fail
+                      </BounceButton>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-2">Dates</div>
+                    <div className="text-[0.8125rem] text-foreground/80">
+                      Inspected: {formatDate(inspectionDetail?.inspected_at)} · Created: {formatDate(inspectionDetail?.created_at)}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
