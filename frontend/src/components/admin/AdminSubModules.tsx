@@ -1251,6 +1251,7 @@ export function AdminUsers() {
           </motion.div>
         )}
       </AnimatePresence>
+
     </motion.div>
   );
 }
@@ -1287,7 +1288,7 @@ export function AdminProducts() {
 
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "review">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "out" | "review">("all");
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
@@ -1322,6 +1323,8 @@ export function AdminProducts() {
   });
 
   const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [form, setForm] = useState<any>({
@@ -1333,7 +1336,28 @@ export function AdminProducts() {
     price: "",
     stock_units: "",
     status: "active",
+    vehsl_rating: "",
   });
+
+  const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  const [bulkAction, setBulkAction] = useState<"" | "status" | "category" | "hs_code" | "stock">("");
+  const [bulkStatus, setBulkStatus] = useState<string>("active");
+  const [bulkCategoryId, setBulkCategoryId] = useState<string>("");
+  const [bulkHsCode, setBulkHsCode] = useState<string>("");
+  const [bulkStockUnits, setBulkStockUnits] = useState<string>("");
+
+  const [menuProductId, setMenuProductId] = useState<number | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailData, setDetailData] = useState<any>(null);
+
+  const [stockOpen, setStockOpen] = useState(false);
+  const [stockSaving, setStockSaving] = useState(false);
+  const [stockProductId, setStockProductId] = useState<number | null>(null);
+  const [stockValue, setStockValue] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -1368,6 +1392,9 @@ export function AdminProducts() {
 
   const openCreate = () => {
     setFormError("");
+    setActionError("");
+    setFormMode("create");
+    setEditingId(null);
     setForm({
       name: "",
       seller_email: "",
@@ -1377,42 +1404,161 @@ export function AdminProducts() {
       price: "",
       stock_units: "",
       status: "active",
+      vehsl_rating: "",
     });
     setFormOpen(true);
+  };
+
+  const openEditProduct = (p: any) => {
+    setFormError("");
+    setActionError("");
+    setFormMode("edit");
+    setEditingId(Number(p?.id || 0) || null);
+    setForm({
+      name: p?.name || "",
+      seller_email: "",
+      category_id: p?.category != null ? String(p.category) : categories?.[0]?.id ? String(categories[0].id) : "",
+      hs_code: p?.hs_code || "",
+      currency: p?.currency || "USD",
+      price: p?.price != null ? String(p.price) : "",
+      stock_units: p?.stock_units != null ? String(p.stock_units) : "",
+      status: (p?.status || "active").toString().toLowerCase(),
+      vehsl_rating: p?.vehsl_rating != null ? String(p.vehsl_rating) : "",
+    });
+    setFormOpen(true);
+    setMenuProductId(null);
+  };
+
+  const openProductDetail = async (id: number) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailData(null);
+    setMenuProductId(null);
+    try {
+      const data = await fetchJson(`/api/v1/admin/products/${id}/detail/`);
+      setDetailData(data);
+    } catch (e: any) {
+      setDetailData(null);
+      setActionError(e?.message || "Failed to load product detail.");
+      setDetailOpen(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const openStockModal = (p: any) => {
+    setStockProductId(Number(p?.id || 0) || null);
+    setStockValue(p?.stock_units != null ? String(p.stock_units) : "");
+    setStockOpen(true);
+    setMenuProductId(null);
   };
 
   const saveProduct = async () => {
     setSaving(true);
     setFormError("");
     try {
-      const payload: any = {
-        name: (form.name || "").trim(),
-        seller_email: (form.seller_email || "").trim(),
-        category_id: Number(form.category_id),
-        currency: (form.currency || "USD").toString().toUpperCase(),
-        price: Number(form.price),
-        status: (form.status || "active").toString().toLowerCase(),
-        hs_code: (form.hs_code || "").trim(),
-      };
+      const payload: any = {};
+      if ((form.name || "").toString().trim()) payload.name = (form.name || "").trim();
+      if (String(form.category_id || "").trim()) payload.category_id = Number(form.category_id);
+      if (String(form.currency || "").trim()) payload.currency = (form.currency || "USD").toString().toUpperCase();
+      if (String(form.price || "").trim() !== "") payload.price = Number(form.price);
+      if (String(form.status || "").trim()) payload.status = (form.status || "active").toString().toLowerCase();
+      if ("hs_code" in form) payload.hs_code = (form.hs_code || "").trim();
+      const vr = (form.vehsl_rating || "").toString().trim();
+      if (vr !== "") payload.vehsl_rating = Number(vr);
       const stock = (form.stock_units || "").toString().trim();
       if (stock !== "") payload.stock_units = Number(stock);
-
-      await fetchJson("/api/v1/admin/products/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      if (formMode === "create") {
+        payload.seller_email = (form.seller_email || "").trim();
+        await fetchJson("/api/v1/admin/products/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        if (!editingId) throw new Error("Missing product id.");
+        await fetchJson(`/api/v1/admin/products/${editingId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
 
       setFormOpen(false);
       setPage(1);
       refreshProducts();
       await refreshStats();
     } catch (e: any) {
-      setFormError(e?.message || "Failed to add product.");
+      setFormError(e?.message || (formMode === "create" ? "Failed to add product." : "Failed to update product."));
     } finally {
       setSaving(false);
     }
   };
+
+  const setProductStatus = async (id: number, action: "approve" | "reject" | "archive" | "activate") => {
+    try {
+      setActionError("");
+      await fetchJson(`/api/v1/admin/products/${id}/${action}/`, { method: "POST" });
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Action failed.");
+    }
+  };
+
+  const exportOne = async (id: number) => {
+    try {
+      setActionError("");
+      const res = await authedFetch(`/api/v1/admin/products/${id}/export/`);
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `admin_product_${id}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setActionError(e?.message || "Export failed.");
+    }
+  };
+
+  const saveStock = async () => {
+    if (!stockProductId) return;
+    setStockSaving(true);
+    try {
+      setActionError("");
+      const qty = Number(stockValue);
+      if (!Number.isFinite(qty) || qty < 0) throw new Error("Stock must be >= 0.");
+      await fetchJson(`/api/v1/admin/products/${stockProductId}/stock/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock_units: Math.floor(qty) }),
+      });
+      setStockOpen(false);
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to update stock.");
+    } finally {
+      setStockSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (menuProductId == null) return;
+    const onPointerDown = (e: Event) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (menuRef.current && menuRef.current.contains(t)) return;
+      if (menuButtonRef.current && menuButtonRef.current.contains(t)) return;
+      setMenuProductId(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [menuProductId]);
 
   const exportCsv = async () => {
     try {
@@ -1428,6 +1574,77 @@ export function AdminProducts() {
       const a = document.createElement("a");
       a.href = url;
       a.download = "admin_products.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setActionError(e?.message || "Export failed.");
+    }
+  };
+
+  const toggleSelectedProduct = (id: number) => {
+    setSelectedProductIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const toggleSelectAllProducts = () => {
+    const ids = products.map((p: any) => Number(p?.id || 0)).filter((x: any) => Number.isFinite(x) && x > 0);
+    setSelectedProductIds((prev) => (prev.length === ids.length ? [] : ids));
+  };
+
+  const applyBulk = async () => {
+    if (!selectedProductIds.length || !bulkAction) return;
+    try {
+      setActionError("");
+      if (bulkAction === "status") {
+        await fetchJson("/api/v1/admin/products/bulk/status/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, status: bulkStatus }),
+        });
+      } else if (bulkAction === "category") {
+        await fetchJson("/api/v1/admin/products/bulk/category/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, category_id: Number(bulkCategoryId) }),
+        });
+      } else if (bulkAction === "hs_code") {
+        await fetchJson("/api/v1/admin/products/bulk/hs-code/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, hs_code: (bulkHsCode || "").trim() }),
+        });
+      } else if (bulkAction === "stock") {
+        await fetchJson("/api/v1/admin/products/bulk/stock/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, stock_units: Number(bulkStockUnits) }),
+        });
+      }
+      setSelectedProductIds([]);
+      setBulkAction("");
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Bulk action failed.");
+    }
+  };
+
+  const exportSelected = async () => {
+    if (!selectedProductIds.length) return;
+    try {
+      setActionError("");
+      const res = await authedFetch("/api/v1/admin/products/bulk/export/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedProductIds }),
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "admin_products_selected.csv";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1456,7 +1673,7 @@ export function AdminProducts() {
         </div>
       </motion.div>
 
-      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-5 gap-5">
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "all" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter("all")}>
           <StatCard label="Total Products" value={formatNumber(stats?.total_products)} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
         </button>
@@ -1466,8 +1683,11 @@ export function AdminProducts() {
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "low_stock" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "low_stock" ? "all" : "low_stock"))}>
           <StatCard label="Low Stock" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
         </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "out" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "out" ? "all" : "out"))}>
+          <StatCard label="Out of Stock" value={formatNumber(stats?.out_of_stock)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+        </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "review" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "review" ? "all" : "review"))}>
-          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={4} accentColor="#8B5CF6" />
         </button>
       </motion.div>
 
@@ -1532,6 +1752,100 @@ export function AdminProducts() {
             </div>
           )}
 
+          {selectedProductIds.length > 0 && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-muted/10 border border-border/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={toggleSelectAllProducts}
+                  className="w-9 h-9 rounded-2xl bg-muted/20 hover:bg-muted/30 border border-border/20 flex items-center justify-center"
+                  title="Select all"
+                >
+                  <ClipboardCheck size={16} className="text-muted-foreground/70" />
+                </button>
+                <div className="text-[0.8125rem] text-foreground/80">
+                  {selectedProductIds.length} selected
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={bulkAction}
+                  onChange={(e) => setBulkAction(e.target.value as any)}
+                  className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+                >
+                  <option value="">Bulk action…</option>
+                  <option value="status">Set status</option>
+                  <option value="category">Set category</option>
+                  <option value="hs_code">Set HS code</option>
+                  <option value="stock">Set stock</option>
+                </select>
+
+                {bulkAction === "status" && (
+                  <select
+                    value={bulkStatus}
+                    onChange={(e) => setBulkStatus(e.target.value)}
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+                  >
+                    <option value="active">Active</option>
+                    <option value="approved">Approved</option>
+                    <option value="pending">Pending</option>
+                    <option value="draft">Draft</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="archived">Archived</option>
+                  </select>
+                )}
+
+                {bulkAction === "category" && (
+                  <select
+                    value={bulkCategoryId || ""}
+                    onChange={(e) => setBulkCategoryId(e.target.value)}
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+                  >
+                    <option value="">Select category…</option>
+                    {categories.map((c: any) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {bulkAction === "hs_code" && (
+                  <input
+                    value={bulkHsCode}
+                    onChange={(e) => setBulkHsCode(e.target.value)}
+                    placeholder="HS code"
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+                  />
+                )}
+
+                {bulkAction === "stock" && (
+                  <input
+                    value={bulkStockUnits}
+                    onChange={(e) => setBulkStockUnits(e.target.value)}
+                    placeholder="Stock units"
+                    inputMode="numeric"
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+                  />
+                )}
+
+                <BounceButton variant="ghost" size="sm" onClick={exportSelected} icon={<Download size={14} />}>
+                  Export selected
+                </BounceButton>
+                <BounceButton variant="primary" size="sm" onClick={applyBulk} icon={<CheckCircle2 size={14} />}>
+                  Apply
+                </BounceButton>
+                <button
+                  type="button"
+                  onClick={() => setSelectedProductIds([])}
+                  className="px-3 py-2 rounded-xl text-[0.8125rem] text-muted-foreground/70 hover:text-foreground hover:bg-muted/20"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-2">
             {loading && (
               <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
@@ -1547,6 +1861,12 @@ export function AdminProducts() {
               <motion.div key={p.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
               >
+                <input
+                  type="checkbox"
+                  checked={selectedProductIds.includes(Number(p.id))}
+                  onChange={() => toggleSelectedProduct(Number(p.id))}
+                  className="h-4 w-4 rounded border-border/60"
+                />
                 <div className="w-10 h-10 rounded-2xl bg-primary/6 flex items-center justify-center">
                   <Package size={18} className="text-primary/50" />
                 </div>
@@ -1573,6 +1893,110 @@ export function AdminProducts() {
                   const pill = productStatusToPill(p.admin_status);
                   return <StatusPill status={pill.status as any} label={pill.label} />;
                 })()}
+                <div className="relative">
+                  <button
+                    ref={(el) => {
+                      if (menuProductId === p.id) menuButtonRef.current = el;
+                    }}
+                    className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuProductId((cur) => (cur === p.id ? null : p.id));
+                    }}
+                  >
+                    <MoreHorizontal size={18} />
+                  </button>
+                  <AnimatePresence>
+                    {menuProductId === p.id && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute right-0 top-11 z-20 w-64 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        ref={(el) => {
+                          if (menuProductId === p.id) menuRef.current = el;
+                        }}
+                        onClick={(ev) => ev.stopPropagation()}
+                      >
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openProductDetail(Number(p.id))}
+                        >
+                          <Eye size={14} className="text-muted-foreground/60" />
+                          View details
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openEditProduct(p)}
+                        >
+                          <Edit3 size={14} className="text-muted-foreground/60" />
+                          Edit
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openStockModal(p)}
+                        >
+                          <Hash size={14} className="text-muted-foreground/60" />
+                          Adjust stock
+                        </button>
+                        <div className="h-px bg-border/30" />
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => setProductStatus(Number(p.id), "approve")}
+                        >
+                          <CheckCircle2 size={14} className="text-[#30A46C]/80" />
+                          Approve
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => setProductStatus(Number(p.id), "reject")}
+                        >
+                          <XCircle size={14} className="text-[#E5484D]/80" />
+                          Reject
+                        </button>
+                        {String(p.status || "").toLowerCase() === "archived" ? (
+                          <button
+                            className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                            onClick={() => setProductStatus(Number(p.id), "activate")}
+                          >
+                            <CheckCircle2 size={14} className="text-[#30A46C]/80" />
+                            Activate
+                          </button>
+                        ) : (
+                          <button
+                            className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                            onClick={() => setProductStatus(Number(p.id), "archive")}
+                          >
+                            <Trash2 size={14} className="text-muted-foreground/60" />
+                            Archive
+                          </button>
+                        )}
+                        <div className="h-px bg-border/30" />
+                        {/*
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            const text = `id:${p.id} sku:${p.sku || ""} hs:${p.hs_code || ""}`.trim();
+                            void navigator.clipboard.writeText(text);
+                            setMenuProductId(null);
+                          }}
+                        >
+                          <Copy size={14} className="text-muted-foreground/60" />
+                          Copy ID/SKU/HS
+                        </button>
+                        */}
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => exportOne(Number(p.id))}
+                        >
+                          <Download size={14} className="text-muted-foreground/60" />
+                          Export CSV
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </motion.div>
             ))}
           </div>
@@ -1624,8 +2048,10 @@ export function AdminProducts() {
             >
               <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
-                  <h2 className="text-foreground tracking-tight mb-1">Add Product</h2>
-                  <p className="text-muted-foreground text-[0.8125rem]">Create a product and set inventory quantity.</p>
+                  <h2 className="text-foreground tracking-tight mb-1">{formMode === "create" ? "Add Product" : "Edit Product"}</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {formMode === "create" ? "Create a product and set inventory quantity." : "Update product details and inventory quantity."}
+                  </p>
                 </div>
                 <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setFormOpen(false)}>
                   <X size={18} />
@@ -1645,12 +2071,14 @@ export function AdminProducts() {
                   placeholder="Product name"
                   className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                 />
-                <input
-                  value={form.seller_email}
-                  onChange={e => setForm((p: any) => ({ ...p, seller_email: e.target.value }))}
-                  placeholder="Seller email"
-                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
-                />
+                {formMode === "create" && (
+                  <input
+                    value={form.seller_email}
+                    onChange={e => setForm((p: any) => ({ ...p, seller_email: e.target.value }))}
+                    placeholder="Seller email"
+                    className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                )}
                 <select
                   value={form.category_id}
                   onChange={e => setForm((p: any) => ({ ...p, category_id: e.target.value }))}
@@ -1688,6 +2116,13 @@ export function AdminProducts() {
                   inputMode="numeric"
                   className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                 />
+                <input
+                  value={form.vehsl_rating}
+                  onChange={e => setForm((p: any) => ({ ...p, vehsl_rating: e.target.value }))}
+                  placeholder="Vehsl rating (optional)"
+                  inputMode="decimal"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
                 <select
                   value={form.status}
                   onChange={e => setForm((p: any) => ({ ...p, status: e.target.value }))}
@@ -1697,6 +2132,8 @@ export function AdminProducts() {
                   <option value="approved">Approved</option>
                   <option value="pending">Pending</option>
                   <option value="draft">Draft</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="archived">Archived</option>
                 </select>
               </div>
 
@@ -1711,9 +2148,192 @@ export function AdminProducts() {
                   className={saving ? "opacity-70 pointer-events-none" : ""}
                   icon={saving ? <Clock size={14} /> : <Package size={14} />}
                 >
-                  {saving ? "Saving…" : "Create"}
+                  {saving ? "Saving…" : formMode === "create" ? "Create" : "Save"}
                 </BounceButton>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {stockOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setStockOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[440px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">Adjust stock</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">Set available stock units.</p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setStockOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <input
+                value={stockValue}
+                onChange={e => setStockValue(e.target.value)}
+                placeholder="Stock units"
+                inputMode="numeric"
+                className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+              />
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setStockOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={stockSaving ? undefined : saveStock}
+                  className={stockSaving ? "opacity-70 pointer-events-none" : ""}
+                  icon={stockSaving ? <Clock size={14} /> : <CheckCircle2 size={14} />}
+                >
+                  {stockSaving ? "Saving…" : "Save"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {detailOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setDetailOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">
+                    {detailData?.product?.name || (detailLoading ? "Loading…" : "Product")}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {detailData?.seller?.name || "—"} · {detailData?.product?.category_name || "—"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setDetailOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {detailLoading && (
+                <div className="px-5 py-6 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading details…
+                </div>
+              )}
+
+              {!detailLoading && detailData && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Product ID</div>
+                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.id}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">SKU / HS</div>
+                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.sku || "—"} · {detailData?.product?.hs_code || "—"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Price / Stock</div>
+                      <div className="text-[0.875rem] text-foreground/80">
+                        {formatMoney(detailData?.product?.currency, detailData?.product?.price)} · {formatNumber(detailData?.product?.stock_units)} units
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Media</div>
+                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
+                        {Array.isArray(detailData?.media) ? detailData.media.length : 0} items
+                      </div>
+                      <div className="flex gap-2 flex-wrap">
+                        {(detailData?.media || []).slice(0, 6).map((m: any) => (
+                          <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground">
+                            {m.media_type}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Compliance</div>
+                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
+                        {Array.isArray(detailData?.compliance_rules) ? detailData.compliance_rules.length : 0} rules
+                      </div>
+                      <div className="flex gap-2 flex-wrap">
+                        {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
+                          <span key={r.id} className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground">
+                            {r.rule_type}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Inventory & Quality</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Samples</div>
+                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample?.available_quantity)} available</div>
+                      </div>
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Sample requests</div>
+                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample_requests?.total)} total</div>
+                      </div>
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Quality</div>
+                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.quality?.passed)} passed · {formatNumber(detailData?.quality?.failed)} failed</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Recent orders</div>
+                    {(detailData?.recent_orders || []).length === 0 ? (
+                      <div className="text-[0.8125rem] text-muted-foreground/60">No recent orders.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(detailData?.recent_orders || []).map((o: any) => (
+                          <div key={`${o.order_id}-${o.order_created_at}`} className="flex items-center justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
+                            <div className="min-w-0">
+                              <div className="text-[0.8125rem] text-foreground/80 truncate">Order #{o.order_id} · {o.buyer}</div>
+                              <div className="text-[0.6875rem] text-muted-foreground/50">{o.order_status}</div>
+                            </div>
+                            <div className="text-[0.8125rem] text-muted-foreground/70 whitespace-nowrap">
+                              {formatNumber(o.quantity)} × {o.unit_price}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </motion.div>
           </motion.div>
         )}

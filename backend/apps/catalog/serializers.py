@@ -194,6 +194,7 @@ class AdminProductListSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
+            "sku",
             "hs_code",
             "currency",
             "price",

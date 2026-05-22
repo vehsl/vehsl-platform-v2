@@ -123,7 +123,11 @@ export async function fetchJsonAuthed(path: string, init?: RequestInit) {
             }
             return '';
         };
-        const msg = pickMsg(data) || `Request failed (${res.status})`;
+        const raw = pickMsg(data) || '';
+        const looksLikeHtml =
+            typeof raw === 'string' &&
+            (raw.trim().toLowerCase().startsWith('<!doctype') || raw.trim().toLowerCase().startsWith('<html'));
+        const msg = !raw || looksLikeHtml ? `Request failed (${res.status})` : raw;
         throw new Error(msg);
     }
     return data;
