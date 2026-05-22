@@ -277,6 +277,7 @@ export function Layout() {
         body: JSON.stringify({ keys }),
       });
     } catch {}
+    setUiNotifications((prev) => prev.map((n) => ({ ...n, unread: false })));
     await fetchUiNotifications();
   };
 
@@ -765,24 +766,27 @@ export function Layout() {
                               transition={{ delay: i * 0.03 }}
                               whileTap={{ scale: 0.985 }}
                               onClick={async () => {
-                                if (notif.path) {
-                                  if (notif.unread) {
-                                    const access = (() => {
-                                      try {
-                                        return window.localStorage.getItem("vehsl.access") || "";
-                                      } catch {
-                                        return "";
-                                      }
-                                    })();
-                                    if (access) {
-                                      try {
-                                        await fetch(`${apiBase()}/api/v1/admin/ui/notifications/${encodeURIComponent(notif.key)}/mark-read`, {
-                                          method: "POST",
-                                          headers: { Authorization: `Bearer ${access}` },
-                                        });
-                                      } catch {}
+                                if (notif.unread) {
+                                  const access = (() => {
+                                    try {
+                                      return window.localStorage.getItem("vehsl.access") || "";
+                                    } catch {
+                                      return "";
                                     }
+                                  })();
+                                  if (access) {
+                                    try {
+                                      await fetch(`${apiBase()}/api/v1/admin/ui/notifications/${encodeURIComponent(notif.key)}/mark-read`, {
+                                        method: "POST",
+                                        headers: { Authorization: `Bearer ${access}` },
+                                      });
+                                    } catch {}
                                   }
+                                  setUiNotifications((prev) =>
+                                    prev.map((n) => (n.key === notif.key ? { ...n, unread: false } : n))
+                                  );
+                                }
+                                if (notif.path) {
                                   navigate(notif.path);
                                   setNotifOpen(false);
                                 }

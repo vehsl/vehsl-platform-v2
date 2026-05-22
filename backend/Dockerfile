@@ -1,4 +1,4 @@
- ARG PYTHON_IMAGE=python:3.12-slim
+ ARG PYTHON_IMAGE=vehsl-platform-v2-backend:latest
 FROM ${PYTHON_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1

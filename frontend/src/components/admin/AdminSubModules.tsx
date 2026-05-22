@@ -66,10 +66,14 @@ export function AdminUsers() {
   const [users, setUsers] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState<string>("");
+  const [unreadMessages, setUnreadMessages] = useState<number>(0);
+  const [messagesOpen, setMessagesOpen] = useState(false);
+  const [messagesUrl, setMessagesUrl] = useState<string>("/messages");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState<any>(null);
+  const [requestingMedia, setRequestingMedia] = useState(false);
   const [resetLinkOpen, setResetLinkOpen] = useState(false);
   const [resetLinkData, setResetLinkData] = useState<{ url: string; expires_at: string } | null>(null);
 
@@ -165,7 +169,7 @@ export function AdminUsers() {
     endpoint: "/api/v1/admin/users/",
     filters: listFilters,
     initialOrdering: "",
-    initialPageSize: 20,
+    initialPageSize: 10,
     debounceMs: 250,
   });
 
@@ -221,6 +225,28 @@ export function AdminUsers() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadUnread = async () => {
+      try {
+        const threads = await fetchJson("/api/v1/chat/threads/");
+        if (cancelled) return;
+        const total = Array.isArray(threads)
+          ? threads.reduce((sum: number, t: any) => sum + (Number(t?.unread_count || 0) || 0), 0)
+          : 0;
+        setUnreadMessages(total);
+      } catch {
+        if (!cancelled) setUnreadMessages(0);
+      }
+    };
+    void loadUnread();
+    const t = window.setInterval(() => void loadUnread(), 20000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
     };
   }, []);
 
@@ -400,7 +426,8 @@ export function AdminUsers() {
         return;
       }
       const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-      window.open(`/messages?thread=${encodeURIComponent(String(threadId))}&returnTo=${rt}`, "_blank", "noopener,noreferrer");
+      setMessagesUrl(`/messages?thread=${encodeURIComponent(String(threadId))}&returnTo=${rt}`);
+      setMessagesOpen(true);
     } catch (e: any) {
       setError(e?.message || "Failed to start chat.");
     }
@@ -519,8 +546,66 @@ export function AdminUsers() {
           <h1 className="text-foreground tracking-tight mb-1.5">Users</h1>
           <p className="text-muted-foreground text-[0.875rem]">Everyone on TradeFlow. Buyers, sellers, and partners.</p>
         </div>
-        <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />} onClick={openCreate}>Add User</BounceButton>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <BounceButton
+              variant="ghost"
+              size="sm"
+              icon={<Mail size={14} />}
+              onClick={() => {
+                const rt = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+                setMessagesUrl(`/messages?returnTo=${rt}`);
+                setMessagesOpen(true);
+              }}
+            >
+              Messages
+            </BounceButton>
+            {unreadMessages > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1.5 rounded-full bg-[#E5484D] text-white text-[0.625rem] flex items-center justify-center tabular-nums">
+                {unreadMessages > 99 ? "99+" : unreadMessages}
+              </span>
+            )}
+          </div>
+          <BounceButton variant="primary" size="md" icon={<UserPlus size={16} />} onClick={openCreate}>Add User</BounceButton>
+        </div>
       </motion.div>
+
+      <AnimatePresence>
+        {messagesOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/30"
+            onClick={() => setMessagesOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[1100px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-border/20">
+                <div className="min-w-0">
+                  <div className="text-foreground tracking-tight">Messages</div>
+                  <div className="text-[0.75rem] text-muted-foreground/60 truncate">{messagesUrl}</div>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setMessagesOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <iframe
+                key={messagesUrl}
+                src={messagesUrl}
+                className="w-full h-[78vh] bg-background"
+                referrerPolicy="no-referrer"
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Stats */}
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
@@ -1251,6 +1336,7 @@ export function AdminUsers() {
           </motion.div>
         )}
       </AnimatePresence>
+
     </motion.div>
   );
 }
@@ -1287,7 +1373,7 @@ export function AdminProducts() {
 
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "review">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "out" | "review" | "compliance">("all");
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
@@ -1296,7 +1382,8 @@ export function AdminProducts() {
     const q = search.trim();
     if (q) f.q = q;
     if (catFilter !== "all") f.category = catFilter;
-    if (statusFilter !== "all") f.admin_status = statusFilter;
+    if (statusFilter === "compliance") f.needs_compliance = 1;
+    else if (statusFilter !== "all") f.admin_status = statusFilter;
     return f;
   }, [search, catFilter, statusFilter]);
 
@@ -1322,6 +1409,8 @@ export function AdminProducts() {
   });
 
   const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [form, setForm] = useState<any>({
@@ -1333,7 +1422,28 @@ export function AdminProducts() {
     price: "",
     stock_units: "",
     status: "active",
+    vehsl_rating: "",
   });
+
+  const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  const [bulkAction, setBulkAction] = useState<"" | "status" | "category" | "hs_code" | "stock">("");
+  const [bulkStatus, setBulkStatus] = useState<string>("active");
+  const [bulkCategoryId, setBulkCategoryId] = useState<string>("");
+  const [bulkHsCode, setBulkHsCode] = useState<string>("");
+  const [bulkStockUnits, setBulkStockUnits] = useState<string>("");
+
+  const [menuProductId, setMenuProductId] = useState<number | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailData, setDetailData] = useState<any>(null);
+
+  const [stockOpen, setStockOpen] = useState(false);
+  const [stockSaving, setStockSaving] = useState(false);
+  const [stockProductId, setStockProductId] = useState<number | null>(null);
+  const [stockValue, setStockValue] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -1368,6 +1478,9 @@ export function AdminProducts() {
 
   const openCreate = () => {
     setFormError("");
+    setActionError("");
+    setFormMode("create");
+    setEditingId(null);
     setForm({
       name: "",
       seller_email: "",
@@ -1377,42 +1490,181 @@ export function AdminProducts() {
       price: "",
       stock_units: "",
       status: "active",
+      vehsl_rating: "",
     });
     setFormOpen(true);
+  };
+
+  const openEditProduct = (p: any) => {
+    setFormError("");
+    setActionError("");
+    setFormMode("edit");
+    setEditingId(Number(p?.id || 0) || null);
+    setForm({
+      name: p?.name || "",
+      seller_email: "",
+      category_id: p?.category != null ? String(p.category) : categories?.[0]?.id ? String(categories[0].id) : "",
+      hs_code: p?.hs_code || "",
+      currency: p?.currency || "USD",
+      price: p?.price != null ? String(p.price) : "",
+      stock_units: p?.stock_units != null ? String(p.stock_units) : "",
+      status: (p?.status || "active").toString().toLowerCase(),
+      vehsl_rating: p?.vehsl_rating != null ? String(p.vehsl_rating) : "",
+    });
+    setFormOpen(true);
+    setMenuProductId(null);
+  };
+
+  const openProductDetail = async (id: number) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailData(null);
+    setMenuProductId(null);
+    try {
+      const data = await fetchJson(`/api/v1/admin/products/${id}/detail/`);
+      setDetailData(data);
+    } catch (e: any) {
+      setDetailData(null);
+      setActionError(e?.message || "Failed to load product detail.");
+      setDetailOpen(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const openStockModal = (p: any) => {
+    setStockProductId(Number(p?.id || 0) || null);
+    setStockValue(p?.stock_units != null ? String(p.stock_units) : "");
+    setStockOpen(true);
+    setMenuProductId(null);
+  };
+
+  const requestMedia = async () => {
+    const id = Number(detailData?.product?.id || 0);
+    if (!id) return;
+    setRequestingMedia(true);
+    try {
+      setActionError("");
+      await fetchJson(`/api/v1/admin/products/${id}/request-media/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Please upload a hero image + at least 3 additional photos. Add HS code and any required compliance documents.",
+        }),
+      });
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to request media.");
+    } finally {
+      setRequestingMedia(false);
+    }
   };
 
   const saveProduct = async () => {
     setSaving(true);
     setFormError("");
     try {
-      const payload: any = {
-        name: (form.name || "").trim(),
-        seller_email: (form.seller_email || "").trim(),
-        category_id: Number(form.category_id),
-        currency: (form.currency || "USD").toString().toUpperCase(),
-        price: Number(form.price),
-        status: (form.status || "active").toString().toLowerCase(),
-        hs_code: (form.hs_code || "").trim(),
-      };
+      const payload: any = {};
+      if ((form.name || "").toString().trim()) payload.name = (form.name || "").trim();
+      if (String(form.category_id || "").trim()) payload.category_id = Number(form.category_id);
+      if (String(form.currency || "").trim()) payload.currency = (form.currency || "USD").toString().toUpperCase();
+      if (String(form.price || "").trim() !== "") payload.price = Number(form.price);
+      if (String(form.status || "").trim()) payload.status = (form.status || "active").toString().toLowerCase();
+      if ("hs_code" in form) payload.hs_code = (form.hs_code || "").trim();
+      const vr = (form.vehsl_rating || "").toString().trim();
+      if (vr !== "") payload.vehsl_rating = Number(vr);
       const stock = (form.stock_units || "").toString().trim();
       if (stock !== "") payload.stock_units = Number(stock);
-
-      await fetchJson("/api/v1/admin/products/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      if (formMode === "create") {
+        payload.seller_email = (form.seller_email || "").trim();
+        await fetchJson("/api/v1/admin/products/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        if (!editingId) throw new Error("Missing product id.");
+        await fetchJson(`/api/v1/admin/products/${editingId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
 
       setFormOpen(false);
       setPage(1);
       refreshProducts();
       await refreshStats();
     } catch (e: any) {
-      setFormError(e?.message || "Failed to add product.");
+      setFormError(e?.message || (formMode === "create" ? "Failed to add product." : "Failed to update product."));
     } finally {
       setSaving(false);
     }
   };
+
+  const setProductStatus = async (id: number, action: "approve" | "reject" | "archive" | "activate") => {
+    try {
+      setActionError("");
+      await fetchJson(`/api/v1/admin/products/${id}/${action}/`, { method: "POST" });
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Action failed.");
+    }
+  };
+
+  const exportOne = async (id: number) => {
+    try {
+      setActionError("");
+      const res = await authedFetch(`/api/v1/admin/products/${id}/export/`);
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `admin_product_${id}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setActionError(e?.message || "Export failed.");
+    }
+  };
+
+  const saveStock = async () => {
+    if (!stockProductId) return;
+    setStockSaving(true);
+    try {
+      setActionError("");
+      const qty = Number(stockValue);
+      if (!Number.isFinite(qty) || qty < 0) throw new Error("Stock must be >= 0.");
+      await fetchJson(`/api/v1/admin/products/${stockProductId}/stock/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock_units: Math.floor(qty) }),
+      });
+      setStockOpen(false);
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to update stock.");
+    } finally {
+      setStockSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (menuProductId == null) return;
+    const onPointerDown = (e: Event) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (menuRef.current && menuRef.current.contains(t)) return;
+      if (menuButtonRef.current && menuButtonRef.current.contains(t)) return;
+      setMenuProductId(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [menuProductId]);
 
   const exportCsv = async () => {
     try {
@@ -1428,6 +1680,77 @@ export function AdminProducts() {
       const a = document.createElement("a");
       a.href = url;
       a.download = "admin_products.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setActionError(e?.message || "Export failed.");
+    }
+  };
+
+  const toggleSelectedProduct = (id: number) => {
+    setSelectedProductIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const toggleSelectAllProducts = () => {
+    const ids = products.map((p: any) => Number(p?.id || 0)).filter((x: any) => Number.isFinite(x) && x > 0);
+    setSelectedProductIds((prev) => (prev.length === ids.length ? [] : ids));
+  };
+
+  const applyBulk = async () => {
+    if (!selectedProductIds.length || !bulkAction) return;
+    try {
+      setActionError("");
+      if (bulkAction === "status") {
+        await fetchJson("/api/v1/admin/products/bulk/status/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, status: bulkStatus }),
+        });
+      } else if (bulkAction === "category") {
+        await fetchJson("/api/v1/admin/products/bulk/category/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, category_id: Number(bulkCategoryId) }),
+        });
+      } else if (bulkAction === "hs_code") {
+        await fetchJson("/api/v1/admin/products/bulk/hs-code/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, hs_code: (bulkHsCode || "").trim() }),
+        });
+      } else if (bulkAction === "stock") {
+        await fetchJson("/api/v1/admin/products/bulk/stock/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedProductIds, stock_units: Number(bulkStockUnits) }),
+        });
+      }
+      setSelectedProductIds([]);
+      setBulkAction("");
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Bulk action failed.");
+    }
+  };
+
+  const exportSelected = async () => {
+    if (!selectedProductIds.length) return;
+    try {
+      setActionError("");
+      const res = await authedFetch("/api/v1/admin/products/bulk/export/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedProductIds }),
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "admin_products_selected.csv";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1456,7 +1779,7 @@ export function AdminProducts() {
         </div>
       </motion.div>
 
-      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
+      <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-5 gap-5">
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "all" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter("all")}>
           <StatCard label="Total Products" value={formatNumber(stats?.total_products)} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
         </button>
@@ -1466,8 +1789,11 @@ export function AdminProducts() {
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "low_stock" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "low_stock" ? "all" : "low_stock"))}>
           <StatCard label="Low Stock" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
         </button>
+        <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "out" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "out" ? "all" : "out"))}>
+          <StatCard label="Out of Stock" value={formatNumber(stats?.out_of_stock)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+        </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "review" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "review" ? "all" : "review"))}>
-          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+          <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={4} accentColor="#8B5CF6" />
         </button>
       </motion.div>
 
@@ -1489,6 +1815,7 @@ export function AdminProducts() {
               >
                 <option value="-created_at">Newest</option>
                 <option value="created_at">Oldest</option>
+                <option value="-needs_compliance">Needs compliance</option>
                 <option value="-price">Price (high)</option>
                 <option value="price">Price (low)</option>
                 <option value="-stock_units">Stock (high)</option>
@@ -1512,6 +1839,15 @@ export function AdminProducts() {
               >
                 All
               </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter(v => (v === "compliance" ? "all" : "compliance"))}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  statusFilter === "compliance" ? "bg-[#E5484D]/10 text-[#E5484D]/80" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Needs compliance
+              </button>
               {categories.map((cat: any) => (
                 <button
                   key={cat.slug || cat.id}
@@ -1532,6 +1868,100 @@ export function AdminProducts() {
             </div>
           )}
 
+          {selectedProductIds.length > 0 && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-muted/10 border border-border/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={toggleSelectAllProducts}
+                  className="w-9 h-9 rounded-2xl bg-muted/20 hover:bg-muted/30 border border-border/20 flex items-center justify-center"
+                  title="Select all"
+                >
+                  <ClipboardCheck size={16} className="text-muted-foreground/70" />
+                </button>
+                <div className="text-[0.8125rem] text-foreground/80">
+                  {selectedProductIds.length} selected
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={bulkAction}
+                  onChange={(e) => setBulkAction(e.target.value as any)}
+                  className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+                >
+                  <option value="">Bulk action…</option>
+                  <option value="status">Set status</option>
+                  <option value="category">Set category</option>
+                  <option value="hs_code">Set HS code</option>
+                  <option value="stock">Set stock</option>
+                </select>
+
+                {bulkAction === "status" && (
+                  <select
+                    value={bulkStatus}
+                    onChange={(e) => setBulkStatus(e.target.value)}
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+                  >
+                    <option value="active">Active</option>
+                    <option value="approved">Approved</option>
+                    <option value="pending">Pending</option>
+                    <option value="draft">Draft</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="archived">Archived</option>
+                  </select>
+                )}
+
+                {bulkAction === "category" && (
+                  <select
+                    value={bulkCategoryId || ""}
+                    onChange={(e) => setBulkCategoryId(e.target.value)}
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+                  >
+                    <option value="">Select category…</option>
+                    {categories.map((c: any) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {bulkAction === "hs_code" && (
+                  <input
+                    value={bulkHsCode}
+                    onChange={(e) => setBulkHsCode(e.target.value)}
+                    placeholder="HS code"
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+                  />
+                )}
+
+                {bulkAction === "stock" && (
+                  <input
+                    value={bulkStockUnits}
+                    onChange={(e) => setBulkStockUnits(e.target.value)}
+                    placeholder="Stock units"
+                    inputMode="numeric"
+                    className="px-3 py-2 rounded-xl text-[0.8125rem] bg-muted/20 border border-border/30 text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+                  />
+                )}
+
+                <BounceButton variant="ghost" size="sm" onClick={exportSelected} icon={<Download size={14} />}>
+                  Export selected
+                </BounceButton>
+                <BounceButton variant="primary" size="sm" onClick={applyBulk} icon={<CheckCircle2 size={14} />}>
+                  Apply
+                </BounceButton>
+                <button
+                  type="button"
+                  onClick={() => setSelectedProductIds([])}
+                  className="px-3 py-2 rounded-xl text-[0.8125rem] text-muted-foreground/70 hover:text-foreground hover:bg-muted/20"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-2">
             {loading && (
               <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
@@ -1547,6 +1977,12 @@ export function AdminProducts() {
               <motion.div key={p.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
               >
+                <input
+                  type="checkbox"
+                  checked={selectedProductIds.includes(Number(p.id))}
+                  onChange={() => toggleSelectedProduct(Number(p.id))}
+                  className="h-4 w-4 rounded border-border/60"
+                />
                 <div className="w-10 h-10 rounded-2xl bg-primary/6 flex items-center justify-center">
                   <Package size={18} className="text-primary/50" />
                 </div>
@@ -1554,6 +1990,9 @@ export function AdminProducts() {
                   <div className="flex items-center gap-2">
                     <span className="text-[0.875rem] text-foreground truncate">{p.name}</span>
                     {!!p.hs_code && <span className="text-[0.6875rem] text-muted-foreground/40 hidden sm:inline">HS {p.hs_code}</span>}
+                    {!!p?.needs_compliance && (
+                      <span className="text-[0.6875rem] text-[#E5484D]/80 hidden sm:inline">Needs compliance</span>
+                    )}
                   </div>
                   <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_name || "—"}</span>
                 </div>
@@ -1573,6 +2012,110 @@ export function AdminProducts() {
                   const pill = productStatusToPill(p.admin_status);
                   return <StatusPill status={pill.status as any} label={pill.label} />;
                 })()}
+                <div className="relative">
+                  <button
+                    ref={(el) => {
+                      if (menuProductId === p.id) menuButtonRef.current = el;
+                    }}
+                    className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuProductId((cur) => (cur === p.id ? null : p.id));
+                    }}
+                  >
+                    <MoreHorizontal size={18} />
+                  </button>
+                  <AnimatePresence>
+                    {menuProductId === p.id && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute right-0 top-11 z-20 w-64 rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                        ref={(el) => {
+                          if (menuProductId === p.id) menuRef.current = el;
+                        }}
+                        onClick={(ev) => ev.stopPropagation()}
+                      >
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openProductDetail(Number(p.id))}
+                        >
+                          <Eye size={14} className="text-muted-foreground/60" />
+                          View details
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openEditProduct(p)}
+                        >
+                          <Edit3 size={14} className="text-muted-foreground/60" />
+                          Edit
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openStockModal(p)}
+                        >
+                          <Hash size={14} className="text-muted-foreground/60" />
+                          Adjust stock
+                        </button>
+                        <div className="h-px bg-border/30" />
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => setProductStatus(Number(p.id), "approve")}
+                        >
+                          <CheckCircle2 size={14} className="text-[#30A46C]/80" />
+                          Approve
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => setProductStatus(Number(p.id), "reject")}
+                        >
+                          <XCircle size={14} className="text-[#E5484D]/80" />
+                          Reject
+                        </button>
+                        {String(p.status || "").toLowerCase() === "archived" ? (
+                          <button
+                            className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                            onClick={() => setProductStatus(Number(p.id), "activate")}
+                          >
+                            <CheckCircle2 size={14} className="text-[#30A46C]/80" />
+                            Activate
+                          </button>
+                        ) : (
+                          <button
+                            className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                            onClick={() => setProductStatus(Number(p.id), "archive")}
+                          >
+                            <Trash2 size={14} className="text-muted-foreground/60" />
+                            Archive
+                          </button>
+                        )}
+                        <div className="h-px bg-border/30" />
+                        {/*
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => {
+                            const text = `id:${p.id} sku:${p.sku || ""} hs:${p.hs_code || ""}`.trim();
+                            void navigator.clipboard.writeText(text);
+                            setMenuProductId(null);
+                          }}
+                        >
+                          <Copy size={14} className="text-muted-foreground/60" />
+                          Copy ID/SKU/HS
+                        </button>
+                        */}
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => exportOne(Number(p.id))}
+                        >
+                          <Download size={14} className="text-muted-foreground/60" />
+                          Export CSV
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </motion.div>
             ))}
           </div>
@@ -1624,8 +2167,10 @@ export function AdminProducts() {
             >
               <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
-                  <h2 className="text-foreground tracking-tight mb-1">Add Product</h2>
-                  <p className="text-muted-foreground text-[0.8125rem]">Create a product and set inventory quantity.</p>
+                  <h2 className="text-foreground tracking-tight mb-1">{formMode === "create" ? "Add Product" : "Edit Product"}</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {formMode === "create" ? "Create a product and set inventory quantity." : "Update product details and inventory quantity."}
+                  </p>
                 </div>
                 <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setFormOpen(false)}>
                   <X size={18} />
@@ -1645,12 +2190,14 @@ export function AdminProducts() {
                   placeholder="Product name"
                   className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                 />
-                <input
-                  value={form.seller_email}
-                  onChange={e => setForm((p: any) => ({ ...p, seller_email: e.target.value }))}
-                  placeholder="Seller email"
-                  className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
-                />
+                {formMode === "create" && (
+                  <input
+                    value={form.seller_email}
+                    onChange={e => setForm((p: any) => ({ ...p, seller_email: e.target.value }))}
+                    placeholder="Seller email"
+                    className="w-full sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                )}
                 <select
                   value={form.category_id}
                   onChange={e => setForm((p: any) => ({ ...p, category_id: e.target.value }))}
@@ -1688,6 +2235,13 @@ export function AdminProducts() {
                   inputMode="numeric"
                   className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                 />
+                <input
+                  value={form.vehsl_rating}
+                  onChange={e => setForm((p: any) => ({ ...p, vehsl_rating: e.target.value }))}
+                  placeholder="Vehsl rating (optional)"
+                  inputMode="decimal"
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
                 <select
                   value={form.status}
                   onChange={e => setForm((p: any) => ({ ...p, status: e.target.value }))}
@@ -1697,6 +2251,8 @@ export function AdminProducts() {
                   <option value="approved">Approved</option>
                   <option value="pending">Pending</option>
                   <option value="draft">Draft</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="archived">Archived</option>
                 </select>
               </div>
 
@@ -1711,9 +2267,243 @@ export function AdminProducts() {
                   className={saving ? "opacity-70 pointer-events-none" : ""}
                   icon={saving ? <Clock size={14} /> : <Package size={14} />}
                 >
-                  {saving ? "Saving…" : "Create"}
+                  {saving ? "Saving…" : formMode === "create" ? "Create" : "Save"}
                 </BounceButton>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {stockOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setStockOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[440px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">Adjust stock</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">Set available stock units.</p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setStockOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <input
+                value={stockValue}
+                onChange={e => setStockValue(e.target.value)}
+                placeholder="Stock units"
+                inputMode="numeric"
+                className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+              />
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setStockOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={stockSaving ? undefined : saveStock}
+                  className={stockSaving ? "opacity-70 pointer-events-none" : ""}
+                  icon={stockSaving ? <Clock size={14} /> : <CheckCircle2 size={14} />}
+                >
+                  {stockSaving ? "Saving…" : "Save"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {detailOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setDetailOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">
+                    {detailData?.product?.name || (detailLoading ? "Loading…" : "Product")}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {detailData?.seller?.name || "—"} · {detailData?.product?.category_name || "—"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setDetailOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {detailLoading && (
+                <div className="px-5 py-6 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading details…
+                </div>
+              )}
+
+              {!detailLoading && detailData && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Product ID</div>
+                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.id}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">SKU / HS</div>
+                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.sku || "—"} · {detailData?.product?.hs_code || "—"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Price / Stock</div>
+                      <div className="text-[0.875rem] text-foreground/80">
+                        {formatMoney(detailData?.product?.currency, detailData?.product?.price)} · {formatNumber(detailData?.product?.stock_units)} units
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Media</div>
+                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
+                        {formatNumber(detailData?.readiness?.images_count)} images · {detailData?.readiness?.has_hero_image ? "Hero OK" : "Missing hero"}
+                      </div>
+                      <div className="flex gap-2 flex-wrap">
+                        {(detailData?.media || []).slice(0, 6).map((m: any) => (
+                          <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground">
+                            {m.media_type}
+                          </a>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2 mt-4">
+                        <BounceButton
+                          variant="ghost"
+                          size="sm"
+                          icon={<Upload size={14} />}
+                          onClick={requestingMedia ? undefined : requestMedia}
+                          className={requestingMedia ? "opacity-70 pointer-events-none" : ""}
+                        >
+                          Request upload
+                        </BounceButton>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Compliance</div>
+                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
+                        {detailData?.readiness?.needs_compliance ? "Needs compliance" : "Looks ready"} · HS {detailData?.readiness?.missing_hs_code ? "missing" : "ok"}
+                      </div>
+                      <div className="flex gap-2 flex-wrap">
+                        {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
+                          <span key={r.id} className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground">
+                            {r.rule_type}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="mt-4 space-y-1 text-[0.75rem] text-muted-foreground/70">
+                        <div>Legal review: {detailData?.readiness?.legal_review_status || "—"}</div>
+                        <div>Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)}</div>
+                        <div>Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}</div>
+                        {detailData?.listing_request?.id && (
+                          <div>Listing request: #{detailData?.listing_request?.id} · {detailData?.listing_request?.stage}</div>
+                        )}
+                      </div>
+                      <div className="flex gap-2 flex-wrap mt-4">
+                        {detailData?.links?.listing_pipeline && (
+                          <a
+                            href={detailData.links.listing_pipeline}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
+                          >
+                            Listing pipeline
+                          </a>
+                        )}
+                        {detailData?.links?.trade_compliance && (
+                          <a
+                            href={detailData.links.trade_compliance}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
+                          >
+                            Trade compliance
+                          </a>
+                        )}
+                        {detailData?.links?.inspector_portal && (
+                          <a
+                            href={detailData.links.inspector_portal}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
+                          >
+                            Inspector portal
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Inventory & Quality</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Samples</div>
+                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample?.available_quantity)} available</div>
+                      </div>
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Sample requests</div>
+                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample_requests?.total)} total</div>
+                      </div>
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Quality</div>
+                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.quality?.passed)} passed · {formatNumber(detailData?.quality?.failed)} failed</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Recent orders</div>
+                    {(detailData?.recent_orders || []).length === 0 ? (
+                      <div className="text-[0.8125rem] text-muted-foreground/60">No recent orders.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(detailData?.recent_orders || []).map((o: any) => (
+                          <div key={`${o.order_id}-${o.order_created_at}`} className="flex items-center justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
+                            <div className="min-w-0">
+                              <div className="text-[0.8125rem] text-foreground/80 truncate">Order #{o.order_id} · {o.buyer}</div>
+                              <div className="text-[0.6875rem] text-muted-foreground/50">{o.order_status}</div>
+                            </div>
+                            <div className="text-[0.8125rem] text-muted-foreground/70 whitespace-nowrap">
+                              {formatNumber(o.quantity)} × {o.unit_price}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </motion.div>
           </motion.div>
         )}
@@ -1731,57 +2521,26 @@ const vehicleStatusColor: Record<string, string> = {
 };
 
 export function AdminLogistics() {
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
-  const getAccess = () => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  };
-
-  const fetchJson = async (path: string, init?: RequestInit) => {
-    const access = getAccess();
-    const res = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        ...(access ? { Authorization: `Bearer ${access}` } : {}),
-      },
-    });
-    if (res.status === 401) {
-      try {
-        window.location.assign("/?signin=1");
-      } catch {}
-    }
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) {
-      const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
-        `Request failed (${res.status})`;
-      throw new Error(msg);
-    }
-    return data;
-  };
+  const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
   const [flow, setFlow] = useState<any[]>([]);
   const [fleet, setFleet] = useState<any[]>([]);
+  const [days, setDays] = useState<number>(7);
+  const [fleetStatus, setFleetStatus] = useState<string>("all");
+  const [shipments, setShipments] = useState<any[]>([]);
+  const [shipQ, setShipQ] = useState<string>("");
+  const [shipStatus, setShipStatus] = useState<string>("all");
+  const [shipPage, setShipPage] = useState<number>(1);
+  const [shipTotalPages, setShipTotalPages] = useState<number>(1);
+  const [shipCount, setShipCount] = useState<number>(0);
+  const [shipLoading, setShipLoading] = useState(false);
+  const [shipmentOpen, setShipmentOpen] = useState(false);
+  const [shipmentLoading, setShipmentLoading] = useState(false);
+  const [shipmentDetail, setShipmentDetail] = useState<any>(null);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const fmtVehicles = (a: any, t: any) => {
     const aa = Number(a);
@@ -1822,31 +2581,84 @@ export function AdminLogistics() {
     setLoading(true);
     (async () => {
       try {
+        const fleetParams = new URLSearchParams();
+        fleetParams.set("limit", "8");
+        if (fleetStatus && fleetStatus !== "all") fleetParams.set("status", fleetStatus);
+
+        const shipParams = new URLSearchParams();
+        shipParams.set("page", String(shipPage));
+        shipParams.set("page_size", "10");
+        if (shipQ.trim()) shipParams.set("q", shipQ.trim());
+        if (shipStatus && shipStatus !== "all") shipParams.set("status", shipStatus);
+
         const [s, f, fl] = await Promise.all([
-          fetchJson("/api/v1/admin/logistics/stats"),
-          fetchJson("/api/v1/admin/logistics/flow?days=7"),
-          fetchJson("/api/v1/admin/logistics/fleet?limit=8"),
+          fetchJson(`/api/v1/admin/logistics/stats/?days=${days}`),
+          fetchJson(`/api/v1/admin/logistics/flow/?days=${days}`),
+          fetchJson(`/api/v1/admin/logistics/fleet/?${fleetParams.toString()}`),
         ]);
+        setShipLoading(true);
+        const shipResp = await fetchJson(`/api/v1/admin/logistics/shipments/?${shipParams.toString()}`);
         if (cancelled) return;
         setStats(s);
         setFlow(Array.isArray(f) ? f : []);
         setFleet(Array.isArray(fl) ? fl : []);
+        setShipments(Array.isArray(shipResp?.results) ? shipResp.results : []);
+        const cnt = Number(shipResp?.count || 0);
+        const ps = 10;
+        setShipCount(Number.isFinite(cnt) ? cnt : 0);
+        setShipTotalPages(Math.max(1, Math.ceil((Number.isFinite(cnt) ? cnt : 0) / ps)));
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Failed to load logistics.");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setShipLoading(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [days, fleetStatus, shipPage, shipQ, shipStatus, refreshNonce]);
+
+  const openShipment = async (shipmentId: number) => {
+    if (!shipmentId) return;
+    setShipmentOpen(true);
+    setShipmentLoading(true);
+    setShipmentDetail(null);
+    try {
+      const d = await fetchJson(`/api/v1/admin/logistics/shipment-detail/?id=${shipmentId}`);
+      setShipmentDetail(d);
+    } catch (e: any) {
+      setShipmentDetail(null);
+      setError(e?.message || "Failed to load shipment.");
+      setShipmentOpen(false);
+    } finally {
+      setShipmentLoading(false);
+    }
+  };
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
-      <motion.div variants={stagger.item}>
-        <h1 className="text-foreground tracking-tight mb-1.5">Logistics</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Logistics</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Fleet status, shipment flow, and delivery performance.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={String(days)}
+            onChange={(e) => setDays(Number(e.target.value) || 7)}
+            className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+          >
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <BounceButton variant="ghost" size="sm" icon={<Clock size={14} />} onClick={() => setRefreshNonce((n) => n + 1)}>
+            Refresh
+          </BounceButton>
+        </div>
       </motion.div>
 
       {error && (
@@ -1917,7 +2729,19 @@ export function AdminLogistics() {
       {/* Fleet */}
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <h2 className="text-foreground text-[0.9375rem] mb-6">Fleet Status</h2>
+          <div className="flex items-center justify-between gap-3 mb-6">
+            <h2 className="text-foreground text-[0.9375rem]">Fleet Status</h2>
+            <select
+              value={fleetStatus}
+              onChange={(e) => setFleetStatus(e.target.value)}
+              className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+            >
+              <option value="all">All</option>
+              <option value="in-transit">In transit</option>
+              <option value="loading">Loading</option>
+              <option value="idle">Idle</option>
+            </select>
+          </div>
           <div className="space-y-2">
             {loading && (
               <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
@@ -1931,7 +2755,8 @@ export function AdminLogistics() {
             )}
             {fleet.map((v, i) => (
               <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
+                onClick={() => openShipment(Number(v.shipment_id || 0))}
               >
                 <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${vehicleStatusColor[v.status]}10` }}>
                   <Truck size={18} style={{ color: vehicleStatusColor[v.status] }} />
@@ -1961,6 +2786,190 @@ export function AdminLogistics() {
           </div>
         </SectionCard>
       </motion.div>
+
+      <motion.div variants={stagger.item}>
+        <SectionCard>
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-foreground text-[0.9375rem] mb-1">Shipments</h2>
+              <p className="text-muted-foreground/50 text-[0.75rem]">Search, filter, and inspect shipment history.</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <div className="relative">
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+                <input
+                  value={shipQ}
+                  onChange={(e) => {
+                    setShipQ(e.target.value);
+                    setShipPage(1);
+                  }}
+                  placeholder="Search tracking, order, email…"
+                  className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
+                />
+              </div>
+              <select
+                value={shipStatus}
+                onChange={(e) => {
+                  setShipStatus(e.target.value);
+                  setShipPage(1);
+                }}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="all">All statuses</option>
+                <option value="label_created">Label created</option>
+                <option value="picked_up">Picked up</option>
+                <option value="in_transit">In transit</option>
+                <option value="customs">Customs</option>
+                <option value="out_for_delivery">Out for delivery</option>
+                <option value="delivered">Delivered</option>
+              </select>
+            </div>
+          </div>
+
+          {shipLoading && (
+            <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+              Loading shipments…
+            </div>
+          )}
+
+          {!shipLoading && shipments.length === 0 && (
+            <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
+              No shipments found.
+            </div>
+          )}
+
+          {!shipLoading && shipments.length > 0 && (
+            <div className="space-y-2">
+              {shipments.map((s, i) => (
+                <motion.div
+                  key={s.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.03 }}
+                  className="flex items-center justify-between gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
+                  onClick={() => openShipment(Number(s.id))}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-[0.875rem] text-foreground/80 truncate">SH-{s.id}</span>
+                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">ORD-{s.order_id || "—"}</span>
+                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">{s.tracking_number || s.carrier_id || "—"}</span>
+                    </div>
+                    <div className="text-[0.75rem] text-muted-foreground/50 truncate">
+                      {s.origin || "—"} → {s.destination || "—"} · {s.seller || "—"} → {s.buyer || "—"}
+                    </div>
+                  </div>
+                  <StatusPill
+                    status={
+                      s.status === "delivered" ? "success" :
+                        s.status === "customs" ? "warning" :
+                          s.status === "in_transit" || s.status === "out_for_delivery" ? "info" :
+                            "pending"
+                    }
+                    label={(s.status || "").replaceAll("_", " ")}
+                    pulse={s.status === "in_transit" || s.status === "out_for_delivery"}
+                  />
+                </motion.div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between mt-6">
+            <div className="text-[0.75rem] text-muted-foreground/60">
+              {shipCount ? `Showing ${(shipPage - 1) * 10 + 1}-${Math.min(shipPage * 10, shipCount)} of ${shipCount}` : "—"}
+            </div>
+            <div className="flex items-center gap-2">
+              <BounceButton variant="ghost" size="sm" onClick={shipPage <= 1 ? undefined : () => setShipPage((p) => Math.max(1, p - 1))} className={shipPage <= 1 ? "opacity-60 pointer-events-none" : ""}>
+                Prev
+              </BounceButton>
+              <BounceButton variant="ghost" size="sm" onClick={shipPage >= shipTotalPages ? undefined : () => setShipPage((p) => p + 1)} className={shipPage >= shipTotalPages ? "opacity-60 pointer-events-none" : ""}>
+                Next
+              </BounceButton>
+            </div>
+          </div>
+        </SectionCard>
+      </motion.div>
+
+      <AnimatePresence>
+        {shipmentOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setShipmentOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">
+                    {shipmentDetail?.shipment?.id ? `Shipment SH-${shipmentDetail.shipment.id}` : (shipmentLoading ? "Loading…" : "Shipment")}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    ORD-{shipmentDetail?.shipment?.order_id || "—"} · {shipmentDetail?.shipment?.status || "—"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setShipmentOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {shipmentLoading && (
+                <div className="px-5 py-6 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading shipment…
+                </div>
+              )}
+
+              {!shipmentLoading && shipmentDetail && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Tracking</div>
+                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || "—"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Route</div>
+                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.shipment?.origin || "—"} → {shipmentDetail?.shipment?.destination || "—"}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Buyer / Seller</div>
+                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.buyer?.label || "—"} · {shipmentDetail?.seller?.label || "—"}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Events</div>
+                    {(shipmentDetail?.events || []).length === 0 ? (
+                      <div className="text-[0.8125rem] text-muted-foreground/60">No events yet.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(shipmentDetail?.events || []).slice(0, 30).map((ev: any) => (
+                          <div key={ev.id} className="flex items-start justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
+                            <div className="min-w-0">
+                              <div className="text-[0.8125rem] text-foreground/80 truncate">{ev.type}</div>
+                              <div className="text-[0.6875rem] text-muted-foreground/50 truncate">{ev.location || "—"}</div>
+                            </div>
+                            <div className="text-[0.6875rem] text-muted-foreground/50 whitespace-nowrap">
+                              {ev.occurred_at ? new Date(ev.occurred_at).toLocaleString() : "—"}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -1970,56 +2979,25 @@ export function AdminLogistics() {
 // ════════════════════════════════════════════════════════════
 
 export function AdminQuality() {
-  const apiBase = () => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-      return normalize(fromEnv);
-    }
-    if (typeof window !== "undefined") {
-      return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-    }
-    return "http://localhost:8000";
-  };
-
-  const getAccess = () => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  };
-
-  const fetchJson = async (path: string, init?: RequestInit) => {
-    const access = getAccess();
-    const res = await fetch(`${apiBase()}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        ...(access ? { Authorization: `Bearer ${access}` } : {}),
-      },
-    });
-    if (res.status === 401) {
-      try {
-        window.location.assign("/?signin=1");
-      } catch {}
-    }
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    const data = isJson ? await res.json().catch(() => null) : null;
-    if (!res.ok) {
-      const msg =
-        (data && (data.detail || data.error)) ||
-        (typeof data === "string" ? data : "") ||
-        `Request failed (${res.status})`;
-      throw new Error(msg);
-    }
-    return data;
-  };
+  const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
   const [trend, setTrend] = useState<any[]>([]);
   const [dist, setDist] = useState<any>(null);
-  const [recent, setRecent] = useState<any[]>([]);
+  const [days, setDays] = useState<number>(30);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [q, setQ] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [page, setPage] = useState<number>(1);
+  const pageSize = 10;
+  const [inspections, setInspections] = useState<any[]>([]);
+  const [count, setCount] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(1);
+  const [inspectionOpen, setInspectionOpen] = useState(false);
+  const [inspectionLoading, setInspectionLoading] = useState(false);
+  const [inspectionSaving, setInspectionSaving] = useState(false);
+  const [inspectionDetail, setInspectionDetail] = useState<any>(null);
+  const [editScore, setEditScore] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
 
@@ -2049,23 +3027,73 @@ export function AdminQuality() {
     return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
   };
 
+  const openInspection = async (id: number) => {
+    if (!id) return;
+    setInspectionOpen(true);
+    setInspectionLoading(true);
+    setInspectionDetail(null);
+    try {
+      const data = await fetchJson(`/api/v1/admin/quality/${id}/`);
+      setInspectionDetail(data);
+      setEditScore(data?.score != null ? String(data.score) : "");
+    } catch (e: any) {
+      setInspectionDetail(null);
+      setError(e?.message || "Failed to load inspection.");
+      setInspectionOpen(false);
+    } finally {
+      setInspectionLoading(false);
+    }
+  };
+
+  const setInspection = async (patch: { status?: string; score?: number }) => {
+    const id = Number(inspectionDetail?.id || 0);
+    if (!id) return;
+    setInspectionSaving(true);
+    try {
+      setError("");
+      const data = await fetchJson(`/api/v1/admin/quality/${id}/set/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      setInspectionDetail(data);
+      setEditScore(data?.score != null ? String(data.score) : "");
+      setRefreshNonce((n) => n + 1);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update inspection.");
+    } finally {
+      setInspectionSaving(false);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
     (async () => {
       try {
-        const [s, t, d, r] = await Promise.all([
-          fetchJson("/api/v1/admin/quality/stats"),
-          fetchJson("/api/v1/admin/quality/trend?months=6"),
-          fetchJson("/api/v1/admin/quality/distribution?days=30"),
-          fetchJson("/api/v1/admin/quality/recent?limit=10"),
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("page_size", String(pageSize));
+        if (q.trim()) params.set("q", q.trim());
+        if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+        params.set("days", String(days));
+
+        const [s, t, d, listResp] = await Promise.all([
+          fetchJson(`/api/v1/admin/quality/stats/?days=${days}`),
+          fetchJson(`/api/v1/admin/quality/trend/?days=${Math.min(31, days)}`),
+          fetchJson(`/api/v1/admin/quality/distribution/?days=${days}`),
+          fetchJson(`/api/v1/admin/quality/?${params.toString()}`),
         ]);
         if (cancelled) return;
         setStats(s);
         setTrend(Array.isArray(t) ? t : []);
         setDist(d);
-        setRecent(Array.isArray(r) ? r : []);
+        const rows = Array.isArray(listResp?.results) ? listResp.results : [];
+        const cnt = Number(listResp?.count || 0);
+        setInspections(rows);
+        setCount(Number.isFinite(cnt) ? cnt : 0);
+        setTotalPages(Math.max(1, Math.ceil((Number.isFinite(cnt) ? cnt : 0) / pageSize)));
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Failed to load quality data.");
       } finally {
@@ -2075,13 +3103,32 @@ export function AdminQuality() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [days, page, q, statusFilter, refreshNonce]);
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
-      <motion.div variants={stagger.item}>
-        <h1 className="text-foreground tracking-tight mb-1.5">Quality Control</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Quality Control</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Inspection results, compliance scores, and product quality trends.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={String(days)}
+            onChange={(e) => {
+              setDays(Number(e.target.value) || 30);
+              setPage(1);
+            }}
+            className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+          >
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <BounceButton variant="ghost" size="sm" icon={<Clock size={14} />} onClick={() => setRefreshNonce((n) => n + 1)}>
+            Refresh
+          </BounceButton>
+        </div>
       </motion.div>
 
       {error && (
@@ -2153,21 +3200,54 @@ export function AdminQuality() {
 
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <h2 className="text-foreground text-[0.9375rem] mb-6">Recent Inspections</h2>
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-foreground text-[0.9375rem] mb-1">Inspections</h2>
+              <p className="text-muted-foreground/50 text-[0.75rem]">Search, filter, and review inspection outcomes.</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <div className="relative">
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+                <input
+                  value={q}
+                  onChange={(e) => {
+                    setQ(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search product, seller, inspector…"
+                  className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
+                />
+              </div>
+              <select
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="all">All statuses</option>
+                <option value="in_progress">Pending</option>
+                <option value="passed">Passed</option>
+                <option value="failed">Failed</option>
+              </select>
+            </div>
+          </div>
           <div className="space-y-2">
             {loading && (
               <div className="px-5 py-4 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
                 Loading inspections…
               </div>
             )}
-            {!loading && recent.length === 0 && (
+            {!loading && inspections.length === 0 && (
               <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
                 No inspections yet.
               </div>
             )}
-            {recent.map((qi, i) => (
+            {inspections.map((qi, i) => (
               <motion.div key={qi.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
+                onClick={() => openInspection(Number(qi.id))}
               >
                 <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ backgroundColor: qi.score >= 90 ? "#30A46C10" : qi.score >= 70 ? "#FFB22410" : "#E5484D10" }}>
                   <span className="text-[0.875rem]" style={{ color: qi.score >= 90 ? "#30A46C" : qi.score >= 70 ? "#D97706" : "#E5484D" }}>{qi.score}</span>
@@ -2185,8 +3265,139 @@ export function AdminQuality() {
               </motion.div>
             ))}
           </div>
+
+          <div className="flex items-center justify-between mt-6">
+            <div className="text-[0.75rem] text-muted-foreground/60">
+              {count ? `Showing ${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, count)} of ${count}` : "—"}
+            </div>
+            <div className="flex items-center gap-2">
+              <BounceButton variant="ghost" size="sm" onClick={page <= 1 ? undefined : () => setPage((p) => Math.max(1, p - 1))} className={page <= 1 ? "opacity-60 pointer-events-none" : ""}>
+                Prev
+              </BounceButton>
+              <BounceButton variant="ghost" size="sm" onClick={page >= totalPages ? undefined : () => setPage((p) => p + 1)} className={page >= totalPages ? "opacity-60 pointer-events-none" : ""}>
+                Next
+              </BounceButton>
+            </div>
+          </div>
         </SectionCard>
       </motion.div>
+
+      <AnimatePresence>
+        {inspectionOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setInspectionOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">
+                    {inspectionDetail?.product_name || (inspectionLoading ? "Loading…" : "Inspection")}
+                  </h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    {inspectionDetail?.seller_name || "—"} · {inspectionDetail?.inspector_display || "—"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setInspectionOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {inspectionLoading && (
+                <div className="px-5 py-6 rounded-2xl bg-muted/10 text-[0.8125rem] text-muted-foreground/60">
+                  Loading inspection…
+                </div>
+              )}
+
+              {!inspectionLoading && inspectionDetail && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Inspection ID</div>
+                      <div className="text-[0.875rem] text-foreground/80">{inspectionDetail?.id}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Status</div>
+                      <div className="text-[0.875rem] text-foreground/80">{(inspectionDetail?.status || "—").toString().replaceAll("_", " ")}</div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Score</div>
+                      <div className="text-[0.875rem] text-foreground/80">{fmtScore(inspectionDetail?.score)}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-4">Update</div>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <input
+                        value={editScore}
+                        onChange={(e) => setEditScore(e.target.value)}
+                        placeholder="Score (0-100)"
+                        inputMode="numeric"
+                        className="flex-1 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                      />
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        icon={<Clock size={14} />}
+                        onClick={inspectionSaving ? undefined : () => setInspection({ status: "in_progress" })}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Pending
+                      </BounceButton>
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        icon={<CheckCircle2 size={14} />}
+                        onClick={inspectionSaving ? undefined : () => {
+                          const n = Number(editScore);
+                          const patch: any = { status: "passed" };
+                          if (Number.isFinite(n)) patch.score = n;
+                          void setInspection(patch);
+                        }}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Pass
+                      </BounceButton>
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        icon={<XCircle size={14} />}
+                        onClick={inspectionSaving ? undefined : () => {
+                          const n = Number(editScore);
+                          const patch: any = { status: "failed" };
+                          if (Number.isFinite(n)) patch.score = n;
+                          void setInspection(patch);
+                        }}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Fail
+                      </BounceButton>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="text-[0.75rem] text-muted-foreground/60 mb-2">Dates</div>
+                    <div className="text-[0.8125rem] text-foreground/80">
+                      Inspected: {formatDate(inspectionDetail?.inspected_at)} · Created: {formatDate(inspectionDetail?.created_at)}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

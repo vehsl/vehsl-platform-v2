@@ -30,3 +30,21 @@ yarn-error.log*
 # tsbuild
 *.tsbuildinfo
 next-env.d.ts
+
+# python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+.envrc
+.venv/
+venv/
+
+# django
+backend/media/
+backend/staticfiles/

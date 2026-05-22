@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.db.models import Avg, Count, Q
-from django.db.models.functions import TruncMonth
+from django.db.models.functions import TruncDate, TruncMonth
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -9,12 +9,13 @@ from rest_framework.response import Response
 
 from apps.accounts.permissions import IsBuyer, IsSeller
 from apps.accounts.permissions import IsAdmin
-from apps.accounts.admin_utils import audit
+from apps.accounts.admin_utils import AdminPageNumberPagination, audit
 from apps.accounts.models import User
 from apps.catalog.models import Product
 
 from .models import QualityInspection, Sample, SampleRequest
 from .serializers import (
+    AdminQualityInspectionDetailSerializer,
     AdminQualityInspectionListSerializer,
     AdminQualityInspectionWriteSerializer,
     SampleRequestSerializer,
@@ -56,6 +57,7 @@ class SampleRequestViewSet(viewsets.ModelViewSet):
 class AdminQualityViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
     serializer_class = AdminQualityInspectionListSerializer
+    pagination_class = AdminPageNumberPagination
 
     def get_queryset(self):
         return (
@@ -64,11 +66,55 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
             .order_by("-created_at")
         )
 
+    def list(self, request):
+        qs = self.get_queryset()
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(product__name__icontains=q)
+                | Q(product__sku__icontains=q)
+                | Q(seller__email__icontains=q)
+                | Q(seller__phone__icontains=q)
+                | Q(inspector_name__icontains=q)
+                | Q(inspector__email__icontains=q)
+                | Q(inspector__phone__icontains=q)
+            )
+
+        status_filter = (request.query_params.get("status") or "").strip().lower()
+        if status_filter and status_filter != "all":
+            qs = qs.filter(status=status_filter)
+
+        days_raw = (request.query_params.get("days") or "").strip()
+        if days_raw:
+            try:
+                days = max(1, min(365, int(days_raw)))
+                qs = qs.filter(created_at__gte=(timezone.now() - timedelta(days=days)))
+            except Exception:
+                pass
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            return self.get_paginated_response(AdminQualityInspectionListSerializer(page, many=True).data)
+        data = AdminQualityInspectionListSerializer(qs[:50], many=True).data
+        return Response({"count": len(data), "next": None, "previous": None, "results": data})
+
+    def retrieve(self, request, pk=None):
+        obj = self.get_queryset().filter(id=pk).first()
+        if not obj:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(AdminQualityInspectionDetailSerializer(obj).data)
+
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         now = timezone.now()
-        window = now - timedelta(days=30)
-        prev_window = window - timedelta(days=30)
+        days_raw = (request.query_params.get("days") or "").strip()
+        try:
+            days = max(7, min(365, int(days_raw or "30")))
+        except Exception:
+            days = 30
+
+        window = now - timedelta(days=days)
+        prev_window = window - timedelta(days=days)
 
         base = self.get_queryset()
         recent = base.filter(created_at__gte=window)
@@ -90,6 +136,7 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
 
         return Response(
             {
+                "days": days,
                 "avg_quality_score": round(float(avg_score), 0),
                 "avg_quality_score_delta": round(delta, 0),
                 "pass_rate": round(pass_rate, 1),
@@ -100,6 +147,31 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="trend")
     def trend(self, request):
+        days_raw = (request.query_params.get("days") or "").strip()
+        if days_raw:
+            try:
+                days = max(2, min(31, int(days_raw)))
+            except Exception:
+                days = 14
+            start = timezone.now() - timedelta(days=days - 1)
+            rows = (
+                self.get_queryset()
+                .filter(created_at__gte=start)
+                .exclude(status=QualityInspection.Status.IN_PROGRESS)
+                .annotate(d=TruncDate("created_at"))
+                .values("d")
+                .annotate(score=Avg("score"))
+                .order_by("d")
+            )
+            data = []
+            for r in rows:
+                d = r.get("d")
+                if not d:
+                    continue
+                label = d.strftime("%a") if days <= 7 else d.strftime("%b %d")
+                data.append({"month": label, "score": round(float(r["score"] or 0), 0)})
+            return Response(data)
+
         months_raw = (request.query_params.get("months") or "").strip()
         try:
             months = max(2, min(24, int(months_raw or "6")))
@@ -144,6 +216,7 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
 
         return Response(
             {
+                "days": days,
                 "excellent": round(excellent * 100.0 / total, 0),
                 "good": round(good * 100.0 / total, 0),
                 "fair": round(fair * 100.0 / total, 0),
@@ -161,6 +234,37 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
 
         qs = self.get_queryset()[:limit]
         return Response(AdminQualityInspectionListSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="set")
+    def set_inspection(self, request, pk=None):
+        ins = self.get_queryset().filter(id=pk).first()
+        if not ins:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        changed: list[str] = []
+        status_val = (request.data.get("status") or "").strip().lower()
+        if status_val in {QualityInspection.Status.IN_PROGRESS, QualityInspection.Status.PASSED, QualityInspection.Status.FAILED}:
+            ins.status = status_val
+            changed.append("status")
+
+        if "score" in request.data:
+            try:
+                score = int(request.data.get("score"))
+                if 0 <= score <= 100:
+                    ins.score = score
+                    changed.append("score")
+            except Exception:
+                return Response({"score": "score must be an integer 0-100."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if "inspected_at" in request.data:
+            ins.inspected_at = request.data.get("inspected_at") or None
+            changed.append("inspected_at")
+
+        if changed:
+            ins.save(update_fields=list(set(changed)))
+            audit(request.user, action="admin_quality_inspection_updated", target_type="quality_inspection", target_id=str(ins.id), payload={"fields": changed})
+
+        return Response(AdminQualityInspectionDetailSerializer(ins).data)
 
     def create(self, request):
         ser = AdminQualityInspectionWriteSerializer(data=request.data)

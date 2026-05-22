@@ -65,6 +65,37 @@ class AdminQualityInspectionListSerializer(serializers.ModelSerializer):
         return "—"
 
 
+class AdminQualityInspectionDetailSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source="product.name", read_only=True)
+    seller_id = serializers.IntegerField(source="seller_id", read_only=True)
+    inspector_id = serializers.IntegerField(source="inspector_id", read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    inspector_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QualityInspection
+        fields = [
+            "id",
+            "product",
+            "product_name",
+            "seller_id",
+            "seller_name",
+            "inspector_id",
+            "inspector_name",
+            "inspector_display",
+            "status",
+            "score",
+            "inspected_at",
+            "created_at",
+        ]
+
+    def get_seller_name(self, obj: QualityInspection):
+        return AdminQualityInspectionListSerializer().get_seller_name(obj)
+
+    def get_inspector_display(self, obj: QualityInspection):
+        return AdminQualityInspectionListSerializer().get_inspector_display(obj)
+
+
 class AdminQualityInspectionWriteSerializer(serializers.Serializer):
     product_id = serializers.IntegerField(required=True)
     seller_id = serializers.IntegerField(required=True)

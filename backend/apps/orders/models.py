@@ -245,7 +245,7 @@ class Review(models.Model):
         ]
         constraints = [
             models.CheckConstraint(
-                condition=(
+                check=(
                     models.Q(target_product__isnull=True, target_seller__isnull=False, target_type="seller")
                     | models.Q(target_product__isnull=False, target_seller__isnull=True, target_type="product")
                 ),
