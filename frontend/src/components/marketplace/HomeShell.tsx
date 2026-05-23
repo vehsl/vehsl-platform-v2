@@ -15,7 +15,15 @@ import { SearchBar } from "@/components/marketplace/SearchBar";
 import { TopNav } from "@/components/marketplace/TopNav";
 import { SuggestedProducts } from "@/components/marketplace/SuggestedProducts";
 import { TrustSection } from "@/components/marketplace/TrustSection";
+import { PromisesSection } from "@/components/marketplace/PromisesSection";
+import { LogisticsSection } from "@/components/marketplace/LogisticsSection";
+import { ValueSection } from "@/components/marketplace/ValueSection";
 import { useLanguage } from "@/context/language";
+import { SavingsSection } from "@/components/marketplace/SavingsSection";
+import { WeeklyProducts } from "@/components/marketplace/WeeklyProducts";
+import { SustainabilitySection } from "@/components/marketplace/SustainabilitySection";
+import { Footer } from "@/components/marketplace/Footer";
+
 
 export function HomeShell() {
   const [mounted, setMounted] = useState(false);
@@ -100,7 +108,7 @@ export function HomeShell() {
         u.searchParams.delete("signin");
         window.history.replaceState({}, "", u.toString());
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const signInAnchor = useMemo(
@@ -181,7 +189,7 @@ export function HomeShell() {
         window.localStorage.setItem("vehsl.access", tokens.access);
         window.localStorage.setItem("vehsl.refresh", tokens.refresh);
         window.localStorage.setItem("vehsl.user", JSON.stringify(tokens.user));
-      } catch {}
+      } catch { }
 
       setSignInOpen(false);
       setRequiresOtp(false);
@@ -419,11 +427,11 @@ export function HomeShell() {
 
           <div className="flex w-full flex-col items-center">
             <div className="select-none text-center text-[56px] font-extrabold leading-[0.95] tracking-[-0.04em] text-gradient-brand sm:text-[60px] md:text-[100px]"
-            style={{
-            fontFamily: "'Urbanist', sans-serif",
-            backgroundImage:
-              "linear-gradient(75.5174deg, rgba(0, 143, 247, 0.8) 9.9891%, rgba(45, 132, 248, 0.8) 20.466%, rgba(90, 121, 249, 0.8) 30.943%, rgba(179, 99, 250, 0.8) 42.629%, rgba(228, 75, 193, 0.8) 55.524%, rgba(235, 72, 131, 0.8) 67.21%, rgba(243, 69, 70, 0.72) 85.423%, rgba(255, 221, 85, 0.8) 93.805%)",
-          }}>
+              style={{
+                fontFamily: "'Urbanist', sans-serif",
+                backgroundImage:
+                  "linear-gradient(75.5174deg, rgba(0, 143, 247, 0.8) 9.9891%, rgba(45, 132, 248, 0.8) 20.466%, rgba(90, 121, 249, 0.8) 30.943%, rgba(179, 99, 250, 0.8) 42.629%, rgba(228, 75, 193, 0.8) 55.524%, rgba(235, 72, 131, 0.8) 67.21%, rgba(243, 69, 70, 0.72) 85.423%, rgba(255, 221, 85, 0.8) 93.805%)",
+              }}>
               Vehsl
             </div>
 
@@ -434,7 +442,14 @@ export function HomeShell() {
         </div>
 
         <SuggestedProducts />
-        {/* <TrustSection /> */}
+        <TrustSection />
+        <PromisesSection />
+        <LogisticsSection />
+        <ValueSection />
+        <SavingsSection />
+        <WeeklyProducts />
+        <SustainabilitySection />
+        <Footer />
       </div>
     </div>
   );
