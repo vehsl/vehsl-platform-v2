@@ -1,0 +1,11 @@
+export function AlarmCheckIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="120" height="148" viewBox="0 0 125 153" fill="none">
+      <path d="M47.5 2.5H77.5" stroke="white" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M2.5 90.5C2.5 106.413 8.82141 121.674 20.0736 132.926C31.3258 144.179 46.587 150.5 62.5 150.5C78.413 150.5 93.6742 144.179 104.926 132.926C116.179 121.674 122.5 106.413 122.5 90.5C122.5 74.587 116.179 59.3258 104.926 48.0736C93.6742 36.8214 78.413 30.5 62.5 30.5C46.587 30.5 31.3258 36.8214 20.0736 48.0736C8.82141 59.3258 2.5 74.587 2.5 90.5Z" stroke="white" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M44.5 78.694L56.1796 93.3535C56.4658 93.7053 56.8326 93.9913 57.2524 94.19C57.6721 94.3884 58.134 94.4945 58.6032 94.4998C59.0649 94.5051 59.522 94.4125 59.9413 94.2297C60.3605 94.0466 60.7314 93.7774 61.0268 93.4417L88.5755 62.5" stroke="#2997FF" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M118.9 30.8828L104.5 46.7792" stroke="white" strokeWidth="5" strokeMiterlimit="10" strokeLinecap="round"/>
+      <path d="M6.09844 30.8828L19.8984 46.7792" stroke="white" strokeWidth="5" strokeMiterlimit="10" strokeLinecap="round"/>
+    </svg>
+  );
+}

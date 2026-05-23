@@ -11,6 +11,7 @@ interface ProductCardProps {
   rating: number;
   image: string;
   index: number;
+  productId?: string;
 }
 
 export function ProductCard({
