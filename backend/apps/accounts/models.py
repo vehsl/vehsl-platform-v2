@@ -119,6 +119,12 @@ class UserProfile(models.Model):
     gender = models.CharField(max_length=32, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
 
+    class Language(models.TextChoices):
+        EN = "en", "English"
+        ZH = "zh", "Chinese"
+
+    language_preference = models.CharField(max_length=16, choices=Language.choices, default=Language.EN, blank=True)
+
     employment_statuses = models.JSONField(default=list, blank=True)
     work_details = models.JSONField(default=dict, blank=True)
     bank_details = models.JSONField(default=dict, blank=True)

@@ -37,6 +37,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "city",
             "street",
             "address",
+            "language_preference",
             "nationality",
             "gender",
             "date_of_birth",
@@ -169,6 +170,7 @@ class MeUpdateSerializer(serializers.Serializer):
     city = serializers.CharField(required=False, allow_blank=True)
     street = serializers.CharField(required=False, allow_blank=True)
     address = serializers.CharField(required=False, allow_blank=True)
+    language_preference = serializers.ChoiceField(choices=["en", "zh"], required=False)
     nationality = serializers.CharField(required=False, allow_blank=True)
     gender = serializers.CharField(required=False, allow_blank=True)
     date_of_birth = serializers.DateField(required=False, allow_null=True)

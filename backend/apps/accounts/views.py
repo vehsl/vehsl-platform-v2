@@ -1068,9 +1068,22 @@ class MeView(APIView):
         profile = getattr(user, "profile", None)
         if profile is None:
             profile = UserProfile.objects.create(user=user)
-        for f in ["country", "province", "city", "street", "address", "nationality", "gender", "date_of_birth"]:
+        for f in [
+            "country",
+            "province",
+            "city",
+            "street",
+            "address",
+            "language_preference",
+            "nationality",
+            "gender",
+            "date_of_birth",
+        ]:
             if f in data:
-                setattr(profile, f, data.get(f) or (None if f == "date_of_birth" else ""))
+                if f == "date_of_birth":
+                    setattr(profile, f, data.get(f) or None)
+                else:
+                    setattr(profile, f, data.get(f) or "")
         profile.save()
 
         return Response(UserSerializer(user).data)

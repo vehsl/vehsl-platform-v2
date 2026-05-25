@@ -8,6 +8,22 @@ import { toast } from "sonner";
 
 import { fetchJsonAuthed } from "@/lib/api";
 import { useCart } from "@/components/product/cart-context";
+import { useLanguage } from "@/context/language";
+import { categories as fallbackCategories } from "@/lib/categories";
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function localizeByDictionary(value: string, dict: Array<{ from: string; to: string }>) {
+  let out = value;
+  for (const pair of dict) {
+    if (!pair.from || !pair.to) continue;
+    const re = new RegExp(`\\b${escapeRegExp(pair.from)}\\b`, "gi");
+    out = out.replace(re, pair.to);
+  }
+  return out;
+}
 
 type Product = {
   id: number;
@@ -38,6 +54,25 @@ export function ProductPage() {
   const router = useRouter();
   const productId = useMemo(() => Number(params?.id || 0), [params?.id]);
   const { addToCart } = useCart();
+  const { language } = useLanguage();
+  const t = useCallback((en: string, zh: string) => (language === "zh" ? zh : en), [language]);
+
+  const productTitleDict = useMemo(() => {
+    const pairs: Array<{ from: string; to: string }> = [];
+    for (const c of fallbackCategories) {
+      if (c.nameZh) pairs.push({ from: c.name, to: c.nameZh });
+      for (const s of c.subcategories) {
+        if (s.nameZh) pairs.push({ from: s.name, to: s.nameZh });
+      }
+    }
+    pairs.sort((a, b) => b.from.length - a.from.length);
+    return pairs;
+  }, []);
+
+  const localizeProductTitle = useCallback(
+    (raw: string) => (language === "zh" ? localizeByDictionary(raw, productTitleDict) : raw),
+    [language, productTitleDict],
+  );
 
   const [loading, setLoading] = useState(true);
   const [product, setProduct] = useState<Product | null>(null);
@@ -55,13 +90,13 @@ export function ProductPage() {
       const data = (await fetchJsonAuthed(`/api/v1/products/${productId}/`)) as Product;
       setProduct(data && typeof data === "object" ? data : null);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to load product.";
+      const msg = e instanceof Error ? e.message : t("Failed to load product.", "加载商品失败。");
       toast.error(msg);
       setProduct(null);
     } finally {
       setLoading(false);
     }
-  }, [productId]);
+  }, [productId, t]);
 
   useEffect(() => {
     void fetchProduct();
@@ -78,25 +113,25 @@ export function ProductPage() {
         body: JSON.stringify({ product_id: product.id }),
       });
       setWishlisted((x) => !x);
-      toast.success(wishlisted ? "Removed from wishlist" : "Saved to wishlist");
+      toast.success(wishlisted ? t("Removed from wishlist", "已从收藏移除") : t("Saved to wishlist", "已收藏"));
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Wishlist update failed.";
+      const msg = e instanceof Error ? e.message : t("Wishlist update failed.", "收藏更新失败。");
       toast.error(msg);
     } finally {
       setToggling(false);
     }
-  }, [product, toggling, wishlisted]);
+  }, [product, toggling, wishlisted, t]);
 
   const addThisToCart = useCallback(async () => {
     if (!product) return;
     try {
       await addToCart(product.id, 1, null);
-      toast.success("Added to cart");
+      toast.success(t("Added to cart", "已加入购物车"));
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Add to cart failed.";
+      const msg = e instanceof Error ? e.message : t("Add to cart failed.", "加入购物车失败。");
       toast.error(msg);
     }
-  }, [addToCart, product]);
+  }, [addToCart, product, t]);
 
   return (
     <div className="min-h-dvh bg-white font-urbanist">
@@ -108,7 +143,7 @@ export function ProductPage() {
             className="inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-bold bg-white/55 border border-black/[0.06] hover:bg-white/75 transition text-[#1A1A1A]/60"
           >
             <ArrowLeft size={14} />
-            Back to explore
+            {t("Back to explore", "返回探索")}
           </button>
           <button
             type="button"
@@ -117,23 +152,23 @@ export function ProductPage() {
             disabled={loading}
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-            Refresh
+            {t("Refresh", "刷新")}
           </button>
         </div>
 
         {loading ? (
           <div className="mt-8 rounded-[26px] bg-white/55 border border-black/[0.06] p-6 text-[#1A1A1A]/45">
-            Loading product…
+            {t("Loading product…", "商品加载中…")}
           </div>
         ) : !product ? (
           <div className="mt-8 rounded-[26px] bg-white/55 border border-black/[0.06] p-6">
-            <div className="text-[16px] font-black text-[#1A1A1A]/75">Product not found</div>
+            <div className="text-[16px] font-black text-[#1A1A1A]/75">{t("Product not found", "未找到商品")}</div>
             <div className="mt-1 text-[13px] font-medium text-[#1A1A1A]/40">
-              This product may be unavailable or removed.
+              {t("This product may be unavailable or removed.", "该商品可能不可用或已下架。")}
             </div>
             <div className="mt-5">
               <Link href="/explore" className="text-[13px] font-bold text-blue-600 hover:underline">
-                Go to explore
+                {t("Go to explore", "前往探索")}
               </Link>
             </div>
           </div>
@@ -149,10 +184,11 @@ export function ProductPage() {
 
             <div className="rounded-[26px] bg-white/55 border border-black/[0.06] p-6">
               <div className="text-[12px] font-semibold text-[#1A1A1A]/40">
-                {(product.category_name || "").trim() || "Category"} · {(product.seller_name || "").trim() || "Seller"}
+                {(product.category_name || "").trim() || t("Category", "分类")} ·{" "}
+                {(product.seller_name || "").trim() || t("Seller", "卖家")}
               </div>
               <div className="mt-2 text-[28px] sm:text-[34px] font-black tracking-tight text-[#1A1A1A] leading-[1.05]">
-                {product.title || product.name}
+                {localizeProductTitle(product.title || product.name)}
               </div>
               <div className="mt-3 text-[16px] font-black text-[#1A1A1A]/75">
                 {fmtMoney(product.currency, product.price)}
@@ -171,7 +207,7 @@ export function ProductPage() {
                   className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/70 border border-black/[0.06] hover:bg-white transition"
                 >
                   <Heart size={14} className={wishlisted ? "text-[#ff2d55]" : "text-[#1A1A1A]/45"} fill={wishlisted ? "#ff2d55" : "none"} />
-                  {wishlisted ? "Saved" : "Save"}
+                  {wishlisted ? t("Saved", "已收藏") : t("Save", "收藏")}
                 </button>
                 <button
                   type="button"
@@ -179,19 +215,19 @@ export function ProductPage() {
                   className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/70 border border-black/[0.06] hover:bg-white transition"
                 >
                   <ShoppingCart size={14} className="text-[#1A1A1A]/55" />
-                  Add to cart
+                  {t("Add to cart", "加入购物车")}
                 </button>
                 <Link
                   href="/checkout"
                   className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-black text-white hover:bg-black/90 transition"
                 >
-                  Continue to checkout
+                  {t("Continue to checkout", "去结算")}
                 </Link>
                 <Link
                   href="/messages"
                   className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/70 border border-black/[0.06] hover:bg-white transition"
                 >
-                  Message
+                  {t("Message", "消息")}
                 </Link>
               </div>
             </div>

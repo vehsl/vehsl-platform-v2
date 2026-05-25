@@ -41,7 +41,19 @@ const CartContext = createContext<CartContextValue | null>(null);
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
 
+  const hasAccessToken = useCallback(() => {
+    try {
+      return Boolean(window.localStorage.getItem("vehsl.access") || "");
+    } catch {
+      return false;
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
+    if (!hasAccessToken()) {
+      setItems([]);
+      return;
+    }
     try {
       const data = (await fetchJsonAuthed("/api/v1/cart")) as CartResponse;
       const rows = Array.isArray(data?.items) ? (data.items as CartItem[]) : [];
@@ -49,7 +61,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     } catch {
       setItems([]);
     }
-  }, []);
+  }, [hasAccessToken]);
 
   useEffect(() => {
     void refresh();

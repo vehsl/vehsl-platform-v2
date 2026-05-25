@@ -14,18 +14,35 @@ import { fetchJsonAuthed } from "@/lib/api";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function localizeByDictionary(value: string, dict: Array<{ from: string; to: string }>) {
+  let out = value;
+  for (const pair of dict) {
+    if (!pair.from || !pair.to) continue;
+    const re = new RegExp(`\\b${escapeRegExp(pair.from)}\\b`, "gi");
+    out = out.replace(re, pair.to);
+  }
+  return out;
+}
+
 type UiSubcategory = {
   id: string;
   name: string;
+  nameZh?: string;
   slug: string;
   icon: LucideIcon;
   items: string[];
+  itemsZh?: string[];
   count: number;
 };
 
 type UiCategory = {
   id: string;
   name: string;
+  nameZh?: string;
   icon: LucideIcon;
   accent: string;
   count: number;
@@ -95,8 +112,13 @@ function fmtMoney(currency: string, amount: string) {
 }
 
 function CategoryCard({ category, onClick }: { category: UiCategory; onClick: () => void }) {
+  const { language } = useLanguage();
+  const t = (en: string, zh: string) => (language === "zh" ? zh : en);
   const Icon = category.icon;
-  const chips = category.subcategories.slice(0, 3).map((s) => s.name);
+  const categoryName = language === "zh" ? category.nameZh || category.name : category.name;
+  const chips = category.subcategories
+    .slice(0, 3)
+    .map((s) => (language === "zh" ? s.nameZh || s.name : s.name));
   const overflow = Math.max(category.subcategories.length - chips.length, 0);
 
   return (
@@ -124,8 +146,10 @@ function CategoryCard({ category, onClick }: { category: UiCategory; onClick: ()
       </div>
 
       <div className="mt-4">
-        <div className="text-2xl font-bold text-gray-900">{category.name}</div>
-        <div className="mt-1 text-xs text-gray-500">{category.subcategories.length} types</div>
+        <div className="text-2xl font-bold text-gray-900">{categoryName}</div>
+        <div className="mt-1 text-xs text-gray-500">
+          {t(`${category.subcategories.length} types`, `${category.subcategories.length} 种类型`)}
+        </div>
       </div>
 
       <div className="mt-5 flex flex-wrap gap-2 min-h-[42px]">
@@ -153,12 +177,15 @@ function SubcategoryCard({
   sub: UiSubcategory;
   onClick: () => void;
 }) {
+  const { language } = useLanguage();
   const Icon = sub.icon;
-  const preview = sub.items
+  const subName = language === "zh" ? sub.nameZh || sub.name : sub.name;
+  const items = language === "zh" ? (sub.itemsZh && sub.itemsZh.length ? sub.itemsZh : sub.items) : sub.items;
+  const preview = items
     .filter((x) => !x.startsWith("+"))
     .slice(0, 4)
     .join(", ");
-  const more = sub.items.find((x) => x.startsWith("+")) ?? "";
+  const more = items.find((x) => x.startsWith("+")) ?? "";
 
   return (
     <motion.div
@@ -180,7 +207,7 @@ function SubcategoryCard({
           <Icon className="h-5 w-5" strokeWidth={1.5} />
         </div>
         <div className="flex-1">
-          <div className="text-lg font-semibold text-gray-900">{sub.name}</div>
+          <div className="text-lg font-semibold text-gray-900">{subName}</div>
         </div>
         <div className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600">
           {sub.count}
@@ -205,7 +232,10 @@ function CategorySection({
   setRef: (id: string, el: HTMLElement | null) => void;
   onSelectSubcategory: (category: UiCategory, sub: UiSubcategory) => void;
 }) {
+  const { language } = useLanguage();
+  const t = (en: string, zh: string) => (language === "zh" ? zh : en);
   const Icon = category.icon;
+  const categoryName = language === "zh" ? category.nameZh || category.name : category.name;
 
   return (
     <section
@@ -221,9 +251,12 @@ function CategorySection({
           <Icon className="h-7 w-7" strokeWidth={1.5} />
         </div>
         <div>
-          <div className="text-3xl font-bold text-gray-900 sm:text-4xl lg:text-5xl">{category.name}</div>
+          <div className="text-3xl font-bold text-gray-900 sm:text-4xl lg:text-5xl">{categoryName}</div>
           <div className="mt-2 text-sm text-gray-500">
-            {category.subcategories.length} subcategories · {category.count} products
+            {t(
+              `${category.subcategories.length} subcategories · ${category.count} products`,
+              `${category.subcategories.length} 个子分类 · ${category.count} 个商品`,
+            )}
           </div>
         </div>
       </div>
@@ -317,6 +350,7 @@ function StickyNav({
   totalQuantity,
   onProfileSettings,
   onLogout,
+  authed,
 }: {
   visible: boolean;
   activeId: string | null;
@@ -326,7 +360,9 @@ function StickyNav({
   totalQuantity: number;
   onProfileSettings: () => void;
   onLogout: () => void;
+  authed: boolean;
 }) {
+  const { language } = useLanguage();
   return (
     <motion.div
       initial={{ opacity: 0, y: -8 }}
@@ -344,6 +380,7 @@ function StickyNav({
         <div className="hidden flex-1 items-center gap-2 overflow-x-auto md:flex">
           {categories.map((c) => {
             const isActive = c.id === activeId;
+            const label = language === "zh" ? c.nameZh || c.name : c.name;
             return (
               <button
                 key={c.id}
@@ -354,7 +391,7 @@ function StickyNav({
                   isActive ? "bg-orange-500 text-white" : "text-[#1f2330] hover:text-black",
                 )}
               >
-                {c.name}
+                {label}
               </button>
             );
           })}
@@ -370,19 +407,30 @@ function StickyNav({
           >
             <Search className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
           </button>
-          <Link
-            href="/checkout"
-            className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
-            aria-label="Cart"
-          >
-            <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
-            {totalQuantity > 0 ? (
-              <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
-                {totalQuantity > 99 ? "99+" : totalQuantity}
-              </span>
-            ) : null}
-          </Link>
-          <ProfileMenu onProfileSettings={onProfileSettings} onLogout={onLogout} />
+          {authed ? (
+            <>
+              <Link
+                href="/checkout"
+                className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+                aria-label="Cart"
+              >
+                <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+                {totalQuantity > 0 ? (
+                  <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
+                    {totalQuantity > 99 ? "99+" : totalQuantity}
+                  </span>
+                ) : null}
+              </Link>
+              <ProfileMenu onProfileSettings={onProfileSettings} onLogout={onLogout} />
+            </>
+          ) : (
+            <Link
+              href="/?signin=1"
+              className="inline-flex h-10 items-center justify-center rounded-full bg-black px-4 text-[12px] font-semibold text-white hover:bg-black/90"
+            >
+              {language === "zh" ? "登录" : "Sign in"}
+            </Link>
+          )}
         </div>
       </div>
     </motion.div>
@@ -392,6 +440,14 @@ function StickyNav({
 export function ExploreShell() {
   const { language } = useLanguage();
   const t = (en: string, zh: string) => (language === "zh" ? zh : en);
+
+  const authed = useMemo(() => {
+    try {
+      return Boolean(window.localStorage.getItem("vehsl.access") || "");
+    } catch {
+      return false;
+    }
+  }, []);
 
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -489,6 +545,7 @@ export function ExploreShell() {
       .map((c) => ({
         id: c.id,
         name: c.name,
+        nameZh: c.nameZh,
         icon: c.icon,
         accent: c.accent,
         count: 0,
@@ -497,14 +554,33 @@ export function ExploreShell() {
           return {
             id: `${c.id}-${s.name.toLowerCase().replace(/\s+/g, "-")}`,
             name: s.name,
+            nameZh: s.nameZh,
             slug,
             icon: s.icon,
             items: s.items,
+            itemsZh: s.itemsZh,
             count: 0,
           };
         }),
       }));
   }, []);
+
+  const productTitleDict = useMemo(() => {
+    const pairs: Array<{ from: string; to: string }> = [];
+    for (const c of fallbackCategories) {
+      if (c.nameZh) pairs.push({ from: c.name, to: c.nameZh });
+      for (const s of c.subcategories) {
+        if (s.nameZh) pairs.push({ from: s.name, to: s.nameZh });
+      }
+    }
+    pairs.sort((a, b) => b.from.length - a.from.length);
+    return pairs;
+  }, []);
+
+  const localizeProductTitle = useCallback(
+    (raw: string) => (language === "zh" ? localizeByDictionary(raw, productTitleDict) : raw),
+    [language, productTitleDict],
+  );
 
   const uiCategories: UiCategory[] = useMemo(() => {
     const server = Array.isArray(serverCategories) ? serverCategories : [];
@@ -738,6 +814,7 @@ export function ExploreShell() {
         totalQuantity={totalQuantity}
         onProfileSettings={() => void openProfile()}
         onLogout={() => void logout()}
+        authed={authed}
       />
       {selected ? (
         <div className="fixed inset-0 z-[60]">
@@ -753,8 +830,14 @@ export function ExploreShell() {
           <div className="absolute inset-x-0 top-6 mx-auto w-[min(100%-24px,960px)] rounded-3xl border border-white/50 bg-white/90 shadow-soft backdrop-blur-xl">
             <div className="flex items-start justify-between gap-4 px-6 py-5">
               <div>
-                <div className="text-[12px] font-semibold text-[#7c7f87]">{selected.category.name}</div>
-                <div className="mt-1 text-[20px] font-extrabold text-[#0f1115]">{selected.sub.name}</div>
+                <div className="text-[12px] font-semibold text-[#7c7f87]">
+                  {language === "zh"
+                    ? selected.category.nameZh || selected.category.name
+                    : selected.category.name}
+                </div>
+                <div className="mt-1 text-[20px] font-extrabold text-[#0f1115]">
+                  {language === "zh" ? selected.sub.nameZh || selected.sub.name : selected.sub.name}
+                </div>
                 <div className="mt-1 text-[12px] text-[#7c7f87]">
                   {typeof subTotal === "number" ? t(`${subTotal} products`, `${subTotal} 个商品`) : ""}
                 </div>
@@ -793,7 +876,9 @@ export function ExploreShell() {
                       <div className="h-[140px] w-full bg-black/[0.03]" />
                     )}
                     <div className="p-4 flex-1 flex flex-col">
-                      <div className="text-[13px] font-semibold text-[#0f1115] line-clamp-2">{p.title || p.name}</div>
+                      <div className="text-[13px] font-semibold text-[#0f1115] line-clamp-2">
+                        {localizeProductTitle(p.title || p.name)}
+                      </div>
                       <div className="mt-1 text-[12px] text-[#7c7f87] truncate">{p.seller_name || ""}</div>
                       <div className="mt-auto pt-3 text-[12px] font-semibold text-[#0f1115]">
                         {fmtMoney(p.currency, p.price)}
@@ -929,19 +1014,30 @@ export function ExploreShell() {
             >
               <Search className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
             </button>
-            <Link
-              href="/checkout"
-              className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
-              aria-label="Cart"
-            >
-              <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
-              {totalQuantity > 0 ? (
-                <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
-                  {totalQuantity > 99 ? "99+" : totalQuantity}
-                </span>
-              ) : null}
-            </Link>
-            <ProfileMenu onProfileSettings={() => void openProfile()} onLogout={() => void logout()} />
+            {authed ? (
+              <>
+                <Link
+                  href="/checkout"
+                  className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+                  aria-label="Cart"
+                >
+                  <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+                  {totalQuantity > 0 ? (
+                    <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
+                      {totalQuantity > 99 ? "99+" : totalQuantity}
+                    </span>
+                  ) : null}
+                </Link>
+                <ProfileMenu onProfileSettings={() => void openProfile()} onLogout={() => void logout()} />
+              </>
+            ) : (
+              <Link
+                href="/?signin=1"
+                className="inline-flex h-10 items-center justify-center rounded-full bg-black px-4 text-[12px] font-semibold text-white hover:bg-black/90"
+              >
+                {language === "zh" ? "登录" : "Sign in"}
+              </Link>
+            )}
           </div>
         </div>
 
@@ -985,7 +1081,9 @@ export function ExploreShell() {
                         onClick={() => setSearchOpen(false)}
                       >
                         <div className="min-w-0">
-                          <div className="truncate text-[13px] font-semibold text-[#0f1115]">{p.title || p.name}</div>
+                          <div className="truncate text-[13px] font-semibold text-[#0f1115]">
+                            {localizeProductTitle(p.title || p.name)}
+                          </div>
                           <div className="truncate text-[12px] text-[#7c7f87]">{p.seller_name || ""}</div>
                         </div>
                         <div className="shrink-0 text-[12px] font-semibold text-[#0f1115]">
