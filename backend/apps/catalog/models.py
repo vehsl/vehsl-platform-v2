@@ -6,7 +6,7 @@ from uuid import uuid4
 
 
 class Category(models.Model):
-    name = models.CharField(max_length=80, unique=True)
+    name = models.CharField(max_length=80)
     slug = models.SlugField(max_length=96, unique=True, blank=True)
     accent = models.CharField(max_length=16, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
@@ -23,7 +23,16 @@ class Category(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.name)
+            base = slugify(self.name) or "category"
+            if self.parent_id:
+                parent_slug = getattr(self.parent, "slug", "") or str(self.parent_id)
+                base = f"{parent_slug}-{base}"
+            slug = base
+            n = 2
+            while Category.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
         super().save(*args, **kwargs)
 
     def __str__(self):
