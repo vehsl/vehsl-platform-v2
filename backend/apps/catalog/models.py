@@ -68,9 +68,15 @@ class Product(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     origin_location = models.JSONField(default=dict, blank=True)
     lead_time_days = models.PositiveIntegerField(default=0)
+    weight_grams = models.PositiveIntegerField(default=500)
+    ship_time_min_days = models.PositiveIntegerField(default=2)
+    ship_time_max_days = models.PositiveIntegerField(default=3)
+    sample_available = models.BooleanField(default=False)
+    sample_ship_days = models.PositiveIntegerField(default=3)
     vehsl_rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     seller_rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     ip_protection_level = models.CharField(max_length=16, choices=IpProtectionLevel.choices, default=IpProtectionLevel.LOW)
+    detail_config = models.JSONField(default=dict, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -204,8 +210,13 @@ class ProductMedia(models.Model):
         DOCUMENT = "document", "Document"
 
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="media")
+    variation = models.ForeignKey(ProductVariation, on_delete=models.SET_NULL, null=True, blank=True, related_name="media")
     media_type = models.CharField(max_length=16, choices=MediaType.choices)
-    url = models.URLField()
+    url = models.URLField(blank=True)
+    storage_key = models.CharField(max_length=512, blank=True)
+    title = models.CharField(max_length=160, blank=True)
+    content_type = models.CharField(max_length=128, blank=True)
+    size_bytes = models.BigIntegerField(default=0)
     position = models.PositiveIntegerField(default=0)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
@@ -264,3 +275,34 @@ class ComplianceRule(models.Model):
 
     def __str__(self):
         return f"rule:{self.pk}"
+
+
+class ShippingRate(models.Model):
+    class Method(models.TextChoices):
+        SEA = "sea", "Sea"
+        AIR = "air", "Air"
+        EXPRESS = "express", "Express"
+
+    method = models.CharField(max_length=16, choices=Method.choices)
+    origin_country = models.CharField(max_length=64, blank=True)
+    dest_country = models.CharField(max_length=64, blank=True)
+
+    currency = models.CharField(max_length=3, default="USD")
+    base_fee = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+    price_per_kg = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+    per_unit_fee = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+
+    transit_min_days = models.PositiveIntegerField(default=1)
+    transit_max_days = models.PositiveIntegerField(default=1)
+
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["method", "active", "updated_at"], name="shiprate_method_active_upd"),
+            models.Index(fields=["origin_country", "dest_country"], name="shiprate_origin_dest"),
+        ]
+
+    def __str__(self):
+        return f"shipping_rate:{self.method}:{self.origin_country or '*'}->{self.dest_country or '*'}:{self.id}"

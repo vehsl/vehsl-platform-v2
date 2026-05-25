@@ -240,6 +240,7 @@ class SellerProfile(models.Model):
     verification_status = models.CharField(max_length=16, choices=VerificationStatus.choices, default=VerificationStatus.PENDING)
     country = models.CharField(max_length=64, blank=True)
     region = models.CharField(max_length=64, blank=True)
+    warehouse_location = models.JSONField(default=dict, blank=True)
     vehsl_rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     sample_low_threshold = models.PositiveIntegerField(default=0)
 
@@ -253,6 +254,39 @@ class SellerProfile(models.Model):
 
     def __str__(self):
         return f"seller_profile:{self.user_id}"
+
+
+class BuyerAddress(models.Model):
+    class Kind(models.TextChoices):
+        PRIMARY = "primary", "Primary"
+        SECONDARY = "secondary", "Secondary"
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="buyer_addresses")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+
+    contact_name = models.CharField(max_length=160, blank=True)
+    phone = models.CharField(max_length=32, blank=True)
+
+    country = models.CharField(max_length=64, blank=True)
+    region = models.CharField(max_length=64, blank=True)
+    city = models.CharField(max_length=64, blank=True)
+    street1 = models.CharField(max_length=128, blank=True)
+    street2 = models.CharField(max_length=128, blank=True)
+    postal_code = models.CharField(max_length=32, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "kind", "updated_at"], name="accounts_bu_user_kind_upd"),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "kind"], name="uniq_buyer_address_kind_per_user"),
+        ]
+
+    def __str__(self):
+        return f"buyer_address:{self.user_id}:{self.kind}:{self.id}"
 
 
 class UserSettings(models.Model):

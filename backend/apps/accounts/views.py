@@ -38,6 +38,7 @@ from .models import (
     AdminPlatformSettings,
     AdminUiNotificationState,
     AuditLog,
+    BuyerAddress,
     BuyerProfile,
     ChatMessage,
     ChatThread,
@@ -57,6 +58,7 @@ from .serializers import (
     AdminUserListSerializer,
     AdminUserWriteSerializer,
     AdminVerificationUserSerializer,
+    BuyerAddressSerializer,
     BuyerProfileSerializer,
     ChatMessageSerializer,
     ChatThreadSerializer,
@@ -1087,6 +1089,17 @@ class MeView(APIView):
         profile.save()
 
         return Response(UserSerializer(user).data)
+
+
+class BuyerAddressViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = BuyerAddressSerializer
+
+    def get_queryset(self):
+        return BuyerAddress.objects.filter(user=self.request.user).order_by("kind", "-updated_at")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 
 def _compact_relative_time(dt):
