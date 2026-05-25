@@ -44,13 +44,18 @@ class ComplianceRuleSerializer(serializers.ModelSerializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     seller_id = serializers.IntegerField(read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    hero_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             "id",
             "seller_id",
+            "seller_name",
             "category",
+            "category_name",
             "name",
             "title",
             "sku",
@@ -58,6 +63,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "description",
             "currency",
             "price",
+            "hero_image_url",
             "status",
             "origin_location",
             "lead_time_days",
@@ -67,6 +73,29 @@ class ProductSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_seller_name(self, obj: Product):
+        s = getattr(obj, "seller", None)
+        if not s:
+            return ""
+        full = f"{(getattr(s, 'first_name', '') or '').strip()} {(getattr(s, 'last_name', '') or '').strip()}".strip()
+        return full or getattr(s, "email", "") or getattr(s, "phone", "") or f"seller:{getattr(s, 'id', '')}"
+
+    def get_hero_image_url(self, obj: Product):
+        try:
+            media = list(getattr(obj, "media", []).all()) if hasattr(obj, "media") else []
+        except Exception:
+            media = []
+        for m in media:
+            try:
+                if (getattr(m, "deleted_at", None) is not None) or (getattr(m, "media_type", "") or "") != "image":
+                    continue
+                url = getattr(m, "url", "") or ""
+                if url:
+                    return url
+            except Exception:
+                continue
+        return ""
 
     def validate_currency(self, value: str):
         if not value or len(value) != 3:

@@ -51,12 +51,12 @@ export default function Page() {
       const user = raw ? (JSON.parse(raw) as { account_type?: string; role?: string } | null) : null;
       const acct = (user?.account_type || user?.role || "").toString().toLowerCase();
       if (acct === "seller") {
-        window.location.href = "/orders/1?tab=orders";
+        window.location.href = "/orders";
         return;
       }
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     } catch {
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     }
   }, []);
 

@@ -58,6 +58,64 @@ class CategoryViewSet(viewsets.ModelViewSet):
         audit(self.request.user, action="admin_category_deleted", target_type="category", target_id=str(obj_id), payload={})
         super().perform_destroy(instance)
 
+    @action(detail=False, methods=["get"], url_path="explore")
+    def explore(self, request):
+        base_qs = Category.objects.filter(deleted_at__isnull=True).exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
+        top = list(base_qs.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
+        if not top:
+            return Response({"categories": [], "total_products": 0})
+
+        top_ids = [c.id for c in top]
+        children = list(base_qs.filter(parent_id__in=top_ids).order_by("display_order", "sort_order", "name"))
+        all_cat_ids = top_ids + [c.id for c in children]
+
+        product_qs = Product.objects.filter(
+            deleted_at__isnull=True,
+            status__in=[Product.Status.APPROVED, Product.Status.ACTIVE],
+            category_id__in=all_cat_ids,
+        )
+        counts = {row["category_id"]: row["c"] for row in product_qs.values("category_id").annotate(c=Count("id"))}
+
+        children_by_parent: dict[int, list[Category]] = {}
+        for ch in children:
+            children_by_parent.setdefault(int(ch.parent_id), []).append(ch)
+
+        out = []
+        total_products = 0
+        for c in top:
+            chs = children_by_parent.get(int(c.id), [])
+            children_out = []
+            subtotal = int(counts.get(c.id, 0) or 0)
+            for ch in chs:
+                ch_count = int(counts.get(ch.id, 0) or 0)
+                subtotal += ch_count
+                children_out.append(
+                    {
+                        "id": int(ch.id),
+                        "name": ch.name,
+                        "slug": ch.slug,
+                        "accent": ch.accent or "",
+                        "icon": ch.icon or "",
+                        "product_count": ch_count,
+                        "parent_id": int(c.id),
+                    }
+                )
+
+            total_products += subtotal
+            out.append(
+                {
+                    "id": int(c.id),
+                    "name": c.name,
+                    "slug": c.slug,
+                    "accent": c.accent or "",
+                    "icon": c.icon or "",
+                    "product_count": subtotal,
+                    "children": children_out,
+                }
+            )
+
+        return Response({"categories": out, "total_products": total_products})
+
 
 class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
@@ -67,11 +125,24 @@ class ProductViewSet(viewsets.ModelViewSet):
     ordering = ["-created_at"]
 
     def get_queryset(self):
-        qs = Product.objects.select_related("category", "seller").filter(deleted_at__isnull=True)
+        qs = Product.objects.select_related("category", "seller").prefetch_related("media").filter(deleted_at__isnull=True)
         user = self.request.user
         if user.is_authenticated and user.account_type == "seller":
-            return qs.filter(seller=user)
-        return qs.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+            out = qs.filter(seller=user)
+        else:
+            out = qs.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+
+        cat = (self.request.query_params.get("category") or "").strip()
+        if cat:
+            try:
+                cat_id = int(cat)
+            except Exception:
+                cat_id = None
+            if cat_id:
+                out = out.filter(category_id=cat_id)
+            else:
+                out = out.filter(category__slug__iexact=cat)
+        return out
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:

@@ -1,313 +1,182 @@
 "use client";
 
-import { motion, AnimatePresence } from "motion/react";
-import { useState } from "react";
-import { Heart, Share2 } from "lucide-react";
-import { useBounce } from "./bounce-context";
-import { NavBar } from "./nav-bar";
-import { ProductHero } from "./product-hero";
-import { ProductConfig, colors, sizes, speeds } from "./product-config";
-import { ProductTabs } from "./product-tabs";
-import { OverviewTab } from "./overview-tab";
-import { SpecsTab } from "./specs-tab";
-import { CompareTab } from "./compare-tab";
-import { DocumentsTab } from "./documents-tab";
-import { useProductSelection } from "./product-selection-context";
-import { PriceGauge } from "./price-gauge";
-import { Bouncy } from "./bouncy";
-import { tiers } from "./quantity-tiers";
-import { SharePopup } from "./share-popup";
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Heart, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 
-const tabs = [
-  { id: "overview", label: "Overview", content: <OverviewTab /> },
-  { id: "specs", label: "Specifications", content: <SpecsTab /> },
-  { id: "documents", label: "Documents", content: <DocumentsTab /> },
-  { id: "compare", label: "Compare", content: <CompareTab /> },
-];
+import { fetchJsonAuthed } from "@/lib/api";
+
+type Product = {
+  id: number;
+  name: string;
+  title: string;
+  description: string;
+  currency: string;
+  price: string;
+  category: number;
+  category_name?: string;
+  seller_id?: number;
+  seller_name?: string;
+  hero_image_url?: string;
+};
+
+function fmtMoney(currency: string, amount: string) {
+  const num = Number(amount);
+  if (!Number.isFinite(num)) return `${currency} ${amount}`;
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(num);
+  } catch {
+    return `${currency} ${amount}`;
+  }
+}
 
 export function ProductPage() {
-  const [isFavorited, setIsFavorited] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
-  const [linkCopied, setLinkCopied] = useState(false);
-  const { selection, selectedTier, selectedDelivery, selectedLocation } = useProductSelection();
-  const { cartCount } = useBounce();
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const productId = useMemo(() => Number(params?.id || 0), [params?.id]);
 
-  const quantityActive =
-    selection.color !== null && selection.size !== null && selection.speed !== null;
+  const [loading, setLoading] = useState(true);
+  const [product, setProduct] = useState<Product | null>(null);
+  const [wishlisted, setWishlisted] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
-  const currentTier = selectedTier ?? tiers[0];
-  const deliverySurcharge = selectedDelivery?.extraCostPerUnit ?? 0;
-  const locationSurcharge = selectedLocation?.locationSurcharge ?? 0;
-  const currentPrice = currentTier.price + deliverySurcharge + locationSurcharge;
-  const highestPrice = tiers[0].price + 3.85 + 1.0;
-  const lowestPrice = tiers[tiers.length - 1].price;
-  const priceProgress =
-    highestPrice === lowestPrice ? 1 : (highestPrice - currentPrice) / (highestPrice - lowestPrice);
-
-  const handleFavorite = () => setIsFavorited((f) => !f);
-  const handleShare = () => {
-    if (!shareOpen) {
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 4000);
+  const fetchProduct = useCallback(async () => {
+    if (!productId || !Number.isFinite(productId)) {
+      setProduct(null);
+      setLoading(false);
+      return;
     }
-    setShareOpen((o) => !o);
-  };
+    setLoading(true);
+    try {
+      const data = (await fetchJsonAuthed(`/api/v1/products/${productId}/`)) as Product;
+      setProduct(data && typeof data === "object" ? data : null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load product.";
+      toast.error(msg);
+      setProduct(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [productId]);
+
+  useEffect(() => {
+    void fetchProduct();
+  }, [fetchProduct]);
+
+  const toggleWishlist = useCallback(async () => {
+    if (!product) return;
+    if (toggling) return;
+    setToggling(true);
+    try {
+      await fetchJsonAuthed(`/api/v1/wishlist/toggle/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_id: product.id }),
+      });
+      setWishlisted((x) => !x);
+      toast.success(wishlisted ? "Removed from wishlist" : "Saved to wishlist");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Wishlist update failed.";
+      toast.error(msg);
+    } finally {
+      setToggling(false);
+    }
+  }, [product, toggling, wishlisted]);
 
   return (
-    <div
-      className="min-h-dvh bg-white"
-      style={{ fontFamily: "'Urbanist', system-ui, -apple-system, sans-serif" }}
-    >
-      <NavBar />
-
-      <main className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2 }}
-          className="flex flex-wrap items-center gap-2 py-5 text-[#86868b]"
-          style={{ fontSize: 13 }}
-        >
-          <span className="hover:text-[#1d1d1f] cursor-pointer transition-colors">Electronics</span>
-          <span>/</span>
-          <span className="hover:text-[#1d1d1f] cursor-pointer transition-colors">Cables</span>
-          <span>/</span>
-          <span className="text-[#1d1d1f]">USB-C to USB-C</span>
-        </motion.div>
-
-        <section className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-10 lg:gap-16 pb-16">
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.6, ease: [0.25, 0.1, 0.25, 1] }}
+    <div className="min-h-dvh bg-white font-urbanist">
+      <div className="mx-auto max-w-[1120px] px-4 sm:px-6 pt-10 pb-10">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <button
+            type="button"
+            onClick={() => router.push("/explore")}
+            className="inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-bold bg-white/55 border border-black/[0.06] hover:bg-white/75 transition text-[#1A1A1A]/60"
           >
-            <div className="lg:sticky lg:top-24">
-              <AnimatePresence>
-                {(selection.color !== null || selection.size !== null || selection.speed !== null) && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.35, ease: [0.25, 0.1, 0.25, 1] }}
-                    className="overflow-hidden mb-3"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      {selection.color !== null && (
-                        <motion.div
-                          key={`color-${selection.color}`}
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-full"
-                          style={{ backgroundColor: "#f9f8f5", border: "1px solid #eee9e2" }}
-                        >
-                          <div
-                            className="rounded-full shrink-0"
-                            style={{
-                              width: 10,
-                              height: 10,
-                              backgroundColor: colors[selection.color].hex,
-                              border:
-                                colors[selection.color].hex === "#ffffff"
-                                  ? "1.5px solid #d4d4d4"
-                                  : "1.5px solid transparent",
-                              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                            }}
-                          />
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: "#6e6e73",
-                              fontFamily: "'Urbanist', sans-serif",
-                            }}
-                          >
-                            {colors[selection.color].name}
-                          </span>
-                        </motion.div>
-                      )}
-                      {selection.size !== null && (
-                        <motion.div
-                          key={`size-${selection.size}`}
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-full"
-                          style={{ backgroundColor: "#f9f8f5", border: "1px solid #eee9e2" }}
-                        >
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: "#6e6e73",
-                              fontFamily: "'Urbanist', sans-serif",
-                            }}
-                          >
-                            {sizes[selection.size].label} cable
-                          </span>
-                        </motion.div>
-                      )}
-                      {selection.speed !== null && (
-                        <motion.div
-                          key={`speed-${selection.speed}`}
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-full"
-                          style={{ backgroundColor: "#f9f8f5", border: "1px solid #eee9e2" }}
-                        >
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: "#6e6e73",
-                              fontFamily: "'Urbanist', sans-serif",
-                            }}
-                          >
-                            {speeds[selection.speed].label}
-                          </span>
-                        </motion.div>
-                      )}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+            <ArrowLeft size={14} />
+            Back to explore
+          </button>
+          <button
+            type="button"
+            onClick={() => void fetchProduct()}
+            className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/55 border border-black/[0.06] hover:bg-white/75 transition text-[#1A1A1A]/60"
+            disabled={loading}
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
 
-              <div className="relative">
-                <AnimatePresence mode="wait">
-                  {quantityActive ? (
-                    <motion.div
-                      key="price-gauge"
-                      initial={{ opacity: 0, scale: 0.92 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      transition={{ duration: 0.5, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="relative overflow-hidden rounded-[28px] aspect-[4/3] flex items-center justify-center"
-                      style={{ background: "linear-gradient(145deg, #fef9f4, #f5f0eb, #fdf6f0)" }}
-                    >
-                      <div
-                        className="absolute inset-0 pointer-events-none"
-                        style={{
-                          background:
-                            "radial-gradient(circle at 50% 50%, rgba(86,215,234,0.08) 0%, transparent 65%)",
-                        }}
-                      />
-                      <div className="flex flex-col items-center gap-4">
-                        <Bouncy target="price">
-                          <PriceGauge price={currentPrice} totalUnits={cartCount} progress={priceProgress} />
-                        </Bouncy>
-                        <motion.p
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.2, duration: 0.4 }}
-                          style={{ fontSize: 13, fontWeight: 500, color: "#86868b", textAlign: "center" }}
-                        >
-                          {locationSurcharge > 0 && deliverySurcharge > 0
-                            ? `${selectedTier ? selectedTier.label : "Base"} + $${deliverySurcharge.toFixed(2)} delivery + $${locationSurcharge.toFixed(2)} inland`
-                            : locationSurcharge > 0
-                              ? `${selectedTier ? selectedTier.label : "Base"} + $${locationSurcharge.toFixed(2)} inland transport`
-                              : deliverySurcharge > 0
-                                ? `${selectedTier ? selectedTier.label : "Base"} + $${deliverySurcharge.toFixed(2)} delivery`
-                                : selectedTier
-                                  ? `${selectedTier.label} pricing`
-                                  : "Select quantity to see pricing"}
-                        </motion.p>
-                      </div>
-                    </motion.div>
-                  ) : (
-                    <motion.div
-                      key="product-hero"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0, scale: 0.98 }}
-                      transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
-                    >
-                      <ProductHero />
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.4, duration: 0.5 }}
-                className="flex items-center justify-end gap-2 mt-4"
-              >
-                <motion.button
-                  onClick={handleFavorite}
-                  whileTap={{ scale: 0.92 }}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-full transition-colors cursor-pointer"
-                  style={{
-                    backgroundColor: isFavorited ? "#ff2d5514" : "#f5f5f7",
-                    border: isFavorited ? "1px solid #ff2d5525" : "1px solid transparent",
-                  }}
-                >
-                  <motion.div
-                    animate={isFavorited ? { scale: [1, 1.3, 1] } : { scale: 1 }}
-                    transition={{ duration: 0.35 }}
-                  >
-                    <Heart
-                      size={16}
-                      fill={isFavorited ? "#ff2d55" : "none"}
-                      stroke={isFavorited ? "#ff2d55" : "#86868b"}
-                      strokeWidth={1.8}
-                    />
-                  </motion.div>
-                  <span
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      color: isFavorited ? "#ff2d55" : "#6e6e73",
-                    }}
-                  >
-                    {isFavorited ? "Saved" : "Save"}
-                  </span>
-                </motion.button>
-
-                <motion.button
-                  onClick={handleShare}
-                  whileTap={{ scale: 0.92 }}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-[#f5f5f7] hover:bg-[#eeeef0] transition-colors cursor-pointer"
-                >
-                  <Share2 size={15} className="text-[#86868b]" />
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "#6e6e73" }}>Share</span>
-                </motion.button>
-
-                <SharePopup open={shareOpen} onClose={() => setShareOpen(false)} linkCopied={linkCopied} />
-              </motion.div>
+        {loading ? (
+          <div className="mt-8 rounded-[26px] bg-white/55 border border-black/[0.06] p-6 text-[#1A1A1A]/45">
+            Loading product…
+          </div>
+        ) : !product ? (
+          <div className="mt-8 rounded-[26px] bg-white/55 border border-black/[0.06] p-6">
+            <div className="text-[16px] font-black text-[#1A1A1A]/75">Product not found</div>
+            <div className="mt-1 text-[13px] font-medium text-[#1A1A1A]/40">
+              This product may be unavailable or removed.
             </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.6, ease: [0.25, 0.1, 0.25, 1], delay: 0.1 }}
-            className="lg:pt-2"
-          >
-            <ProductConfig />
-          </motion.div>
-        </section>
-
-        <div className="h-px bg-gradient-to-r from-transparent via-[#e8e8ed] to-transparent" />
-
-        <section className="py-16">
-          <ProductTabs tabs={tabs} />
-        </section>
-
-        <div className="h-px bg-gradient-to-r from-transparent via-[#e8e8ed] to-transparent" />
-
-        <footer className="py-10 border-t border-black/5">
-          <div
-            className="flex flex-col md:flex-row items-center justify-between gap-4 text-[#86868b]"
-            style={{ fontSize: 13 }}
-          >
-            <span>Vehsl  ·  Making sourcing simple</span>
-            <div className="flex items-center gap-6">
-              <span className="hover:text-[#1d1d1f] cursor-pointer transition-colors">Help</span>
-              <span className="hover:text-[#1d1d1f] cursor-pointer transition-colors">Terms</span>
-              <span className="hover:text-[#1d1d1f] cursor-pointer transition-colors">Privacy</span>
+            <div className="mt-5">
+              <Link href="/explore" className="text-[13px] font-bold text-blue-600 hover:underline">
+                Go to explore
+              </Link>
             </div>
           </div>
-        </footer>
-      </main>
+        ) : (
+          <div className="mt-8 grid grid-cols-1 lg:grid-cols-[440px_1fr] gap-6 items-start">
+            <div className="rounded-[26px] bg-white/55 border border-black/[0.06] overflow-hidden">
+              {product.hero_image_url ? (
+                <img src={product.hero_image_url} alt={product.title || product.name} className="h-[340px] w-full object-cover" />
+              ) : (
+                <div className="h-[340px] w-full bg-black/[0.03]" />
+              )}
+            </div>
+
+            <div className="rounded-[26px] bg-white/55 border border-black/[0.06] p-6">
+              <div className="text-[12px] font-semibold text-[#1A1A1A]/40">
+                {(product.category_name || "").trim() || "Category"} · {(product.seller_name || "").trim() || "Seller"}
+              </div>
+              <div className="mt-2 text-[28px] sm:text-[34px] font-black tracking-tight text-[#1A1A1A] leading-[1.05]">
+                {product.title || product.name}
+              </div>
+              <div className="mt-3 text-[16px] font-black text-[#1A1A1A]/75">
+                {fmtMoney(product.currency, product.price)}
+              </div>
+              {product.description ? (
+                <div className="mt-4 text-[13px] font-medium text-[#1A1A1A]/45 whitespace-pre-wrap">
+                  {product.description}
+                </div>
+              ) : null}
+
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void toggleWishlist()}
+                  disabled={toggling}
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/70 border border-black/[0.06] hover:bg-white transition"
+                >
+                  <Heart size={14} className={wishlisted ? "text-[#ff2d55]" : "text-[#1A1A1A]/45"} fill={wishlisted ? "#ff2d55" : "none"} />
+                  {wishlisted ? "Saved" : "Save"}
+                </button>
+                <Link
+                  href="/checkout"
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-black text-white hover:bg-black/90 transition"
+                >
+                  Continue to checkout
+                </Link>
+                <Link
+                  href="/messages"
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/70 border border-black/[0.06] hover:bg-white transition"
+                >
+                  Message
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

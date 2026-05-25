@@ -123,9 +123,9 @@ export default function Page() {
         window.location.href = "/admin";
         return;
       }
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     } catch {
-      window.location.href = returnTo || "/orders/1?tab=orders";
+      window.location.href = returnTo || "/orders";
     }
   }, [returnTo]);
 

@@ -1,15 +1,86 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { motion } from "motion/react";
+import type { LucideIcon } from "lucide-react";
 import { ArrowLeft, ChevronRight, Search } from "lucide-react";
 
 import { cn } from "@/components/ui/utils";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
-import { categories } from "@/lib/categories";
+import { categories as fallbackCategories } from "@/lib/categories";
+import { fetchJsonAuthed } from "@/lib/api";
 
-function CategoryCard({ id }: { id: string }) {
-  const category = categories.find((c) => c.id === id)!;
+type UiSubcategory = {
+  id: string;
+  name: string;
+  icon: LucideIcon;
+  items: string[];
+  count: number;
+};
+
+type UiCategory = {
+  id: string;
+  name: string;
+  icon: LucideIcon;
+  accent: string;
+  count: number;
+  subcategories: UiSubcategory[];
+};
+
+type ExploreApiChild = {
+  id: number;
+  name: string;
+  slug: string;
+  accent: string;
+  icon: string;
+  product_count: number;
+  parent_id: number;
+};
+
+type ExploreApiCategory = {
+  id: number;
+  name: string;
+  slug: string;
+  accent: string;
+  icon: string;
+  product_count: number;
+  children: ExploreApiChild[];
+};
+
+type ExploreApiResponse = {
+  categories: ExploreApiCategory[];
+  total_products: number;
+};
+
+type ProductRow = {
+  id: number;
+  name: string;
+  title?: string;
+  currency: string;
+  price: string;
+  hero_image_url?: string;
+  seller_name?: string;
+};
+
+type ProductsApiResponse = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: ProductRow[];
+};
+
+function fmtMoney(currency: string, amount: string) {
+  const num = Number(amount);
+  if (!Number.isFinite(num)) return `${currency} ${amount}`;
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(num);
+  } catch {
+    return `${currency} ${amount}`;
+  }
+}
+
+function CategoryCard({ category, onClick }: { category: UiCategory; onClick: () => void }) {
   const Icon = category.icon;
   const chips = category.subcategories.slice(0, 3).map((s) => s.name);
   const overflow = Math.max(category.subcategories.length - chips.length, 0);
@@ -18,7 +89,13 @@ function CategoryCard({ id }: { id: string }) {
     <motion.div
       whileHover={{ y: -4 }}
       transition={{ duration: 0.18, ease: "easeOut" }}
-      className="rounded-3xl border border-white/60 bg-white/85 p-6 backdrop-blur-sm shadow-soft"
+      className="h-full rounded-3xl border border-white/60 bg-white/85 p-6 backdrop-blur-sm shadow-soft flex flex-col"
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onClick();
+      }}
     >
       <div className="flex items-start justify-between">
         <div
@@ -37,7 +114,7 @@ function CategoryCard({ id }: { id: string }) {
         <div className="mt-1 text-xs text-gray-500">{category.subcategories.length} types</div>
       </div>
 
-      <div className="mt-5 flex flex-wrap gap-2">
+      <div className="mt-5 flex flex-wrap gap-2 min-h-[42px]">
         {chips.map((c) => (
           <div key={c} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
             {c}
@@ -54,14 +131,14 @@ function CategoryCard({ id }: { id: string }) {
 }
 
 function SubcategoryCard({
-  categoryId,
-  subIndex,
+  category,
+  sub,
+  onSelect,
 }: {
-  categoryId: string;
-  subIndex: number;
+  category: UiCategory;
+  sub: UiSubcategory;
+  onSelect: () => void;
 }) {
-  const category = categories.find((c) => c.id === categoryId)!;
-  const sub = category.subcategories[subIndex]!;
   const Icon = sub.icon;
   const preview = sub.items
     .filter((x) => !x.startsWith("+"))
@@ -74,6 +151,12 @@ function SubcategoryCard({
       whileHover={{ y: -2 }}
       transition={{ duration: 0.18, ease: "easeOut" }}
       className="rounded-2xl border border-white/60 bg-white/85 p-5 shadow-soft"
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onSelect();
+      }}
     >
       <div className="flex items-center gap-3">
         <div
@@ -100,13 +183,14 @@ function SubcategoryCard({
 }
 
 function CategorySection({
-  id,
+  category,
   setRef,
+  onSelectSubcategory,
 }: {
-  id: string;
+  category: UiCategory;
   setRef: (id: string, el: HTMLElement | null) => void;
+  onSelectSubcategory: (s: UiSubcategory) => void;
 }) {
-  const category = categories.find((c) => c.id === id)!;
   const Icon = category.icon;
 
   return (
@@ -131,8 +215,13 @@ function CategorySection({
       </div>
 
       <div className="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-        {category.subcategories.slice(0, 9).map((_, i) => (
-          <SubcategoryCard key={`${category.id}-${i}`} categoryId={category.id} subIndex={i} />
+        {category.subcategories.slice(0, 9).map((s) => (
+          <SubcategoryCard
+            key={`${category.id}-${s.id}`}
+            category={category}
+            sub={s}
+            onSelect={() => onSelectSubcategory(s)}
+          />
         ))}
       </div>
     </section>
@@ -143,10 +232,12 @@ function StickyNav({
   visible,
   activeId,
   onJump,
+  categories,
 }: {
   visible: boolean;
   activeId: string | null;
   onJump: (id: string) => void;
+  categories: UiCategory[];
 }) {
   return (
     <motion.div
@@ -195,6 +286,19 @@ function StickyNav({
 
 export function ExploreShell() {
   const [search, setSearch] = useState("");
+  const [serverCategories, setServerCategories] = useState<ExploreApiCategory[] | null>(null);
+  const [serverTotalProducts, setServerTotalProducts] = useState<number | null>(null);
+  const [loadingCategories, setLoadingCategories] = useState(false);
+
+  const [productResults, setProductResults] = useState<ProductRow[]>([]);
+  const [searchingProducts, setSearchingProducts] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [productsTotal, setProductsTotal] = useState<number | null>(null);
+  const [productsPage, setProductsPage] = useState(1);
+  const [productsHasMore, setProductsHasMore] = useState(false);
+  const [loadingProductGrid, setLoadingProductGrid] = useState(false);
   const [stickyVisible, setStickyVisible] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -231,17 +335,96 @@ export function ExploreShell() {
     return () => obs.disconnect();
   }, []);
 
-  const stats = useMemo(() => {
-    const categoryCount = categories.length;
-    const subCount = categories.reduce((acc, c) => acc + c.subcategories.length, 0);
-    const products = categories.reduce((acc, c) => acc + c.count, 0);
-    return { categoryCount, subCount, products };
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingCategories(true);
+    fetchJsonAuthed("/api/v1/categories/explore/")
+      .then((data) => {
+        if (cancelled) return;
+        const payload = data as ExploreApiResponse;
+        if (!payload || !Array.isArray(payload.categories)) {
+          setServerCategories([]);
+          setServerTotalProducts(0);
+          return;
+        }
+        setServerCategories(payload.categories);
+        setServerTotalProducts(typeof payload.total_products === "number" ? payload.total_products : null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setServerCategories([]);
+        setServerTotalProducts(null);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingCategories(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const fallbackUiCategories: UiCategory[] = useMemo(() => {
+    return fallbackCategories
+      .filter((c) => c.id.toLowerCase() !== "other" && c.name.toLowerCase() !== "other")
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        icon: c.icon,
+        accent: c.accent,
+        count: 0,
+      subcategories: c.subcategories.map((s) => ({
+        id: `${c.id}-${s.name.toLowerCase().replace(/\s+/g, "-")}`,
+        name: s.name,
+        icon: s.icon,
+        items: s.items,
+        count: 0,
+      })),
+      }));
+  }, []);
+
+  const uiCategories: UiCategory[] = useMemo(() => {
+    const server = Array.isArray(serverCategories) ? serverCategories : [];
+    const serverBySlug = new Map(server.map((c) => [String(c.slug || "").toLowerCase(), c]));
+
+    return fallbackUiCategories.map((c) => {
+      const serverCat = serverBySlug.get(c.id.toLowerCase()) || null;
+      const accent = (serverCat?.accent || c.accent || "#3B82F6").toString();
+      const children = Array.isArray(serverCat?.children) ? serverCat!.children : [];
+      const byName = new Map(children.map((ch) => [String(ch.name || "").toLowerCase(), ch]));
+
+      return {
+        ...c,
+        accent,
+        count: Number(serverCat?.product_count || 0),
+        subcategories: c.subcategories.map((s) => {
+          const match = byName.get(s.name.toLowerCase()) || null;
+          return { ...s, count: Number(match?.product_count || 0) };
+        }),
+      };
+    });
+  }, [fallbackUiCategories, serverCategories]);
+
+  const stats = useMemo(() => {
+    const categoryCount = uiCategories.length;
+    const subCount = uiCategories.reduce((acc, c) => acc + c.subcategories.length, 0);
+    const products =
+      typeof serverTotalProducts === "number"
+        ? serverTotalProducts
+        : uiCategories.reduce((acc, c) => acc + (Number.isFinite(c.count) ? c.count : 0), 0);
+    return { categoryCount, subCount, products };
+  }, [serverTotalProducts, uiCategories]);
 
   const jumpTo = (id: string) => {
     const el = sectionRefs.current[id];
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const onSelectSubcategory = (s: UiSubcategory) => {
+    setSearch(s.name);
+    setSearchOpen(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const goDashboard = () => {
@@ -250,18 +433,70 @@ export function ExploreShell() {
       const user = raw ? (JSON.parse(raw) as { account_type?: string; role?: string } | null) : null;
       const acct = (user?.account_type || user?.role || "").toString().toLowerCase();
       if (acct === "seller") {
-        window.location.href = "/orders/1?tab=orders";
+        window.location.href = "/orders";
         return;
       }
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     } catch {
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     }
   };
 
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) {
+      setProductResults([]);
+      setSearchingProducts(false);
+      return;
+    }
+    setSearchingProducts(true);
+    const t = window.setTimeout(() => {
+      fetchJsonAuthed(`/api/v1/products/?search=${encodeURIComponent(q)}&page_size=8`)
+        .then((data) => {
+          const rows = Array.isArray(data?.results) ? (data.results as ProductRow[]) : [];
+          setProductResults(rows);
+        })
+        .catch(() => setProductResults([]))
+        .finally(() => setSearchingProducts(false));
+    }, 260);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
+  const fetchProductGrid = async (page: number, query: string) => {
+    setLoadingProductGrid(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("page_size", "24");
+      params.set("ordering", "-created_at");
+      if (query.trim().length >= 2) params.set("search", query.trim());
+
+      const data = (await fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)) as ProductsApiResponse;
+      const rows = Array.isArray(data?.results) ? data.results : [];
+      setProductsTotal(typeof data?.count === "number" ? data.count : null);
+      setProductsHasMore(Boolean(data?.next));
+      setProductsPage(page);
+      setProducts((prev) => (page <= 1 ? rows : [...prev, ...rows]));
+    } catch {
+      if (page <= 1) setProducts([]);
+      setProductsHasMore(false);
+      setProductsTotal(null);
+    } finally {
+      setLoadingProductGrid(false);
+    }
+  };
+
+  useEffect(() => {
+    const q = search.trim();
+    const t = window.setTimeout(() => {
+      void fetchProductGrid(1, q);
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
   return (
     <div className="bg-vehsl-watercolor-explore font-inter min-h-dvh w-full overflow-x-hidden">
-      <StickyNav visible={stickyVisible} activeId={activeId} onJump={jumpTo} />
+      <StickyNav visible={stickyVisible} activeId={activeId} onJump={jumpTo} categories={uiCategories} />
 
       <div className="mx-auto max-w-6xl px-4 pt-6 sm:px-6">
         <div className="flex items-center justify-between">
@@ -284,30 +519,117 @@ export function ExploreShell() {
 
           <div className="mt-4 text-sm text-[#7c7f87]">
             {stats.categoryCount} categories · {stats.subCount} subcategories · {stats.products}+ products
+            {loadingCategories ? " · Loading categories…" : ""}
           </div>
 
           <div className="mt-8">
-            <div className="flex h-14 w-full max-w-[560px] items-center gap-3 rounded-full bg-white/90 px-6 shadow-soft">
-              <Search className="h-5 w-5 text-[#7c7f87]" strokeWidth={1.5} />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search anything — 'solar panel', 'mango', 'sofa'…"
-                className="w-full bg-transparent text-sm text-[#0f1115] outline-none placeholder:text-[#7c7f87]/70"
-              />
+            <div className="relative w-full max-w-[560px]">
+              <div className="flex h-14 w-full items-center gap-3 rounded-full bg-white/90 px-6 shadow-soft">
+                <Search className="h-5 w-5 text-[#7c7f87]" strokeWidth={1.5} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onFocus={() => setSearchOpen(true)}
+                  onBlur={() => window.setTimeout(() => setSearchOpen(false), 120)}
+                  placeholder="Search anything — 'solar panel', 'mango', 'sofa'…"
+                  className="w-full bg-transparent text-sm text-[#0f1115] outline-none placeholder:text-[#7c7f87]/70"
+                />
+              </div>
+              {searchOpen && (searchingProducts || productResults.length > 0) ? (
+                <div className="absolute left-0 right-0 mt-2 overflow-hidden rounded-2xl border border-white/60 bg-white/95 shadow-soft">
+                  <div className="px-4 py-3 text-xs font-semibold text-[#7c7f87]">
+                    {searchingProducts ? "Searching…" : "Top matches"}
+                  </div>
+                  <div className="divide-y divide-black/[0.04]">
+                    {productResults.map((p) => (
+                      <Link
+                        key={p.id}
+                        href={`/products/${p.id}`}
+                        className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-black/[0.02]"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] font-semibold text-[#0f1115]">{p.title || p.name}</div>
+                          <div className="truncate text-[12px] text-[#7c7f87]">{p.seller_name || ""}</div>
+                        </div>
+                        <div className="shrink-0 text-[12px] font-semibold text-[#0f1115]">
+                          {fmtMoney(p.currency, p.price)}
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
 
         <div className="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-          {categories.map((c) => (
-            <CategoryCard key={c.id} id={c.id} />
+          {uiCategories.map((c) => (
+            <CategoryCard key={c.id} category={c} onClick={() => jumpTo(c.id)} />
           ))}
         </div>
 
+        <div className="mt-12">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <div className="text-[18px] font-bold text-[#0f1115]">Products</div>
+              <div className="mt-1 text-[12px] text-[#7c7f87]">
+                {typeof productsTotal === "number"
+                  ? `${productsTotal} result${productsTotal === 1 ? "" : "s"}`
+                  : loadingProductGrid
+                    ? "Loading…"
+                    : ""}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+            {products.map((p) => (
+              <Link
+                key={p.id}
+                href={`/products/${p.id}`}
+                className="h-full rounded-2xl border border-white/60 bg-white/85 shadow-soft overflow-hidden hover:bg-white/95 transition flex flex-col"
+              >
+                {p.hero_image_url ? (
+                  <img src={p.hero_image_url} alt={p.title || p.name} className="h-[140px] w-full object-cover" />
+                ) : (
+                  <div className="h-[140px] w-full bg-black/[0.03]" />
+                )}
+                <div className="p-4 flex-1 flex flex-col">
+                  <div className="text-[13px] font-semibold text-[#0f1115] line-clamp-2">
+                    {p.title || p.name}
+                  </div>
+                  <div className="mt-1 text-[12px] text-[#7c7f87] truncate">{p.seller_name || ""}</div>
+                  <div className="mt-auto pt-3 text-[12px] font-semibold text-[#0f1115]">
+                    {fmtMoney(p.currency, p.price)}
+                  </div>
+                </div>
+              </Link>
+            ))}
+            {!loadingProductGrid && products.length === 0 ? (
+              <div className="col-span-2 md:col-span-3 lg:col-span-4 rounded-2xl border border-white/60 bg-white/80 p-6 text-[13px] text-[#7c7f87]">
+                No products found.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-6 flex justify-center">
+            {productsHasMore ? (
+              <button
+                type="button"
+                disabled={loadingProductGrid}
+                onClick={() => void fetchProductGrid(productsPage + 1, search.trim())}
+                className="rounded-full bg-white/80 border border-white/70 px-5 py-2.5 text-[12px] font-semibold text-[#0f1115] hover:bg-white disabled:opacity-60"
+              >
+                {loadingProductGrid ? "Loading…" : "Load more"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+
         <div className="mt-14">
-          {categories.map((c) => (
-            <CategorySection key={c.id} id={c.id} setRef={setRef} />
+          {uiCategories.map((c) => (
+            <CategorySection key={c.id} category={c} setRef={setRef} onSelectSubcategory={onSelectSubcategory} />
           ))}
         </div>
       </div>
