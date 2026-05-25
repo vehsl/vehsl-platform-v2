@@ -1308,12 +1308,13 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
     def opt(kind: str, label: str):
         return {"kind": kind, "label": label}
 
+    identity_required = 2 if is_seller else 1
     groups = [
         {
             "key": "identity",
             "label": "Identity Document",
             "required": True,
-            "required_count": 2,
+            "required_count": identity_required,
             "options": [
                 opt(KycDocument.Kind.PASSPORT, "Passport"),
                 opt(KycDocument.Kind.ID_CARD, "National ID"),
@@ -1525,6 +1526,47 @@ class KycDocumentsMeView(APIView):
                     {"detail": "Only one document can be uploaded for this field. Remove the existing document first."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            target_group = None
+            for g in _kyc_requirement_groups_for_user(request.user):
+                opts = g.get("options") or []
+                if any((o.get("kind") or "") == kind for o in opts):
+                    target_group = g
+                    break
+
+            if target_group is not None:
+                try:
+                    required_count = int(target_group.get("required_count") or 1)
+                except Exception:
+                    required_count = 1
+                opts = target_group.get("options") or []
+                group_kinds = {o.get("kind") for o in opts if o.get("kind")}
+                if required_count > 0 and group_kinds:
+                    group_docs = list(
+                        KycDocument.objects.filter(user=request.user, kind__in=group_kinds).order_by("-uploaded_at")
+                    )
+                    seen_kinds: set[str] = set()
+                    valid_unique = 0
+                    for d in group_docs:
+                        k = (getattr(d, "kind", "") or "").lower()
+                        if k and k in seen_kinds:
+                            continue
+                        try:
+                            name = getattr(d.file, "name", "") or ""
+                            if name and default_storage.exists(name):
+                                valid_unique += 1
+                                if k:
+                                    seen_kinds.add(k)
+                        except Exception:
+                            continue
+                    if valid_unique >= required_count:
+                        label = (target_group.get("label") or "this section").strip() or "this section"
+                        return Response(
+                            {
+                                "detail": f"Only {required_count} document(s) can be uploaded for {label}. Remove an existing document first."
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
             doc = KycDocument(
                 user=request.user,

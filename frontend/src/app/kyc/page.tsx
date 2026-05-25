@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Upload, CheckCircle2, Clock, XCircle, FileText, RefreshCw, Eye, X, Trash2 } from "lucide-react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Upload, CheckCircle2, Clock, XCircle, FileText, RefreshCw, LogOut, Eye, X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/utils";
+import { fetchJsonAuthed } from "@/lib/api";
 
 type RequirementOption = { kind: string; label: string; doc_type?: string };
 type RequirementGroup = {
@@ -15,6 +16,7 @@ type RequirementGroup = {
   required: boolean;
   required_count?: number;
   uploaded_count?: number;
+  verified_count?: number;
   options: RequirementOption[];
   status: "missing" | "pending" | "verified" | "rejected";
   documents: Array<{
@@ -32,23 +34,17 @@ type RequirementGroup = {
 
 type KycDocumentRow = RequirementGroup["documents"][number];
 
-export default function KycPage() {
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="min-h-dvh bg-background text-foreground" />}>
+      <KycPageInner />
+    </Suspense>
+  );
+}
+
+function KycPageInner() {
   const router = useRouter();
-
-  const apiBase = useCallback(() => {
-    const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-    const normalize = (u: string) => u.replace(/\/$/, "");
-    if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) return normalize(fromEnv);
-    return normalize(`${window.location.protocol}//${window.location.hostname}:8000`);
-  }, []);
-
-  const access = useMemo(() => {
-    try {
-      return window.localStorage.getItem("vehsl.access") || "";
-    } catch {
-      return "";
-    }
-  }, []);
+  const searchParams = useSearchParams();
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -67,18 +63,35 @@ export default function KycPage() {
   const [previewObjectUrl, setPreviewObjectUrl] = useState("");
   const [previewError, setPreviewError] = useState("");
 
+  const logout = useCallback(async () => {
+    const refresh = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.refresh") || "";
+      } catch {
+        return "";
+      }
+    })();
+
+    try {
+      await fetchJsonAuthed("/api/v1/auth/logout", {
+        method: "POST",
+        body: JSON.stringify({ refresh }),
+      });
+    } catch {}
+
+    try {
+      window.localStorage.removeItem("vehsl.access");
+      window.localStorage.removeItem("vehsl.refresh");
+      window.localStorage.removeItem("vehsl.user");
+    } catch {}
+
+    window.location.href = "/?signin=1";
+  }, []);
+
   const fetchRequirements = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase()}/api/v1/kyc/requirements`, {
-        headers: access ? { Authorization: `Bearer ${access}` } : {},
-      });
-      if (res.status === 401) {
-        router.push("/?signin=1");
-        return;
-      }
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((data && (data.detail || data.error)) || `Request failed (${res.status})`);
+      const data = await fetchJsonAuthed("/api/v1/kyc/requirements");
       setRequirements(data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load verification requirements.";
@@ -87,7 +100,7 @@ export default function KycPage() {
     } finally {
       setLoading(false);
     }
-  }, [access, apiBase, router]);
+  }, []);
 
   useEffect(() => {
     fetchRequirements();
@@ -102,13 +115,7 @@ export default function KycPage() {
         fd.set("kind", kind);
         if (docType) fd.set("doc_type", docType);
         fd.set("file", file);
-        const res = await fetch(`${apiBase()}/api/v1/kyc/documents`, {
-          method: "POST",
-          headers: access ? { Authorization: `Bearer ${access}` } : {},
-          body: fd,
-        });
-        const data = await res.json().catch(() => null);
-        if (!res.ok) throw new Error((data && (data.detail || data.error)) || `Upload failed (${res.status})`);
+        await fetchJsonAuthed("/api/v1/kyc/documents", { method: "POST", body: fd });
         toast.success("Document uploaded.");
         await fetchRequirements();
       } catch (e) {
@@ -118,7 +125,7 @@ export default function KycPage() {
         setSubmitting(false);
       }
     },
-    [access, apiBase, fetchRequirements],
+    [fetchRequirements],
   );
 
   const removeDocument = useCallback(
@@ -129,12 +136,7 @@ export default function KycPage() {
 
       setSubmitting(true);
       try {
-        const res = await fetch(`${apiBase()}/api/v1/kyc/documents/${doc.id}`, {
-          method: "DELETE",
-          headers: access ? { Authorization: `Bearer ${access}` } : {},
-        });
-        const data = res.status === 204 ? null : await res.json().catch(() => null);
-        if (!res.ok) throw new Error((data && (data.detail || data.error)) || `Remove failed (${res.status})`);
+        await fetchJsonAuthed(`/api/v1/kyc/documents/${doc.id}`, { method: "DELETE" });
         if (previewDoc?.id === doc.id) setPreviewDoc(null);
         toast.success("Document removed.");
         await fetchRequirements();
@@ -145,7 +147,7 @@ export default function KycPage() {
         setSubmitting(false);
       }
     },
-    [access, apiBase, fetchRequirements, previewDoc],
+    [fetchRequirements, previewDoc],
   );
 
   const statusChip = (status: RequirementGroup["status"]) => {
@@ -189,6 +191,17 @@ export default function KycPage() {
     };
   }, [requirements]);
 
+  const continuePath = useMemo(() => {
+    const raw = (searchParams?.get("returnTo") || "").toString().trim();
+    if (raw.startsWith("/")) return raw;
+
+    const role = (requirements?.role || "").toLowerCase();
+    const accountType = (requirements?.account_type || "").toLowerCase();
+    if (role === "admin" || role === "manager" || role === "staff") return "/admin";
+    if (accountType === "buyer" || role === "buyer") return "/explore";
+    return "/orders";
+  }, [requirements?.account_type, requirements?.role, searchParams]);
+
   const browserUrl = useCallback((url: string) => {
     if (!url) return url;
     try {
@@ -214,7 +227,16 @@ export default function KycPage() {
     setPreviewObjectUrl("");
     setPreviewError("");
 
-    fetch(browserUrl(previewDoc.file_url))
+    fetch(browserUrl(previewDoc.file_url), {
+      headers: (() => {
+        const h = new Headers();
+        try {
+          const access = window.localStorage.getItem("vehsl.access") || "";
+          if (access) h.set("Authorization", `Bearer ${access}`);
+        } catch {}
+        return h;
+      })(),
+    })
       .then((res) => {
         if (!res.ok) throw new Error(`Document failed to load (${res.status})`);
         return res.blob();
@@ -245,10 +267,16 @@ export default function KycPage() {
               Upload required documents. After submission, you’ll wait for admin acceptance.
             </p>
           </div>
-          <Button variant="outline" className="rounded-full" onClick={fetchRequirements} disabled={loading || submitting}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="rounded-full" onClick={fetchRequirements} disabled={loading || submitting}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+            <Button variant="outline" className="rounded-full" onClick={logout} disabled={submitting}>
+              <LogOut className="h-4 w-4 mr-2" />
+              Logout
+            </Button>
+          </div>
         </div>
 
         <div className="mt-7 rounded-3xl border border-border/40 bg-card p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
@@ -273,6 +301,12 @@ export default function KycPage() {
                 {requirements.groups.map((g) => {
                   const chip = statusChip(g.status);
                   const uploadedKinds = new Set((g.documents || []).map((d) => d.kind));
+                  const requiredCount = Number(g.required_count || (g.required ? 1 : 0));
+                  const uploadedCount = Number(g.uploaded_count ?? uploadedKinds.size);
+                  const verifiedCount = Number(g.verified_count ?? 0);
+                  const isRejected = (g.status || "") === "rejected";
+                  const groupFilled = g.required ? uploadedCount >= requiredCount : false;
+                  const extraDocs = requiredCount ? Math.max(0, (g.documents || []).length - requiredCount) : 0;
                   return (
                     <div key={g.key} className="rounded-2xl border border-border/40 bg-muted/10 p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -294,7 +328,8 @@ export default function KycPage() {
                       <div className="mt-3 flex flex-wrap gap-2">
                         {g.options.map((o) => {
                           const alreadyUploaded = uploadedKinds.has(o.kind);
-                          const uploadLocked = alreadyUploaded || requirements.can_access_dashboard;
+                          const lockedByRequirement = groupFilled && !alreadyUploaded && !isRejected;
+                          const uploadLocked = alreadyUploaded || lockedByRequirement || requirements.can_access_dashboard;
                           return (
                             <label
                               key={o.kind}
@@ -308,6 +343,8 @@ export default function KycPage() {
                               title={
                                 requirements.can_access_dashboard
                                   ? "Your account is approved."
+                                  : lockedByRequirement
+                                    ? "Required documents are uploaded. Remove an existing document to upload a different one."
                                   : alreadyUploaded
                                     ? "Remove the existing document before uploading another for this field."
                                     : undefined
@@ -336,9 +373,17 @@ export default function KycPage() {
                       </div>
 
                       <div className="mt-4">
-                        <div className="text-[12px] text-muted-foreground mb-2">
-                          Uploaded ({g.documents?.length || 0})
+                        <div className="flex items-center justify-between gap-3 text-[12px] text-muted-foreground mb-2">
+                          <div>
+                            Uploaded {requiredCount ? `${Math.min(uploadedCount, requiredCount)}/${requiredCount}` : `(${uploadedCount})`}
+                          </div>
+                          {requiredCount ? <div>Verified {Math.min(verifiedCount, requiredCount)}/{requiredCount}</div> : null}
                         </div>
+                        {extraDocs > 0 ? (
+                          <div className="mb-2 text-[12px] text-[#9a5b00]">
+                            {extraDocs} extra document{extraDocs === 1 ? "" : "s"} uploaded. Remove extras to avoid delays.
+                          </div>
+                        ) : null}
                         {(g.documents || []).length === 0 ? (
                           <div className="text-[12px] text-muted-foreground/70">No documents uploaded yet.</div>
                         ) : (
@@ -390,7 +435,7 @@ export default function KycPage() {
                 </div>
                 <Button
                   className="rounded-full"
-                  onClick={() => router.push("/orders/1")}
+                  onClick={() => router.push(continuePath)}
                   disabled={!requirements.can_access_dashboard}
                 >
                   Continue

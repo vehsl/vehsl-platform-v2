@@ -42,7 +42,7 @@ export default function Page() {
       return;
     }
     if (!isAdmin) {
-      router.replace("/orders/1");
+      router.replace("/orders");
     }
   }, [bootstrapped, isAdmin, router, user]);
 
