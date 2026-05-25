@@ -44,8 +44,12 @@ class CartMeView(APIView):
 
     def get(self, request):
         cart, _ = Cart.objects.get_or_create(buyer=request.user)
-        cart = Cart.objects.filter(id=cart.id).prefetch_related("items", "items__product", "items__variation").get()
-        return Response(CartSerializer(cart).data)
+        cart = (
+            Cart.objects.filter(id=cart.id)
+            .prefetch_related("items", "items__product", "items__product__seller", "items__variation")
+            .get()
+        )
+        return Response(CartSerializer(cart, context={"request": request}).data)
 
     def put(self, request):
         ser = CartUpsertSerializer(data=request.data)
@@ -70,12 +74,65 @@ class CartMeView(APIView):
                 },
             )
 
-        cart = Cart.objects.filter(id=cart.id).prefetch_related("items", "items__product", "items__variation").get()
-        return Response(CartSerializer(cart).data)
+        cart = (
+            Cart.objects.filter(id=cart.id)
+            .prefetch_related("items", "items__product", "items__product__seller", "items__variation")
+            .get()
+        )
+        return Response(CartSerializer(cart, context={"request": request}).data)
 
     def delete(self, request):
         CartItem.objects.filter(cart__buyer=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CartItemMeDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsBuyer]
+
+    def patch(self, request, pk: int):
+        try:
+            pk = int(pk)
+        except Exception:
+            return Response({"detail": "Invalid item."}, status=status.HTTP_400_BAD_REQUEST)
+
+        item = (
+            CartItem.objects.filter(id=pk, cart__buyer=request.user)
+            .select_related("product", "product__seller", "variation")
+            .first()
+        )
+        if not item:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        qty = request.data.get("quantity")
+        try:
+            qty = int(qty)
+        except Exception:
+            return Response({"detail": "quantity is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if qty < 1:
+            return Response({"detail": "quantity must be >= 1."}, status=status.HTTP_400_BAD_REQUEST)
+
+        item.quantity = qty
+        item.save(update_fields=["quantity"])
+        cart = (
+            Cart.objects.filter(id=item.cart_id)
+            .prefetch_related("items", "items__product", "items__product__seller", "items__variation")
+            .get()
+        )
+        return Response(CartSerializer(cart, context={"request": request}).data)
+
+    def delete(self, request, pk: int):
+        try:
+            pk = int(pk)
+        except Exception:
+            return Response({"detail": "Invalid item."}, status=status.HTTP_400_BAD_REQUEST)
+        CartItem.objects.filter(id=pk, cart__buyer=request.user).delete()
+        cart, _ = Cart.objects.get_or_create(buyer=request.user)
+        cart = (
+            Cart.objects.filter(id=cart.id)
+            .prefetch_related("items", "items__product", "items__product__seller", "items__variation")
+            .get()
+        )
+        return Response(CartSerializer(cart, context={"request": request}).data)
 
 
 class WishlistViewSet(viewsets.GenericViewSet):

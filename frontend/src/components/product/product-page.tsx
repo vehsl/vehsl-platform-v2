@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Heart, RefreshCw } from "lucide-react";
+import { ArrowLeft, Heart, RefreshCw, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
 
 import { fetchJsonAuthed } from "@/lib/api";
+import { useCart } from "@/components/product/cart-context";
 
 type Product = {
   id: number;
@@ -36,6 +37,7 @@ export function ProductPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const productId = useMemo(() => Number(params?.id || 0), [params?.id]);
+  const { addToCart } = useCart();
 
   const [loading, setLoading] = useState(true);
   const [product, setProduct] = useState<Product | null>(null);
@@ -84,6 +86,17 @@ export function ProductPage() {
       setToggling(false);
     }
   }, [product, toggling, wishlisted]);
+
+  const addThisToCart = useCallback(async () => {
+    if (!product) return;
+    try {
+      await addToCart(product.id, 1, null);
+      toast.success("Added to cart");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Add to cart failed.";
+      toast.error(msg);
+    }
+  }, [addToCart, product]);
 
   return (
     <div className="min-h-dvh bg-white font-urbanist">
@@ -159,6 +172,14 @@ export function ProductPage() {
                 >
                   <Heart size={14} className={wishlisted ? "text-[#ff2d55]" : "text-[#1A1A1A]/45"} fill={wishlisted ? "#ff2d55" : "none"} />
                   {wishlisted ? "Saved" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void addThisToCart()}
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[12px] font-black bg-white/70 border border-black/[0.06] hover:bg-white transition"
+                >
+                  <ShoppingCart size={14} className="text-[#1A1A1A]/55" />
+                  Add to cart
                 </button>
                 <Link
                   href="/checkout"

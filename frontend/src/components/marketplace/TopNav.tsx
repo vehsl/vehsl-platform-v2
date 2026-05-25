@@ -8,6 +8,7 @@ import { useState } from "react";
 import { cn } from "@/components/ui/utils";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
 import { categories, homeNavOrder } from "@/lib/categories";
+import { useLanguage } from "@/context/language";
 
 export function TopNav({
   activeCategoryId,
@@ -21,6 +22,8 @@ export function TopNav({
   signInSlot?: React.ReactNode;
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { language } = useLanguage();
+  const t = (en: string, zh: string) => (language === "zh" ? zh : en);
 
   const navCategories = homeNavOrder
     .map((id) => categories.find((c) => c.id === id))
@@ -83,7 +86,7 @@ export function TopNav({
                 "bg-[linear-gradient(white,white),linear-gradient(90deg,#3b82f6,#8b5cf6,#ec4899,#f59e0b)] bg-origin-border bg-clip-padding border border-transparent"
               )}
             >
-              Sign In
+              {t("Sign In", "登录")}
             </Link>
           )}
 
@@ -136,7 +139,7 @@ export function TopNav({
                 onClick={() => setMobileMenuOpen(false)}
                 className="col-span-full mt-2 flex w-full items-center justify-center rounded-xl bg-black px-4 py-3 text-sm font-medium text-white"
               >
-                Explore All
+                {t("Explore All", "浏览全部")}
               </Link>
             </div>
           </div>

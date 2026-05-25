@@ -21,11 +21,56 @@ from .models import (
 
 
 class CartItemSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
     product_name = serializers.CharField(source="product.name", read_only=True)
+    product_title = serializers.CharField(source="product.title", read_only=True)
+    seller_id = serializers.IntegerField(source="product.seller_id", read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = CartItem
-        fields = ["id", "product", "variation", "product_name", "quantity", "unit_price_snapshot", "currency"]
+        fields = [
+            "id",
+            "product_id",
+            "product",
+            "variation",
+            "product_name",
+            "product_title",
+            "seller_id",
+            "seller_name",
+            "image_url",
+            "quantity",
+            "unit_price_snapshot",
+            "currency",
+        ]
+
+    def get_seller_name(self, obj: CartItem):
+        seller = getattr(getattr(obj, "product", None), "seller", None)
+        if not seller:
+            return ""
+        full = f"{(seller.first_name or '').strip()} {(seller.last_name or '').strip()}".strip()
+        return full or seller.email or seller.phone or ""
+
+    def get_image_url(self, obj: CartItem):
+        product = getattr(obj, "product", None)
+        if not product:
+            return ""
+        try:
+            media = (
+                ProductMedia.objects.filter(product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
+                .order_by("position", "id")
+                .first()
+            )
+            if media and media.url:
+                url = media.url
+                req = self.context.get("request")
+                if req and isinstance(url, str) and url.startswith("/"):
+                    return req.build_absolute_uri(url)
+                return url
+        except Exception:
+            pass
+        return ""
 
 
 class CartSerializer(serializers.ModelSerializer):

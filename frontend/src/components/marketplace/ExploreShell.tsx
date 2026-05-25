@@ -1,15 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { motion } from "motion/react";
 import type { LucideIcon } from "lucide-react";
-import { ArrowLeft, ChevronRight, Search, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, LogOut, Search, Settings, ShoppingCart, User, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { cn } from "@/components/ui/utils";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
 import { categories as fallbackCategories } from "@/lib/categories";
 import { fetchJsonAuthed } from "@/lib/api";
+import { useCart } from "@/components/product/cart-context";
+import { useLanguage } from "@/context/language";
 
 type UiSubcategory = {
   id: string;
@@ -239,16 +242,90 @@ function CategorySection({
   );
 }
 
+function ProfileMenu({
+  onProfileSettings,
+  onLogout,
+}: {
+  onProfileSettings: () => void;
+  onLogout: () => void;
+}) {
+  const { language } = useLanguage();
+  const t = (en: string, zh: string) => (language === "zh" ? zh : en);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = wrapRef.current;
+      if (!root) return;
+      if (e.target instanceof Node && root.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0071e3] shadow-soft transition hover:bg-[#0062c7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+        aria-label="Profile"
+        aria-expanded={open}
+      >
+        <User className="h-5 w-5 text-white" strokeWidth={1.5} />
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-full z-[70] mt-2 w-52 overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-soft">
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onProfileSettings();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-semibold text-[#0f1115] hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+          >
+            <Settings className="h-4 w-4 text-[#1f2330]" strokeWidth={1.5} />
+            {t("Profile settings", "个人设置")}
+          </button>
+          <div className="h-px bg-black/[0.06]" />
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onLogout();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-semibold text-[#d92d20] hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+          >
+            <LogOut className="h-4 w-4 text-[#d92d20]" strokeWidth={1.5} />
+            {t("Logout", "退出登录")}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function StickyNav({
   visible,
   activeId,
   onJump,
+  onSearch,
   categories,
+  totalQuantity,
+  onProfileSettings,
+  onLogout,
 }: {
   visible: boolean;
   activeId: string | null;
   onJump: (id: string) => void;
+  onSearch: () => void;
   categories: UiCategory[];
+  totalQuantity: number;
+  onProfileSettings: () => void;
+  onLogout: () => void;
 }) {
   return (
     <motion.div
@@ -283,19 +360,39 @@ function StickyNav({
           })}
         </div>
 
-        <button
-          type="button"
-          className="ml-auto flex h-10 w-10 items-center justify-center rounded-full bg-white/70 backdrop-blur-md"
-          aria-label="Search"
-        >
-          <Search className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <LanguageToggle className="h-10" />
+          <button
+            type="button"
+            onClick={onSearch}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+            aria-label="Search"
+          >
+            <Search className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+          </button>
+          <Link
+            href="/checkout"
+            className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+            aria-label="Cart"
+          >
+            <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+            {totalQuantity > 0 ? (
+              <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
+                {totalQuantity > 99 ? "99+" : totalQuantity}
+              </span>
+            ) : null}
+          </Link>
+          <ProfileMenu onProfileSettings={onProfileSettings} onLogout={onLogout} />
+        </div>
       </div>
     </motion.div>
   );
 }
 
 export function ExploreShell() {
+  const { language } = useLanguage();
+  const t = (en: string, zh: string) => (language === "zh" ? zh : en);
+
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchingProducts, setSearchingProducts] = useState(false);
@@ -311,9 +408,22 @@ export function ExploreShell() {
   const [subHasMore, setSubHasMore] = useState(false);
   const [subLoading, setSubLoading] = useState(false);
   const [subPage, setSubPage] = useState(1);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    first_name: "",
+    last_name: "",
+    phone: "",
+    country: "",
+    city: "",
+    address: "",
+  });
+
+  const { totalQuantity, refresh: refreshCart } = useCart();
 
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const setRef = (id: string, el: HTMLElement | null) => {
     sectionRefs.current[id] = el;
@@ -435,6 +545,13 @@ export function ExploreShell() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    const wrap = searchWrapRef.current;
+    if (wrap) wrap.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  }, []);
+
   const fetchSubProducts = async (page: number, categorySlug: string, query: string) => {
     setSubLoading(true);
     try {
@@ -468,7 +585,7 @@ export function ExploreShell() {
       serverChildren.find((ch) => String(ch.name || "").toLowerCase() === sub.name.toLowerCase())?.slug ||
       sub.slug;
 
-    setSelected({ category, sub });
+    setSelected({ category, sub: { ...sub, slug: resolvedSlug } });
     setSubSearch("");
     setSubProducts([]);
     setSubTotal(null);
@@ -480,6 +597,77 @@ export function ExploreShell() {
   const goDashboard = () => {
     window.location.href = "/";
   };
+
+  const openProfile = useCallback(async () => {
+    setProfileOpen(true);
+    try {
+      const me = (await fetchJsonAuthed("/api/v1/auth/me")) as any;
+      const profile = me?.profile || {};
+      setProfileForm({
+        first_name: String(me?.first_name || ""),
+        last_name: String(me?.last_name || ""),
+        phone: String(me?.phone || ""),
+        country: String(profile?.country || ""),
+        city: String(profile?.city || ""),
+        address: String(profile?.address || ""),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load profile.";
+      toast.error(msg);
+    }
+  }, []);
+
+  const saveProfile = useCallback(async () => {
+    if (savingProfile) return;
+    setSavingProfile(true);
+    try {
+      const payload: any = {
+        first_name: profileForm.first_name,
+        last_name: profileForm.last_name,
+        phone: profileForm.phone || null,
+        country: profileForm.country,
+        city: profileForm.city,
+        address: profileForm.address,
+      };
+      const updated = (await fetchJsonAuthed("/api/v1/auth/me", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })) as any;
+      try {
+        window.localStorage.setItem("vehsl.user", JSON.stringify(updated));
+      } catch {}
+      toast.success("Profile updated.");
+      setProfileOpen(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Profile update failed.";
+      toast.error(msg);
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [profileForm, savingProfile]);
+
+  const logout = useCallback(async () => {
+    const refresh = window.localStorage.getItem("vehsl.refresh") || "";
+    try {
+      await fetchJsonAuthed("/api/v1/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh }),
+      });
+    } catch {}
+    try {
+      window.localStorage.removeItem("vehsl.access");
+      window.localStorage.removeItem("vehsl.refresh");
+      window.localStorage.removeItem("vehsl.user");
+    } catch {}
+    window.location.href = "/?signin=1";
+  }, []);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    void refreshCart();
+  }, [profileOpen, refreshCart]);
 
   useEffect(() => {
     const q = search.trim();
@@ -541,7 +729,16 @@ export function ExploreShell() {
 
   return (
     <div className="bg-vehsl-watercolor-explore font-inter min-h-dvh w-full overflow-x-hidden">
-      <StickyNav visible={stickyVisible} activeId={activeId} onJump={jumpTo} categories={uiCategories} />
+      <StickyNav
+        visible={stickyVisible || searchOpen}
+        activeId={activeId}
+        onJump={jumpTo}
+        onSearch={openSearch}
+        categories={uiCategories}
+        totalQuantity={totalQuantity}
+        onProfileSettings={() => void openProfile()}
+        onLogout={() => void logout()}
+      />
       {selected ? (
         <div className="fixed inset-0 z-[60]">
           <div
@@ -559,7 +756,7 @@ export function ExploreShell() {
                 <div className="text-[12px] font-semibold text-[#7c7f87]">{selected.category.name}</div>
                 <div className="mt-1 text-[20px] font-extrabold text-[#0f1115]">{selected.sub.name}</div>
                 <div className="mt-1 text-[12px] text-[#7c7f87]">
-                  {typeof subTotal === "number" ? `${subTotal} products` : ""}
+                  {typeof subTotal === "number" ? t(`${subTotal} products`, `${subTotal} 个商品`) : ""}
                 </div>
               </div>
               <button
@@ -578,7 +775,7 @@ export function ExploreShell() {
                 <input
                   value={subSearch}
                   onChange={(e) => setSubSearch(e.target.value)}
-                  placeholder="Search in this subcategory…"
+                  placeholder={t("Search in this subcategory…", "在此子类别中搜索…")}
                   className="w-full bg-transparent text-sm text-[#0f1115] outline-none placeholder:text-[#7c7f87]/70"
                 />
               </div>
@@ -606,7 +803,7 @@ export function ExploreShell() {
                 ))}
                 {!subLoading && subProducts.length === 0 ? (
                   <div className="col-span-2 md:col-span-3 lg:col-span-4 rounded-2xl border border-white/60 bg-white/80 p-6 text-[13px] text-[#7c7f87]">
-                    No products found.
+                    {t("No products found.", "未找到商品。")}
                   </div>
                 ) : null}
               </div>
@@ -619,9 +816,91 @@ export function ExploreShell() {
                     onClick={() => void fetchSubProducts(subPage + 1, selected.sub.slug, subSearch.trim())}
                     className="rounded-full bg-white/80 border border-white/70 px-5 py-2.5 text-[12px] font-semibold text-[#0f1115] hover:bg-white disabled:opacity-60"
                   >
-                    {subLoading ? "Loading…" : "Load more"}
+                    {subLoading ? t("Loading…", "加载中…") : t("Load more", "加载更多")}
                   </button>
                 ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {profileOpen ? (
+        <div className="fixed inset-0 z-[55] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setProfileOpen(false)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") setProfileOpen(false);
+            }}
+          />
+          <div className="relative w-full max-w-2xl rounded-3xl border border-white/50 bg-white/90 shadow-soft backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-4 px-6 py-5">
+              <div>
+                <div className="text-[16px] font-extrabold text-[#0f1115]">{t("Profile settings", "个人设置")}</div>
+                <div className="mt-1 text-[12px] text-[#7c7f87]">{t("Update your buyer profile settings", "更新你的买家资料")}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProfileOpen(false)}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/70"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+              </button>
+            </div>
+
+            <div className="max-h-[70dvh] overflow-auto px-6 pb-6">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <input
+                  value={profileForm.first_name}
+                  onChange={(e) => setProfileForm((p) => ({ ...p, first_name: e.target.value }))}
+                  placeholder={t("First name", "名")}
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                />
+                <input
+                  value={profileForm.last_name}
+                  onChange={(e) => setProfileForm((p) => ({ ...p, last_name: e.target.value }))}
+                  placeholder={t("Last name", "姓")}
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                />
+                <input
+                  value={profileForm.phone}
+                  onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))}
+                  placeholder={t("Phone", "电话")}
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                />
+                <input
+                  value={profileForm.country}
+                  onChange={(e) => setProfileForm((p) => ({ ...p, country: e.target.value }))}
+                  placeholder={t("Country", "国家")}
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                />
+                <input
+                  value={profileForm.city}
+                  onChange={(e) => setProfileForm((p) => ({ ...p, city: e.target.value }))}
+                  placeholder={t("City", "城市")}
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                />
+                <input
+                  value={profileForm.address}
+                  onChange={(e) => setProfileForm((p) => ({ ...p, address: e.target.value }))}
+                  placeholder={t("Address", "地址")}
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                />
+              </div>
+
+              <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={savingProfile}
+                  onClick={() => void saveProfile()}
+                  className="rounded-full bg-black px-5 py-2.5 text-[12px] font-semibold text-white hover:bg-black/90 disabled:opacity-60"
+                >
+                  {savingProfile ? t("Saving…", "保存中…") : t("Save", "保存")}
+                </button>
               </div>
             </div>
           </div>
@@ -633,22 +912,50 @@ export function ExploreShell() {
         <div className="flex items-center justify-between">
           <button
             onClick={goDashboard}
-            className="inline-flex items-center gap-2 rounded-full bg-white/70 px-4 py-2 backdrop-blur shadow-soft"
+            className="inline-flex h-10 items-center gap-2 rounded-full border border-white/60 bg-white/70 px-4 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
           >
             <ArrowLeft className="h-4 w-4 text-[#1f2330]" strokeWidth={1.5} />
-            <span className="text-sm font-medium text-[#0f1115]">Home</span>
+            <span className="text-sm font-medium text-[#0f1115]">{t("Home", "首页")}</span>
           </button>
-          <LanguageToggle />
+          <div className="flex items-center gap-2">
+            <LanguageToggle className="h-10" />
+            <button
+              type="button"
+              onClick={() => {
+                openSearch();
+              }}
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+              aria-label="Search"
+            >
+              <Search className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+            </button>
+            <Link
+              href="/checkout"
+              className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+              aria-label="Cart"
+            >
+              <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+              {totalQuantity > 0 ? (
+                <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
+                  {totalQuantity > 99 ? "99+" : totalQuantity}
+                </span>
+              ) : null}
+            </Link>
+            <ProfileMenu onProfileSettings={() => void openProfile()} onLogout={() => void logout()} />
+          </div>
         </div>
 
         <div className="mt-14">
           <div className="text-4xl font-extrabold tracking-tight sm:text-6xl lg:text-7xl">
-            <span className="text-[#0f1115]">Explore </span>
-            <span className="text-gradient-brand">everything</span>
+            <span className="text-[#0f1115]">{t("Explore ", "探索")}</span>
+            <span className="text-gradient-brand">{t("everything", "全部")}</span>
           </div>
 
           <div className="mt-4 text-sm text-[#7c7f87]">
-            {stats.categoryCount} categories · {stats.subCount} subcategories · {stats.products}+ products
+            {t(
+              `${stats.categoryCount} categories · ${stats.subCount} subcategories · ${stats.products}+ products`,
+              `${stats.categoryCount} 个分类 · ${stats.subCount} 个子分类 · ${stats.products}+ 个商品`,
+            )}
           </div>
 
           <div className="mt-8">
@@ -659,14 +966,15 @@ export function ExploreShell() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onFocus={() => setSearchOpen(true)}
-                  placeholder="Search anything — 'solar panel', 'mango', 'sofa'…"
+                  ref={searchInputRef}
+                  placeholder={t("Search anything — 'solar panel', 'mango', 'sofa'…", "搜索任意商品 — “太阳能板”、“芒果”、“沙发”…")}
                   className="w-full bg-transparent text-sm text-[#0f1115] outline-none placeholder:text-[#7c7f87]/70"
                 />
               </div>
               {searchOpen && (searchingProducts || searchResults.length > 0) ? (
                 <div className="mt-2 overflow-hidden rounded-2xl border border-white/60 bg-white/95 shadow-soft">
                   <div className="px-4 py-3 text-xs font-semibold text-[#7c7f87]">
-                    {searchingProducts ? "Searching…" : "Top matches"}
+                    {searchingProducts ? t("Searching…", "搜索中…") : t("Top matches", "匹配结果")}
                   </div>
                   <div className="divide-y divide-black/[0.04]">
                     {searchResults.map((p) => (
