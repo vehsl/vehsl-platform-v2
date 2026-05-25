@@ -119,8 +119,9 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
+    pagination_class = AdminPageNumberPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["name", "sku", "description"]
+    search_fields = ["name", "title", "sku", "description"]
     ordering_fields = ["created_at", "price"]
     ordering = ["-created_at"]
 
