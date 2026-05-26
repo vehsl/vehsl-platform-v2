@@ -23,6 +23,32 @@ class PricingTierSerializer(serializers.ModelSerializer):
         model = PricingTier
         fields = ["id", "product", "variation", "min_quantity", "max_quantity", "unit_price", "currency"]
 
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        product = data.get("product") or getattr(self.instance, "product", None)
+        variation = data.get("variation") if "variation" in data else getattr(self.instance, "variation", None)
+        currency = (data.get("currency") or getattr(self.instance, "currency", "") or "").upper()
+        if product:
+            product_currency = (getattr(product, "currency", "") or "").upper()
+            if product_currency and currency and product_currency != currency:
+                raise serializers.ValidationError("Pricing tier currency must match product currency.")
+        if variation and product and getattr(variation, "product_id", None) != getattr(product, "id", None):
+            raise serializers.ValidationError("Variation must belong to the given product.")
+        min_q = data.get("min_quantity") if "min_quantity" in data else getattr(self.instance, "min_quantity", 1)
+        max_q = data.get("max_quantity") if "max_quantity" in data else getattr(self.instance, "max_quantity", None)
+        try:
+            min_q = int(min_q or 1)
+        except Exception:
+            min_q = 1
+        if max_q is not None:
+            try:
+                max_q = int(max_q)
+            except Exception:
+                max_q = None
+        if max_q is not None and max_q < min_q:
+            raise serializers.ValidationError("max_quantity must be >= min_quantity or empty.")
+        return data
+
 
 class ProductMediaSerializer(serializers.ModelSerializer):
     public_url = serializers.SerializerMethodField()

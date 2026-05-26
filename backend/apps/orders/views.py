@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from apps.accounts.admin_utils import AdminPageNumberPagination, response_list, audit
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
-from apps.catalog.models import Product, ProductMedia
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
 
 from .models import (
     Cart,
@@ -59,18 +59,30 @@ class CartMeView(APIView):
         items = ser.validated_data["items"]
         product_ids = [i["product_id"] for i in items]
         products = {p.id: p for p in Product.objects.filter(id__in=product_ids)}
+        variation_ids = [i.get("variation_id") for i in items if i.get("variation_id")]
+        variation_map = {}
+        if variation_ids:
+            vars = ProductVariation.objects.filter(id__in=variation_ids, deleted_at__isnull=True)
+            variation_map = {v.id: v for v in vars}
         for i in items:
             p = products.get(i["product_id"])
             if not p:
                 return Response({"detail": "Invalid product."}, status=status.HTTP_400_BAD_REQUEST)
+            var_id = i.get("variation_id") or None
+            var = variation_map.get(var_id) if var_id else None
+            if var and getattr(var, "product_id", None) != getattr(p, "id", None):
+                return Response({"detail": "Invalid variation."}, status=status.HTTP_400_BAD_REQUEST)
+            unit_price, currency = resolve_unit_price(p, var, i["quantity"])
+            if unit_price is None:
+                return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
             CartItem.objects.update_or_create(
                 cart=cart,
                 product_id=i["product_id"],
-                variation_id=i.get("variation_id") or None,
+                variation_id=var_id,
                 defaults={
                     "quantity": i["quantity"],
-                    "unit_price_snapshot": p.price,
-                    "currency": p.currency,
+                    "unit_price_snapshot": unit_price,
+                    "currency": currency or (p.currency or "USD"),
                 },
             )
 
@@ -111,8 +123,18 @@ class CartItemMeDetailView(APIView):
         if qty < 1:
             return Response({"detail": "quantity must be >= 1."}, status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            p = item.product
+            var = item.variation if item.variation_id else None
+            unit_price, currency = resolve_unit_price(p, var, qty)
+            if unit_price is None:
+                return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
+            item.unit_price_snapshot = unit_price
+            item.currency = currency or (getattr(p, "currency", "") or "USD")
+        except Exception:
+            pass
         item.quantity = qty
-        item.save(update_fields=["quantity"])
+        item.save(update_fields=["quantity", "unit_price_snapshot", "currency"])
         cart = (
             Cart.objects.filter(id=item.cart_id)
             .prefetch_related("items", "items__product", "items__product__seller", "items__variation")
@@ -324,7 +346,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated()]
         if self.action in {"update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
-        if self.action in {"accept", "reject", "mark_shipped"}:
+        if self.action in {"accept", "reject", "mark_shipped", "mark_delivered", "mark_completed"}:
             return [permissions.IsAuthenticated(), IsSeller()]
         return [permissions.IsAuthenticated(), IsOrderParticipant()]
 
@@ -358,6 +380,28 @@ class OrderViewSet(viewsets.ModelViewSet):
         if order.seller_id != request.user.id:
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
         order.status = Order.Status.SHIPPED
+        order.save(update_fields=["status"])
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="mark-delivered")
+    def mark_delivered(self, request, pk=None):
+        order = self.get_object()
+        if order.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status not in {Order.Status.SHIPPED, Order.Status.DELIVERED}:
+            return Response({"detail": "Order must be shipped first."}, status=status.HTTP_400_BAD_REQUEST)
+        order.status = Order.Status.DELIVERED
+        order.save(update_fields=["status"])
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="mark-completed")
+    def mark_completed(self, request, pk=None):
+        order = self.get_object()
+        if order.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status not in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+            return Response({"detail": "Order must be delivered first."}, status=status.HTTP_400_BAD_REQUEST)
+        order.status = Order.Status.COMPLETED
         order.save(update_fields=["status"])
         return Response(OrderSerializer(order).data)
 

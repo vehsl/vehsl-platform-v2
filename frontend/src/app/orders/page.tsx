@@ -40,6 +40,9 @@ type OrderRow = {
   status: OrderStatus;
   currency: string;
   total_amount: string;
+  payment_method?: string;
+  payment_status?: string;
+  shipping_address?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   item_count: number;
@@ -63,6 +66,16 @@ type ProductMediaRow = {
   variation?: number | null;
 };
 
+type PricingTierRow = {
+  id: number;
+  product: number;
+  variation: number | null;
+  min_quantity: number;
+  max_quantity: number | null;
+  unit_price: string;
+  currency: string;
+};
+
 type SellerProductRow = {
   id: number;
   title?: string;
@@ -79,6 +92,8 @@ type SellerProductDetail = SellerProductRow & {
   ship_time_max_days?: number;
   sample_available?: boolean;
   sample_ship_days?: number;
+  variations?: Array<{ id: number; attributes: Record<string, unknown>; sku?: string }>;
+  pricing_tiers?: PricingTierRow[];
 };
 
 type SellerProfileMe = {
@@ -187,6 +202,12 @@ function safeProducts(data: any): SellerProductRow[] {
   return [];
 }
 
+function safeList<T = any>(data: any): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && Array.isArray(data.results)) return data.results as T[];
+  return [];
+}
+
 function fmtBytes(bytes: number) {
   const n = Number(bytes);
   if (!Number.isFinite(n) || n <= 0) return "";
@@ -237,13 +258,33 @@ export default function Page() {
   const [productsLoading, setProductsLoading] = useState(false);
   const [products, setProducts] = useState<SellerProductRow[]>([]);
   const [activeProduct, setActiveProduct] = useState<SellerProductDetail | null>(null);
-  const [productManagerTab, setProductManagerTab] = useState<"specs" | "docs" | "shipping">("specs");
+  const [productManagerTab, setProductManagerTab] = useState<
+    "specs" | "variations" | "media" | "shipping" | "pricing" | "docs"
+  >("specs");
   const [specDraft, setSpecDraft] = useState<SpecGroup[]>([]);
   const [savingSpecs, setSavingSpecs] = useState(false);
   const [docTitle, setDocTitle] = useState("");
   const [docUrl, setDocUrl] = useState("");
   const [docFile, setDocFile] = useState<File | null>(null);
   const [savingDoc, setSavingDoc] = useState(false);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageVariationId, setImageVariationId] = useState<number | null>(null);
+  const [savingImage, setSavingImage] = useState(false);
+  const [editingVariationId, setEditingVariationId] = useState<number | null>(null);
+  const [variationDraft, setVariationDraft] = useState({
+    sku: "",
+    attrs: [{ key: "", value: "" }] as Array<{ key: string; value: string }>,
+  });
+  const [savingVariation, setSavingVariation] = useState(false);
+  const [editingTierId, setEditingTierId] = useState<number | null>(null);
+  const [tierDraft, setTierDraft] = useState({
+    variation: "" as string,
+    min_quantity: "",
+    max_quantity: "",
+    unit_price: "",
+    currency: "USD",
+  });
+  const [savingTier, setSavingTier] = useState(false);
   const [shippingDraft, setShippingDraft] = useState({
     weight_grams: "",
     ship_time_min_days: "",
@@ -257,6 +298,16 @@ export default function Page() {
   const [savingShipping, setSavingShipping] = useState(false);
   const [warehouseDraft, setWarehouseDraft] = useState({ country: "", region: "", city: "" });
   const [savingWarehouse, setSavingWarehouse] = useState(false);
+
+  const [orderActionLoading, setOrderActionLoading] = useState(false);
+  const [shipmentsLoading, setShipmentsLoading] = useState(false);
+  const [activeShipmentId, setActiveShipmentId] = useState<number | null>(null);
+  const [shipmentDraft, setShipmentDraft] = useState({
+    carrier_id: "",
+    tracking_number: "",
+    origin: "",
+    destination: "",
+  });
 
   const abortRef = useRef<AbortController | null>(null);
   const qDebounceRef = useRef<number | null>(null);
@@ -364,6 +415,12 @@ export default function Page() {
         setDocTitle("");
         setDocUrl("");
         setDocFile(null);
+        setImageFile(null);
+        setImageVariationId(null);
+        setEditingVariationId(null);
+        setVariationDraft({ sku: "", attrs: [{ key: "", value: "" }] });
+        setEditingTierId(null);
+        setTierDraft({ variation: "", min_quantity: "", max_quantity: "", unit_price: "", currency: "USD" });
       }
       try {
         const prof = (await apiJson("/api/v1/profiles/seller/me")) as SellerProfileMe;
@@ -394,6 +451,12 @@ export default function Page() {
         setDocTitle("");
         setDocUrl("");
         setDocFile(null);
+        setImageFile(null);
+        setImageVariationId(null);
+        setEditingVariationId(null);
+        setVariationDraft({ sku: "", attrs: [{ key: "", value: "" }] });
+        setEditingTierId(null);
+        setTierDraft({ variation: "", min_quantity: "", max_quantity: "", unit_price: "", currency: "USD" });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to load product.";
         toast.error(msg);
@@ -515,6 +578,32 @@ export default function Page() {
       .filter((d) => d.id && d.url);
   }, [activeProduct?.media]);
 
+  const productImages = useMemo(() => {
+    const rows = Array.isArray(activeProduct?.media) ? (activeProduct!.media as ProductMediaRow[]) : [];
+    return rows
+      .filter((m) => (m.media_type || "") === "image" && (m.public_url || "").trim())
+      .map((m) => ({
+        id: Number(m.id || 0),
+        url: String(m.public_url || "").trim(),
+        title: String(m.title || "").trim(),
+        position: Number(m.position || 0) || 0,
+        variation: (typeof m.variation === "number" ? m.variation : m.variation ? Number(m.variation) : null) as number | null,
+      }))
+      .filter((x) => x.id && x.url)
+      .sort((a, b) => (a.position - b.position) || (a.id - b.id));
+  }, [activeProduct?.media]);
+
+  const variationLabel = useCallback((variationId: number | null, variations: SellerProductDetail["variations"] | undefined) => {
+    if (!variationId) return "All variations";
+    const row = (variations || []).find((v) => v.id === variationId);
+    if (!row) return `Variation #${variationId}`;
+    const attrs = row.attributes && typeof row.attributes === "object" ? row.attributes : {};
+    const parts = Object.entries(attrs)
+      .map(([k, v]) => `${k}: ${String(v)}`)
+      .filter(Boolean);
+    return parts.length ? parts.join(" · ") : `Variation #${variationId}`;
+  }, []);
+
   const refreshActiveProduct = useCallback(async () => {
     if (!activeProduct?.id) return;
     const detail = (await apiJson(`/api/v1/products/${activeProduct.id}/`)) as SellerProductDetail;
@@ -563,7 +652,7 @@ export default function Page() {
     }
   }, [activeProduct?.id, apiJson, apiUpload, docFile, docTitle, docUrl, refreshActiveProduct, savingDoc]);
 
-  const deleteDocument = useCallback(
+  const deleteMedia = useCallback(
     async (id: number) => {
       if (!id) return;
       try {
@@ -577,6 +666,416 @@ export default function Page() {
     },
     [apiJson, refreshActiveProduct],
   );
+
+  const uploadImage = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    if (savingImage) return;
+    if (!imageFile) {
+      toast.error("Choose an image file.");
+      return;
+    }
+    if (productImages.length >= 8) {
+      toast.error("This product already has 8 images (max). Delete one first.");
+      return;
+    }
+    setSavingImage(true);
+    try {
+      const form = new FormData();
+      form.set("product", String(activeProduct.id));
+      form.set("media_type", "image");
+      if (imageVariationId) form.set("variation", String(imageVariationId));
+      form.set("file", imageFile);
+      await apiUpload("/api/v1/product-media/upload/", form);
+      setImageFile(null);
+      setImageVariationId(null);
+      await refreshActiveProduct();
+      toast.success("Image uploaded");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Upload failed.";
+      toast.error(msg);
+    } finally {
+      setSavingImage(false);
+    }
+  }, [activeProduct?.id, apiUpload, imageFile, imageVariationId, productImages.length, refreshActiveProduct, savingImage]);
+
+  const moveImage = useCallback(
+    async (id: number, dir: "up" | "down") => {
+      if (!activeProduct?.id) return;
+      const idx = productImages.findIndex((x) => x.id === id);
+      if (idx < 0) return;
+      const otherIdx = dir === "up" ? idx - 1 : idx + 1;
+      if (otherIdx < 0 || otherIdx >= productImages.length) return;
+      const a = productImages[idx];
+      const b = productImages[otherIdx];
+      try {
+        await apiJson(`/api/v1/product-media/${a.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ position: b.position }),
+        });
+        await apiJson(`/api/v1/product-media/${b.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ position: a.position }),
+        });
+        await refreshActiveProduct();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Reorder failed.";
+        toast.error(msg);
+      }
+    },
+    [activeProduct?.id, apiJson, productImages, refreshActiveProduct],
+  );
+
+  const tiers = useMemo(() => {
+    const rows = Array.isArray(activeProduct?.pricing_tiers) ? (activeProduct!.pricing_tiers as PricingTierRow[]) : [];
+    return rows
+      .map((t) => ({
+        id: Number(t.id || 0),
+        variation: (typeof t.variation === "number" ? t.variation : t.variation ? Number(t.variation) : null) as number | null,
+        min_quantity: Number(t.min_quantity || 0) || 0,
+        max_quantity: t.max_quantity == null ? null : Number(t.max_quantity || 0) || null,
+        unit_price: String(t.unit_price || "").trim(),
+        currency: String(t.currency || "").trim() || "USD",
+      }))
+      .filter((t) => t.id && t.min_quantity >= 1 && t.unit_price)
+      .sort((a, b) => {
+        const av = a.variation || 0;
+        const bv = b.variation || 0;
+        if (av !== bv) return av - bv;
+        if (a.min_quantity !== b.min_quantity) return a.min_quantity - b.min_quantity;
+        return a.id - b.id;
+      });
+  }, [activeProduct?.pricing_tiers]);
+
+  const startEditTier = useCallback((t: (typeof tiers)[number]) => {
+    setEditingTierId(t.id);
+    setTierDraft({
+      variation: t.variation ? String(t.variation) : "",
+      min_quantity: String(t.min_quantity),
+      max_quantity: t.max_quantity == null ? "" : String(t.max_quantity),
+      unit_price: t.unit_price,
+      currency: t.currency || "USD",
+    });
+    setProductManagerTab("pricing");
+  }, []);
+
+  const cancelEditTier = useCallback(() => {
+    setEditingTierId(null);
+    setTierDraft({ variation: "", min_quantity: "", max_quantity: "", unit_price: "", currency: "USD" });
+  }, []);
+
+  const saveTier = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    if (savingTier) return;
+    const minQ = Number(String(tierDraft.min_quantity || "").trim());
+    const maxRaw = String(tierDraft.max_quantity || "").trim();
+    const maxQ = maxRaw ? Number(maxRaw) : null;
+    const unitPriceRaw = String(tierDraft.unit_price || "").trim();
+    const unitPrice = Number(unitPriceRaw);
+    const currency = String(tierDraft.currency || "USD").trim().toUpperCase();
+    const variationRaw = String(tierDraft.variation || "").trim();
+    const variation = variationRaw ? Number(variationRaw) : null;
+
+    if (!Number.isFinite(minQ) || minQ < 1) {
+      toast.error("Min qty must be at least 1.");
+      return;
+    }
+    if (maxQ != null && (!Number.isFinite(maxQ) || maxQ < minQ)) {
+      toast.error("Max qty must be empty or >= min qty.");
+      return;
+    }
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+      toast.error("Unit price must be a valid number.");
+      return;
+    }
+
+    const overlaps = tiers
+      .filter((t) => (t.variation || null) === (variation || null) && t.id !== (editingTierId || 0))
+      .some((t) => {
+        const a0 = minQ;
+        const a1 = maxQ == null ? Number.POSITIVE_INFINITY : maxQ;
+        const b0 = t.min_quantity;
+        const b1 = t.max_quantity == null ? Number.POSITIVE_INFINITY : t.max_quantity;
+        return Math.max(a0, b0) <= Math.min(a1, b1);
+      });
+    if (overlaps) {
+      toast.error("This tier overlaps an existing tier for the same variation.");
+      return;
+    }
+
+    setSavingTier(true);
+    try {
+      const payload: any = {
+        product: activeProduct.id,
+        variation: variation || null,
+        min_quantity: Math.floor(minQ),
+        max_quantity: maxQ == null ? null : Math.floor(maxQ),
+        unit_price: unitPriceRaw,
+        currency,
+      };
+
+      if (editingTierId) {
+        await apiJson(`/api/v1/pricing-tiers/${editingTierId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await apiJson("/api/v1/pricing-tiers/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+      await refreshActiveProduct();
+      cancelEditTier();
+      toast.success("Pricing saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setSavingTier(false);
+    }
+  }, [activeProduct?.id, apiJson, cancelEditTier, editingTierId, refreshActiveProduct, savingTier, tierDraft, tiers]);
+
+  const deleteTier = useCallback(
+    async (id: number) => {
+      if (!id) return;
+      try {
+        await apiJson(`/api/v1/pricing-tiers/${id}/`, { method: "DELETE" });
+        await refreshActiveProduct();
+        if (editingTierId === id) cancelEditTier();
+        toast.success("Deleted");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Delete failed.";
+        toast.error(msg);
+      }
+    },
+    [apiJson, cancelEditTier, editingTierId, refreshActiveProduct],
+  );
+
+  const variations = useMemo(() => {
+    const rows = Array.isArray(activeProduct?.variations) ? (activeProduct!.variations as NonNullable<SellerProductDetail["variations"]>) : [];
+    return rows
+      .map((v) => ({
+        id: Number(v.id || 0),
+        sku: String(v.sku || "").trim(),
+        attributes: v.attributes && typeof v.attributes === "object" ? (v.attributes as Record<string, unknown>) : {},
+      }))
+      .filter((v) => v.id)
+      .sort((a, b) => a.id - b.id);
+  }, [activeProduct?.variations]);
+
+  const variationAttrsToList = useCallback((attrs: Record<string, unknown>) => {
+    const out: Array<{ key: string; value: string }> = [];
+    for (const [k, v] of Object.entries(attrs || {})) {
+      const kk = String(k || "").trim();
+      const vv = String(v ?? "").trim();
+      if (!kk || !vv) continue;
+      out.push({ key: kk, value: vv });
+    }
+    return out.length ? out : [{ key: "", value: "" }];
+  }, []);
+
+  const variationDraftToAttrs = useCallback((rows: Array<{ key: string; value: string }>) => {
+    const out: Record<string, string> = {};
+    for (const r of rows || []) {
+      const k = String(r.key || "").trim();
+      const v = String(r.value || "").trim();
+      if (!k || !v) continue;
+      out[k] = v;
+    }
+    return out;
+  }, []);
+
+  const startEditVariation = useCallback(
+    (v: (typeof variations)[number]) => {
+      setEditingVariationId(v.id);
+      setVariationDraft({ sku: v.sku, attrs: variationAttrsToList(v.attributes) });
+      setProductManagerTab("variations");
+    },
+    [variationAttrsToList],
+  );
+
+  const startNewVariation = useCallback(() => {
+    setEditingVariationId(null);
+    setVariationDraft({ sku: "", attrs: [{ key: "", value: "" }] });
+    setProductManagerTab("variations");
+  }, []);
+
+  const saveVariation = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    if (savingVariation) return;
+    const sku = String(variationDraft.sku || "").trim();
+    const attributes = variationDraftToAttrs(variationDraft.attrs);
+    if (!Object.keys(attributes).length) {
+      toast.error("Add at least one attribute (e.g. Color=Red).");
+      return;
+    }
+    setSavingVariation(true);
+    try {
+      const payload = { product: activeProduct.id, sku, attributes };
+      if (editingVariationId) {
+        await apiJson(`/api/v1/product-variations/${editingVariationId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await apiJson("/api/v1/product-variations/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+      await refreshActiveProduct();
+      setEditingVariationId(null);
+      setVariationDraft({ sku: "", attrs: [{ key: "", value: "" }] });
+      toast.success("Variation saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setSavingVariation(false);
+    }
+  }, [activeProduct?.id, apiJson, editingVariationId, refreshActiveProduct, savingVariation, variationDraft, variationDraftToAttrs]);
+
+  const deleteVariation = useCallback(
+    async (id: number) => {
+      if (!id) return;
+      try {
+        await apiJson(`/api/v1/product-variations/${id}/`, { method: "DELETE" });
+        await refreshActiveProduct();
+        if (editingVariationId === id) {
+          setEditingVariationId(null);
+          setVariationDraft({ sku: "", attrs: [{ key: "", value: "" }] });
+        }
+        toast.success("Deleted");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Delete failed.";
+        toast.error(msg);
+      }
+    },
+    [apiJson, editingVariationId, refreshActiveProduct],
+  );
+
+  const applyOrderUpdate = useCallback((updated: OrderRow) => {
+    setOrders((prev) => prev.map((o) => (o.id === updated.id ? { ...o, ...updated } : o)));
+    setSelected((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+  }, []);
+
+  const orderAction = useCallback(
+    async (action: "accept" | "reject" | "mark-shipped" | "mark-delivered" | "mark-completed") => {
+      if (!selected?.id) return;
+      if (orderActionLoading) return;
+      setOrderActionLoading(true);
+      try {
+        const updated = (await apiJson(`/api/v1/orders/${selected.id}/${action}/`, { method: "POST" })) as OrderRow;
+        applyOrderUpdate(updated);
+        toast.success("Updated");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Action failed.";
+        toast.error(msg);
+      } finally {
+        setOrderActionLoading(false);
+      }
+    },
+    [apiJson, applyOrderUpdate, orderActionLoading, selected?.id],
+  );
+
+  type ShipmentRow = {
+    id: number;
+    order: number;
+    carrier_id: string;
+    tracking_number: string;
+    status: string;
+    origin: string;
+    destination: string;
+    estimated_delivery_at: string | null;
+    actual_delivery_at: string | null;
+    created_at: string;
+  };
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (!selected?.id) return;
+    if (!isSeller) return;
+    let cancelled = false;
+    setShipmentsLoading(true);
+    setActiveShipmentId(null);
+    setShipmentDraft({ carrier_id: "", tracking_number: "", origin: "", destination: "" });
+    apiJson(`/api/v1/shipments/?order=${selected.id}`)
+      .then((data) => {
+        if (cancelled) return;
+        const rows = safeList<ShipmentRow>(data)
+          .filter((x) => x && typeof x === "object" && Number((x as any).id || 0))
+          .sort((a, b) => {
+            const ad = Date.parse(a.created_at || "");
+            const bd = Date.parse(b.created_at || "");
+            if (Number.isFinite(ad) && Number.isFinite(bd) && ad !== bd) return bd - ad;
+            return (b.id || 0) - (a.id || 0);
+          });
+        const latest = rows[0];
+        if (!latest) return;
+        setActiveShipmentId(latest.id);
+        setShipmentDraft({
+          carrier_id: String(latest.carrier_id || "").trim(),
+          tracking_number: String(latest.tracking_number || "").trim(),
+          origin: String(latest.origin || "").trim(),
+          destination: String(latest.destination || "").trim(),
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setShipmentsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiJson, isSeller, mounted, selected?.id]);
+
+  const saveShipment = useCallback(async () => {
+    if (!selected?.id) return;
+    if (!isSeller) return;
+    if (orderActionLoading) return;
+    const payload = {
+      order: selected.id,
+      carrier_id: String(shipmentDraft.carrier_id || "").trim(),
+      tracking_number: String(shipmentDraft.tracking_number || "").trim(),
+      origin: String(shipmentDraft.origin || "").trim(),
+      destination: String(shipmentDraft.destination || "").trim(),
+    };
+    if (!payload.tracking_number) {
+      toast.error("Tracking number is required.");
+      return;
+    }
+    setOrderActionLoading(true);
+    try {
+      if (activeShipmentId) {
+        await apiJson(`/api/v1/shipments/${activeShipmentId}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        const created = (await apiJson("/api/v1/shipments/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })) as ShipmentRow;
+        setActiveShipmentId(Number((created as any)?.id || 0) || null);
+      }
+      const updated = (await apiJson(`/api/v1/orders/${selected.id}/`)) as OrderRow;
+      applyOrderUpdate(updated);
+      toast.success("Shipment saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setOrderActionLoading(false);
+    }
+  }, [activeShipmentId, apiJson, applyOrderUpdate, isSeller, orderActionLoading, selected?.id, shipmentDraft]);
 
   const fetchOrders = useCallback(async (query: string, key: FilterKey) => {
     if (!mounted) return;
@@ -716,12 +1215,39 @@ export default function Page() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => setProductManagerTab("variations")}
+                    className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                      productManagerTab === "variations" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                    }`}
+                  >
+                    Variations
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProductManagerTab("media")}
+                    className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                      productManagerTab === "media" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                    }`}
+                  >
+                    Media
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setProductManagerTab("shipping")}
                     className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
                       productManagerTab === "shipping" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
                     }`}
                   >
                     Shipping
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProductManagerTab("pricing")}
+                    className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                      productManagerTab === "pricing" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                    }`}
+                  >
+                    Pricing
                   </button>
                   <button
                     type="button"
@@ -750,6 +1276,33 @@ export default function Page() {
                     className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
                   >
                     {savingShipping ? "Saving…" : "Save"}
+                  </button>
+                ) : productManagerTab === "pricing" ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveTier()}
+                    disabled={!activeProduct?.id || savingTier}
+                    className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                  >
+                    {savingTier ? "Saving…" : editingTierId ? "Save tier" : "Add tier"}
+                  </button>
+                ) : productManagerTab === "variations" ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveVariation()}
+                    disabled={!activeProduct?.id || savingVariation}
+                    className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                  >
+                    {savingVariation ? "Saving…" : editingVariationId ? "Save variation" : "Add variation"}
+                  </button>
+                ) : productManagerTab === "media" ? (
+                  <button
+                    type="button"
+                    onClick={() => void uploadImage()}
+                    disabled={!activeProduct?.id || savingImage}
+                    className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                  >
+                    {savingImage ? "Uploading…" : "Upload image"}
                   </button>
                 ) : null}
                 <button
@@ -817,12 +1370,39 @@ export default function Page() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => setProductManagerTab("variations")}
+                          className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                            productManagerTab === "variations" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          Variations
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProductManagerTab("media")}
+                          className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                            productManagerTab === "media" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          Media
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setProductManagerTab("shipping")}
                           className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
                             productManagerTab === "shipping" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
                           }`}
                         >
                           Shipping
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProductManagerTab("pricing")}
+                          className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                            productManagerTab === "pricing" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          Pricing
                         </button>
                         <button
                           type="button"
@@ -966,6 +1546,233 @@ export default function Page() {
                           ))
                         )}
                       </div>
+                    ) : productManagerTab === "variations" ? (
+                      <div className="mt-4 space-y-5">
+                        <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[12px] font-bold text-[#1A1A1A]/70">Product variations</div>
+                              <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">
+                                Used for buyer selections (color/size/etc) and variation-bound images/pricing tiers.
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => startNewVariation()}
+                                className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                              >
+                                New
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void saveVariation()}
+                                disabled={savingVariation || !activeProduct?.id}
+                                className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                              >
+                                {savingVariation ? "Saving…" : editingVariationId ? "Save" : "Add"}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                            <input
+                              value={variationDraft.sku}
+                              onChange={(e) => setVariationDraft((p) => ({ ...p, sku: e.target.value }))}
+                              placeholder="SKU (optional)"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <div className="text-[11px] font-semibold text-[#1A1A1A]/35 flex items-center justify-between">
+                              <span>Attributes</span>
+                              <button
+                                type="button"
+                                onClick={() => setVariationDraft((p) => ({ ...p, attrs: [...p.attrs, { key: "", value: "" }] }))}
+                                className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/65 hover:bg-black/[0.02]"
+                              >
+                                Add row
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 space-y-2">
+                            {variationDraft.attrs.map((r, idx) => (
+                              <div key={idx} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                                <input
+                                  value={r.key}
+                                  onChange={(e) =>
+                                    setVariationDraft((p) => ({
+                                      ...p,
+                                      attrs: p.attrs.map((x, i) => (i === idx ? { ...x, key: e.target.value } : x)),
+                                    }))
+                                  }
+                                  placeholder="Key (e.g. Color)"
+                                  className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                                />
+                                <input
+                                  value={r.value}
+                                  onChange={(e) =>
+                                    setVariationDraft((p) => ({
+                                      ...p,
+                                      attrs: p.attrs.map((x, i) => (i === idx ? { ...x, value: e.target.value } : x)),
+                                    }))
+                                  }
+                                  placeholder="Value (e.g. Red)"
+                                  className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setVariationDraft((p) => ({ ...p, attrs: p.attrs.filter((_, i) => i !== idx) || [{ key: "", value: "" }] }))
+                                  }
+                                  className="h-10 rounded-2xl border border-black/[0.06] bg-white px-4 text-[12px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">CURRENT VARIATIONS</div>
+                          <div className="mt-3 space-y-2">
+                            {variations.length === 0 ? (
+                              <div className="rounded-2xl border border-black/[0.06] bg-white p-4 text-[12px] text-[#1A1A1A]/45">
+                                No variations yet.
+                              </div>
+                            ) : (
+                              variations.map((v) => (
+                                <div
+                                  key={v.id}
+                                  className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">{variationLabel(v.id, activeProduct.variations)}</div>
+                                    <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35 truncate">
+                                      {v.sku ? `SKU: ${v.sku}` : "SKU: —"}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditVariation(v)}
+                                      className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/65 hover:bg-black/[0.02]"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteVariation(v.id)}
+                                      className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : productManagerTab === "media" ? (
+                      <div className="mt-4 space-y-5">
+                        <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[12px] font-bold text-[#1A1A1A]/70">Product images</div>
+                              <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">
+                                Shows on buyer gallery. Max 8 images.
+                              </div>
+                            </div>
+                            <div className="text-[11px] font-semibold text-[#1A1A1A]/35 tabular-nums">{productImages.length}/8</div>
+                          </div>
+
+                          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+                              className="block w-full text-[12px] text-[#1A1A1A]/60"
+                            />
+                            <select
+                              value={imageVariationId ? String(imageVariationId) : ""}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setImageVariationId(raw ? Number(raw) : null);
+                              }}
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-white px-3 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            >
+                              <option value="">All variations</option>
+                              {(activeProduct.variations || []).map((v) => (
+                                <option key={v.id} value={String(v.id)}>
+                                  {variationLabel(v.id, activeProduct.variations)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="mt-4 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void uploadImage()}
+                              disabled={!activeProduct?.id || savingImage}
+                              className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                            >
+                              {savingImage ? "Uploading…" : "Upload"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">CURRENT IMAGES</div>
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            {productImages.length === 0 ? (
+                              <div className="sm:col-span-2 rounded-2xl border border-black/[0.06] bg-white p-4 text-[12px] text-[#1A1A1A]/45">
+                                No images yet.
+                              </div>
+                            ) : (
+                              productImages.map((img, idx) => (
+                                <div key={img.id} className="rounded-2xl border border-black/[0.06] bg-white overflow-hidden">
+                                  <div className="aspect-[4/3] bg-black/[0.02]">
+                                    <img src={img.url} alt={img.title || `Image ${idx + 1}`} className="h-full w-full object-cover" />
+                                  </div>
+                                  <div className="p-3">
+                                    <div className="text-[11px] font-semibold text-[#1A1A1A]/40 truncate">
+                                      {variationLabel(img.variation, activeProduct.variations)}
+                                    </div>
+                                    <div className="mt-2 flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => void moveImage(img.id, "up")}
+                                          disabled={idx === 0}
+                                          className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/65 hover:bg-black/[0.02] disabled:opacity-50"
+                                        >
+                                          Up
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void moveImage(img.id, "down")}
+                                          disabled={idx === productImages.length - 1}
+                                          className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/65 hover:bg-black/[0.02] disabled:opacity-50"
+                                        >
+                                          Down
+                                        </button>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => void deleteMedia(img.id)}
+                                        className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     ) : productManagerTab === "shipping" ? (
                       <div className="mt-4 space-y-5">
                         <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
@@ -1083,6 +1890,123 @@ export default function Page() {
                           </div>
                         </div>
                       </div>
+                    ) : productManagerTab === "pricing" ? (
+                      <div className="mt-4 space-y-5">
+                        <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[12px] font-bold text-[#1A1A1A]/70">Pricing tiers</div>
+                              <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">
+                                Used on buyer side to calculate unit price based on quantity.
+                              </div>
+                            </div>
+                            {editingTierId ? (
+                              <button
+                                type="button"
+                                onClick={() => cancelEditTier()}
+                                className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                              >
+                                Cancel edit
+                              </button>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                            <select
+                              value={tierDraft.variation}
+                              onChange={(e) => setTierDraft((p) => ({ ...p, variation: e.target.value }))}
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-white px-3 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            >
+                              <option value="">All variations</option>
+                              {(activeProduct.variations || []).map((v) => (
+                                <option key={v.id} value={String(v.id)}>
+                                  {variationLabel(v.id, activeProduct.variations)}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="grid grid-cols-2 gap-2">
+                              <input
+                                value={tierDraft.min_quantity}
+                                onChange={(e) => setTierDraft((p) => ({ ...p, min_quantity: e.target.value }))}
+                                placeholder="Min qty"
+                                className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                              />
+                              <input
+                                value={tierDraft.max_quantity}
+                                onChange={(e) => setTierDraft((p) => ({ ...p, max_quantity: e.target.value }))}
+                                placeholder="Max qty (optional)"
+                                className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                              />
+                            </div>
+                            <input
+                              value={tierDraft.unit_price}
+                              onChange={(e) => setTierDraft((p) => ({ ...p, unit_price: e.target.value }))}
+                              placeholder="Unit price"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              value={tierDraft.currency}
+                              onChange={(e) => setTierDraft((p) => ({ ...p, currency: e.target.value }))}
+                              placeholder="Currency (e.g. USD)"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                          </div>
+                          <div className="mt-4 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void saveTier()}
+                              disabled={savingTier || !activeProduct?.id}
+                              className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                            >
+                              {savingTier ? "Saving…" : editingTierId ? "Save" : "Add"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">CURRENT TIERS</div>
+                          <div className="mt-3 space-y-2">
+                            {tiers.length === 0 ? (
+                              <div className="rounded-2xl border border-black/[0.06] bg-white p-4 text-[12px] text-[#1A1A1A]/45">
+                                No tiers yet. Add at least one tier.
+                              </div>
+                            ) : (
+                              tiers.map((t) => (
+                                <div
+                                  key={t.id}
+                                  className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">
+                                      {variationLabel(t.variation, activeProduct.variations)}
+                                    </div>
+                                    <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">
+                                      Qty {t.min_quantity}
+                                      {t.max_quantity == null ? "+" : `–${t.max_quantity}`} · {t.currency} {t.unit_price}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditTier(t)}
+                                      className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/65 hover:bg-black/[0.02]"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteTier(t.id)}
+                                      className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     ) : (
                       <div className="mt-4 space-y-5">
                         <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
@@ -1151,7 +2075,7 @@ export default function Page() {
                                     </a>
                                     <button
                                       type="button"
-                                      onClick={() => void deleteDocument(d.id)}
+                                      onClick={() => void deleteMedia(d.id)}
                                       className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
                                     >
                                       Delete
@@ -1392,6 +2316,146 @@ export default function Page() {
                       <p className="mt-2 text-[12px] font-medium text-[#1A1A1A]/35">No shipment created yet.</p>
                     )}
                   </div>
+
+                  {isSeller ? (
+                    <div className="mt-4 rounded-[18px] bg-black/[0.02] border border-black/[0.04] p-4">
+                      <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">PAYMENT</p>
+                      <div className="mt-2 text-[12px] font-semibold text-[#1A1A1A]/45">
+                        Method: {String(selected.payment_method || "—")}
+                      </div>
+                      <div className="mt-1 text-[12px] font-semibold text-[#1A1A1A]/35">
+                        Status: {String(selected.payment_status || "—")}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isSeller ? (
+                    <div className="mt-4 rounded-[18px] bg-black/[0.02] border border-black/[0.04] p-4">
+                      <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">DELIVERY ADDRESS</p>
+                      <div className="mt-2 text-[12px] font-medium text-[#1A1A1A]/35 whitespace-pre-line">
+                        {(() => {
+                          const a = selected.shipping_address && typeof selected.shipping_address === "object" ? selected.shipping_address : {};
+                          const name = [String((a as any).first_name || "").trim(), String((a as any).last_name || "").trim()].filter(Boolean).join(" ");
+                          const phone = String((a as any).phone || "").trim();
+                          const line1 = String((a as any).street1 || (a as any).line1 || "").trim();
+                          const line2 = String((a as any).street2 || (a as any).line2 || "").trim();
+                          const city = String((a as any).city || "").trim();
+                          const region = String((a as any).region || (a as any).state || "").trim();
+                          const postal = String((a as any).postal_code || (a as any).zip || "").trim();
+                          const country = String((a as any).country || "").trim();
+                          const lines = [
+                            name || "",
+                            phone ? `Phone: ${phone}` : "",
+                            line1 || "",
+                            line2 || "",
+                            [city, region, postal].filter(Boolean).join(", "),
+                            country || "",
+                          ].filter((x) => String(x || "").trim());
+                          return lines.length ? lines.join("\n") : "—";
+                        })()}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isSeller ? (
+                    <div className="mt-4 rounded-[18px] bg-black/[0.02] border border-black/[0.04] p-4">
+                      <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">SELLER ACTIONS</p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {selected.status === "created" ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void orderAction("accept")}
+                              disabled={orderActionLoading}
+                              className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void orderAction("reject")}
+                              disabled={orderActionLoading}
+                              className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#ff3b30] hover:bg-black/[0.02] disabled:opacity-60"
+                            >
+                              Reject
+                            </button>
+                          </>
+                        ) : selected.status === "accepted" ? (
+                          <button
+                            type="button"
+                            onClick={() => void orderAction("mark-shipped")}
+                            disabled={orderActionLoading}
+                            className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                          >
+                            Mark shipped
+                          </button>
+                        ) : selected.status === "shipped" ? (
+                          <button
+                            type="button"
+                            onClick={() => void orderAction("mark-delivered")}
+                            disabled={orderActionLoading}
+                            className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                          >
+                            Mark delivered
+                          </button>
+                        ) : selected.status === "delivered" ? (
+                          <button
+                            type="button"
+                            onClick={() => void orderAction("mark-completed")}
+                            disabled={orderActionLoading}
+                            className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                          >
+                            Mark completed
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isSeller ? (
+                    <div className="mt-4 rounded-[18px] bg-black/[0.02] border border-black/[0.04] p-4">
+                      <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">SHIPMENT DETAILS</p>
+                      <div className="mt-2 text-[11px] font-semibold text-[#1A1A1A]/35">
+                        {shipmentsLoading ? "Loading shipment…" : activeShipmentId ? `Shipment #${activeShipmentId}` : "No shipment yet"}
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        <input
+                          value={shipmentDraft.carrier_id}
+                          onChange={(e) => setShipmentDraft((p) => ({ ...p, carrier_id: e.target.value }))}
+                          placeholder="Carrier id (optional)"
+                          className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                        />
+                        <input
+                          value={shipmentDraft.tracking_number}
+                          onChange={(e) => setShipmentDraft((p) => ({ ...p, tracking_number: e.target.value }))}
+                          placeholder="Tracking number"
+                          className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                        />
+                        <input
+                          value={shipmentDraft.origin}
+                          onChange={(e) => setShipmentDraft((p) => ({ ...p, origin: e.target.value }))}
+                          placeholder="Origin (optional)"
+                          className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                        />
+                        <input
+                          value={shipmentDraft.destination}
+                          onChange={(e) => setShipmentDraft((p) => ({ ...p, destination: e.target.value }))}
+                          placeholder="Destination (optional)"
+                          className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                        />
+                      </div>
+                      <div className="mt-3 flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => void saveShipment()}
+                          disabled={orderActionLoading || shipmentsLoading}
+                          className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                        >
+                          {orderActionLoading ? "Saving…" : "Save shipment"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>

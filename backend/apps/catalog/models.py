@@ -202,6 +202,53 @@ class PricingTier(models.Model):
         return f"tier:{self.pk}"
 
 
+def resolve_unit_price(product: Product, variation: "ProductVariation | None", quantity: int):
+    try:
+        qty = int(quantity)
+    except Exception:
+        qty = 1
+    qty = max(1, qty)
+
+    try:
+        base_price = product.price
+        base_currency = (product.currency or "USD").upper()
+    except Exception:
+        return (None, "")
+
+    qs = PricingTier.objects.filter(product=product, deleted_at__isnull=True).order_by("-min_quantity", "id")
+
+    def pick(qs_in):
+        for t in qs_in:
+            try:
+                if (t.currency or "").upper() != base_currency:
+                    continue
+                mn = int(getattr(t, "min_quantity", 1) or 1)
+                mx = getattr(t, "max_quantity", None)
+                mx_val = int(mx) if mx is not None else None
+            except Exception:
+                continue
+            if qty < mn:
+                continue
+            if mx_val is not None and qty > mx_val:
+                continue
+            try:
+                return (t.unit_price, base_currency)
+            except Exception:
+                continue
+        return (None, "")
+
+    if variation is not None:
+        price, curr = pick(qs.filter(variation=variation))
+        if price is not None:
+            return (price, curr)
+
+    price, curr = pick(qs.filter(variation__isnull=True))
+    if price is not None:
+        return (price, curr)
+
+    return (base_price, base_currency)
+
+
 class ProductMedia(models.Model):
     class MediaType(models.TextChoices):
         IMAGE = "image", "Image"

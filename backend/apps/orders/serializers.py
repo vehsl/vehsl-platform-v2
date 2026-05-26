@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.catalog.models import Product, ProductMedia, ProductVariation
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
 
 from .models import (
     Cart,
@@ -236,8 +236,13 @@ class OrderCreateSerializer(serializers.Serializer):
             var = variation_map.get(var_id) if var_id else None
             if var and var.product_id != p.id:
                 raise serializers.ValidationError("Variation does not belong to the product.")
-            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=p.price)
-            total += p.price * qty
+            unit_price, resolved_currency = resolve_unit_price(p, var, qty)
+            if unit_price is None:
+                raise serializers.ValidationError("Could not resolve unit price.")
+            if resolved_currency and resolved_currency != currency:
+                raise serializers.ValidationError("Pricing tier currency mismatch.")
+            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=unit_price)
+            total += unit_price * qty
 
         order.total_amount = total
         order.save(update_fields=["total_amount"])
