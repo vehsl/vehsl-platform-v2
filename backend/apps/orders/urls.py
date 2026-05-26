@@ -6,6 +6,7 @@ from .views import (
     AdminReleaseConditionViewSet,
     AdminReleaseOrderViewSet,
     CartMeView,
+    CartItemMeDetailView,
     DisputeViewSet,
     DocumentViewSet,
     OrderViewSet,
@@ -27,5 +28,6 @@ router.register(r"wishlist", WishlistViewSet, basename="wishlist")
 
 urlpatterns = [
     path("cart", CartMeView.as_view()),
+    path("cart/items/<int:pk>", CartItemMeDetailView.as_view()),
     path("", include(router.urls)),
 ]

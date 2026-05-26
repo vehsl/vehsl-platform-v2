@@ -14,6 +14,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import (
     AdminProfile,
+    BuyerAddress,
     BuyerProfile,
     ChatMessage,
     ChatThread,
@@ -37,6 +38,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "city",
             "street",
             "address",
+            "language_preference",
             "nationality",
             "gender",
             "date_of_birth",
@@ -135,8 +137,28 @@ class SellerProfileSerializer(serializers.ModelSerializer):
             "verification_status",
             "country",
             "region",
+            "warehouse_location",
             "vehsl_rating",
             "sample_low_threshold",
+        ]
+
+
+class BuyerAddressSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BuyerAddress
+        fields = [
+            "id",
+            "kind",
+            "contact_name",
+            "phone",
+            "country",
+            "region",
+            "city",
+            "street1",
+            "street2",
+            "postal_code",
+            "created_at",
+            "updated_at",
         ]
 
 
@@ -169,6 +191,7 @@ class MeUpdateSerializer(serializers.Serializer):
     city = serializers.CharField(required=False, allow_blank=True)
     street = serializers.CharField(required=False, allow_blank=True)
     address = serializers.CharField(required=False, allow_blank=True)
+    language_preference = serializers.ChoiceField(choices=["en", "zh"], required=False)
     nationality = serializers.CharField(required=False, allow_blank=True)
     gender = serializers.CharField(required=False, allow_blank=True)
     date_of_birth = serializers.DateField(required=False, allow_null=True)

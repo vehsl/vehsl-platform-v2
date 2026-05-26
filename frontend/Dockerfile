@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=vehsl-platform-v2-frontend:latest
+ARG NODE_IMAGE=node:20-alpine
 FROM ${NODE_IMAGE} AS deps
 USER root
 WORKDIR /app

@@ -21,6 +21,7 @@ from .views import (
     AdminUiNotificationsMarkAllReadView,
     AdminUiNotificationsMarkReadView,
     AdminUiNotificationsView,
+    BuyerAddressViewSet,
     MeView,
     MeMenuView,
     MeSwitchAccountTypeView,
@@ -43,6 +44,7 @@ router = DefaultRouter()
 router.register(r"admin/users", AdminUserViewSet, basename="admin-user")
 router.register(r"admin/verification/users", AdminVerificationUserViewSet, basename="admin-verification-user")
 router.register(r"admin/verification/kyc-documents", AdminKycDocumentViewSet, basename="admin-kyc-document")
+router.register(r"auth/addresses", BuyerAddressViewSet, basename="buyer-address")
 router.register(r"chat/threads", ChatThreadViewSet, basename="chat-thread")
 router.register(r"chat/messages", ChatMessageViewSet, basename="chat-message")
 router.register(r"help/articles", HelpArticleViewSet, basename="help-article")

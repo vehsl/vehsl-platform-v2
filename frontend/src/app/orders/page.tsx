@@ -49,6 +49,44 @@ type OrderRow = {
   items: OrderItem[];
 };
 
+type SpecItem = { label: string; value: string };
+type SpecGroup = { title: string; collapsed?: boolean; items: SpecItem[] };
+
+type ProductMediaRow = {
+  id: number;
+  media_type: string;
+  title?: string;
+  content_type?: string;
+  size_bytes?: number;
+  public_url?: string;
+  position?: number;
+  variation?: number | null;
+};
+
+type SellerProductRow = {
+  id: number;
+  title?: string;
+  name?: string;
+  status?: string;
+};
+
+type SellerProductDetail = SellerProductRow & {
+  detail_config?: Record<string, unknown>;
+  media?: ProductMediaRow[];
+  origin_location?: Record<string, unknown>;
+  weight_grams?: number;
+  ship_time_min_days?: number;
+  ship_time_max_days?: number;
+  sample_available?: boolean;
+  sample_ship_days?: number;
+};
+
+type SellerProfileMe = {
+  warehouse_location?: Record<string, unknown>;
+  country?: string;
+  region?: string;
+};
+
 function apiBase() {
   const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
   const normalize = (u: string) => u.replace(/\/$/, "");
@@ -143,6 +181,47 @@ function safeResults(data: any): { rows: OrderRow[]; count?: number } {
   return { rows: [] };
 }
 
+function safeProducts(data: any): SellerProductRow[] {
+  if (Array.isArray(data)) return data as SellerProductRow[];
+  if (data && Array.isArray(data.results)) return data.results as SellerProductRow[];
+  return [];
+}
+
+function fmtBytes(bytes: number) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const kb = 1024;
+  const mb = kb * 1024;
+  const gb = mb * 1024;
+  if (n >= gb) return `${(n / gb).toFixed(1)} GB`;
+  if (n >= mb) return `${(n / mb).toFixed(1)} MB`;
+  if (n >= kb) return `${Math.round(n / kb)} KB`;
+  return `${Math.round(n)} B`;
+}
+
+function normalizeSpecGroups(raw: any): SpecGroup[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SpecGroup[] = [];
+  for (const g of raw) {
+    if (!g || typeof g !== "object") continue;
+    const title = String((g as any).title || "").trim();
+    if (!title) continue;
+    const itemsRaw = (g as any).items;
+    const items: SpecItem[] = [];
+    if (Array.isArray(itemsRaw)) {
+      for (const it of itemsRaw) {
+        if (!it || typeof it !== "object") continue;
+        const label = String((it as any).label || "").trim();
+        const value = String((it as any).value || "").trim();
+        if (!label || !value) continue;
+        items.push({ label, value });
+      }
+    }
+    out.push({ title, collapsed: Boolean((g as any).collapsed), items });
+  }
+  return out;
+}
+
 export default function Page() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -153,6 +232,31 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [selected, setSelected] = useState<OrderRow | null>(null);
+
+  const [productsOpen, setProductsOpen] = useState(false);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [products, setProducts] = useState<SellerProductRow[]>([]);
+  const [activeProduct, setActiveProduct] = useState<SellerProductDetail | null>(null);
+  const [productManagerTab, setProductManagerTab] = useState<"specs" | "docs" | "shipping">("specs");
+  const [specDraft, setSpecDraft] = useState<SpecGroup[]>([]);
+  const [savingSpecs, setSavingSpecs] = useState(false);
+  const [docTitle, setDocTitle] = useState("");
+  const [docUrl, setDocUrl] = useState("");
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [savingDoc, setSavingDoc] = useState(false);
+  const [shippingDraft, setShippingDraft] = useState({
+    weight_grams: "",
+    ship_time_min_days: "",
+    ship_time_max_days: "",
+    sample_available: false,
+    sample_ship_days: "",
+    origin_country: "",
+    origin_region: "",
+    origin_city: "",
+  });
+  const [savingShipping, setSavingShipping] = useState(false);
+  const [warehouseDraft, setWarehouseDraft] = useState({ country: "", region: "", city: "" });
+  const [savingWarehouse, setSavingWarehouse] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const qDebounceRef = useRef<number | null>(null);
@@ -189,6 +293,290 @@ export default function Page() {
     const t = (authUser?.account_type || authUser?.role || "").toString().toLowerCase();
     return t === "seller";
   }, [authUser]);
+
+  const apiJson = useCallback(async (path: string, init?: RequestInit) => {
+    const access = readAccessToken();
+    if (!access) throw new Error("Not signed in.");
+    const res = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${access}`,
+        ...(init?.headers || {}),
+      },
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = (data && (data.detail || data.error)) || `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  }, []);
+
+  const apiUpload = useCallback(async (path: string, form: FormData) => {
+    const access = readAccessToken();
+    if (!access) throw new Error("Not signed in.");
+    const res = await fetch(`${apiBase()}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${access}` },
+      body: form,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = (data && (data.detail || data.error)) || `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return data;
+  }, []);
+
+  const hydrateShippingDraft = useCallback((detail: SellerProductDetail) => {
+    const origin = detail?.origin_location && typeof detail.origin_location === "object" ? detail.origin_location : {};
+    const country = String((origin as any).country || "").trim();
+    const region = String((origin as any).region || "").trim();
+    const city = String((origin as any).city || "").trim();
+    setShippingDraft({
+      weight_grams: String((detail as any).weight_grams ?? "").trim(),
+      ship_time_min_days: String((detail as any).ship_time_min_days ?? "").trim(),
+      ship_time_max_days: String((detail as any).ship_time_max_days ?? "").trim(),
+      sample_available: Boolean((detail as any).sample_available),
+      sample_ship_days: String((detail as any).sample_ship_days ?? "").trim(),
+      origin_country: country,
+      origin_region: region,
+      origin_city: city,
+    });
+  }, []);
+
+  const openProductsManager = useCallback(async () => {
+    if (!isSeller) return;
+    setProductsOpen(true);
+    setProductsLoading(true);
+    try {
+      const data = await apiJson("/api/v1/products/?page_size=100&ordering=-created_at");
+      const rows = safeProducts(data);
+      setProducts(rows);
+      if (!activeProduct && rows.length) {
+        const firstId = rows[0].id;
+        const detail = (await apiJson(`/api/v1/products/${firstId}/`)) as SellerProductDetail;
+        setActiveProduct(detail);
+        const cfg = detail?.detail_config && typeof detail.detail_config === "object" ? detail.detail_config : {};
+        setSpecDraft(normalizeSpecGroups((cfg as any).specifications));
+        hydrateShippingDraft(detail);
+        setProductManagerTab("specs");
+        setDocTitle("");
+        setDocUrl("");
+        setDocFile(null);
+      }
+      try {
+        const prof = (await apiJson("/api/v1/profiles/seller/me")) as SellerProfileMe;
+        const w = prof?.warehouse_location && typeof prof.warehouse_location === "object" ? prof.warehouse_location : {};
+        const wc = String((w as any).country || prof?.country || "").trim();
+        const wr = String((w as any).region || prof?.region || "").trim();
+        const wcity = String((w as any).city || "").trim();
+        setWarehouseDraft({ country: wc, region: wr, city: wcity });
+      } catch {}
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load products.";
+      toast.error(msg);
+    } finally {
+      setProductsLoading(false);
+    }
+  }, [activeProduct, apiJson, hydrateShippingDraft, isSeller]);
+
+  const selectProductForSpecs = useCallback(
+    async (id: number) => {
+      if (!id) return;
+      setProductsLoading(true);
+      try {
+        const detail = (await apiJson(`/api/v1/products/${id}/`)) as SellerProductDetail;
+        setActiveProduct(detail);
+        const cfg = detail?.detail_config && typeof detail.detail_config === "object" ? detail.detail_config : {};
+        setSpecDraft(normalizeSpecGroups((cfg as any).specifications));
+        hydrateShippingDraft(detail);
+        setDocTitle("");
+        setDocUrl("");
+        setDocFile(null);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Failed to load product.";
+        toast.error(msg);
+      } finally {
+        setProductsLoading(false);
+      }
+    },
+    [apiJson, hydrateShippingDraft],
+  );
+
+  const saveSpecifications = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    if (savingSpecs) return;
+    setSavingSpecs(true);
+    try {
+      const currentCfg =
+        activeProduct.detail_config && typeof activeProduct.detail_config === "object" ? activeProduct.detail_config : {};
+      const payload = {
+        detail_config: {
+          ...(currentCfg as any),
+          specifications: specDraft.map((g) => ({
+            title: String(g.title || "").trim(),
+            collapsed: Boolean(g.collapsed),
+            items: (g.items || [])
+              .map((it) => ({ label: String(it.label || "").trim(), value: String(it.value || "").trim() }))
+              .filter((it) => it.label && it.value),
+          })),
+        },
+      };
+      const updated = (await apiJson(`/api/v1/products/${activeProduct.id}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })) as SellerProductDetail;
+      setActiveProduct(updated);
+      toast.success("Specifications saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setSavingSpecs(false);
+    }
+  }, [activeProduct, apiJson, savingSpecs, specDraft]);
+
+  const saveShipping = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    if (savingShipping) return;
+    setSavingShipping(true);
+    try {
+      const toInt = (raw: string) => {
+        const n = Number(String(raw || "").trim());
+        if (!Number.isFinite(n)) return null;
+        return Math.max(0, Math.floor(n));
+      };
+      const payload: any = {};
+      const wg = toInt(shippingDraft.weight_grams);
+      const mn = toInt(shippingDraft.ship_time_min_days);
+      const mx = toInt(shippingDraft.ship_time_max_days);
+      const ss = toInt(shippingDraft.sample_ship_days);
+      if (wg != null) payload.weight_grams = wg;
+      if (mn != null) payload.ship_time_min_days = mn;
+      if (mx != null) payload.ship_time_max_days = mx;
+      payload.sample_available = Boolean(shippingDraft.sample_available);
+      if (ss != null) payload.sample_ship_days = ss;
+      const origin_country = String(shippingDraft.origin_country || "").trim();
+      const origin_region = String(shippingDraft.origin_region || "").trim();
+      const origin_city = String(shippingDraft.origin_city || "").trim();
+      payload.origin_location = [origin_country, origin_region, origin_city].some(Boolean)
+        ? { country: origin_country, region: origin_region, city: origin_city }
+        : {};
+      const updated = (await apiJson(`/api/v1/products/${activeProduct.id}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })) as SellerProductDetail;
+      setActiveProduct(updated);
+      hydrateShippingDraft(updated);
+      toast.success("Shipping & samples saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setSavingShipping(false);
+    }
+  }, [activeProduct?.id, apiJson, hydrateShippingDraft, savingShipping, shippingDraft]);
+
+  const saveWarehouse = useCallback(async () => {
+    if (savingWarehouse) return;
+    setSavingWarehouse(true);
+    try {
+      const country = String(warehouseDraft.country || "").trim();
+      const region = String(warehouseDraft.region || "").trim();
+      const city = String(warehouseDraft.city || "").trim();
+      await apiJson("/api/v1/profiles/seller/me", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ warehouse_location: { country, region, city } }),
+      });
+      toast.success("Warehouse location saved");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      toast.error(msg);
+    } finally {
+      setSavingWarehouse(false);
+    }
+  }, [apiJson, savingWarehouse, warehouseDraft.city, warehouseDraft.country, warehouseDraft.region]);
+
+  const productDocuments = useMemo(() => {
+    const rows = Array.isArray(activeProduct?.media) ? (activeProduct!.media as ProductMediaRow[]) : [];
+    return rows
+      .filter((m) => (m.media_type || "") === "document" && (m.public_url || "").trim())
+      .map((m) => ({
+        id: Number(m.id || 0),
+        title: String(m.title || "").trim(),
+        contentType: String(m.content_type || "").trim(),
+        sizeBytes: Number(m.size_bytes || 0) || 0,
+        url: String(m.public_url || "").trim(),
+      }))
+      .filter((d) => d.id && d.url);
+  }, [activeProduct?.media]);
+
+  const refreshActiveProduct = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    const detail = (await apiJson(`/api/v1/products/${activeProduct.id}/`)) as SellerProductDetail;
+    setActiveProduct(detail);
+  }, [activeProduct?.id, apiJson]);
+
+  const uploadDocument = useCallback(async () => {
+    if (!activeProduct?.id) return;
+    if (savingDoc) return;
+    const title = docTitle.trim();
+    if (!docFile && !docUrl.trim()) {
+      toast.error("Choose a file or enter a URL.");
+      return;
+    }
+    setSavingDoc(true);
+    try {
+      if (docFile) {
+        const form = new FormData();
+        form.set("product", String(activeProduct.id));
+        form.set("media_type", "document");
+        if (title) form.set("title", title);
+        form.set("file", docFile);
+        await apiUpload("/api/v1/product-media/upload/", form);
+      } else {
+        await apiJson("/api/v1/product-media/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            product: activeProduct.id,
+            media_type: "document",
+            title: title || docUrl.trim(),
+            url: docUrl.trim(),
+          }),
+        });
+      }
+      setDocTitle("");
+      setDocUrl("");
+      setDocFile(null);
+      await refreshActiveProduct();
+      toast.success("Document uploaded");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Upload failed.";
+      toast.error(msg);
+    } finally {
+      setSavingDoc(false);
+    }
+  }, [activeProduct?.id, apiJson, apiUpload, docFile, docTitle, docUrl, refreshActiveProduct, savingDoc]);
+
+  const deleteDocument = useCallback(
+    async (id: number) => {
+      if (!id) return;
+      try {
+        await apiJson(`/api/v1/product-media/${id}/`, { method: "DELETE" });
+        await refreshActiveProduct();
+        toast.success("Deleted");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Delete failed.";
+        toast.error(msg);
+      }
+    },
+    [apiJson, refreshActiveProduct],
+  );
 
   const fetchOrders = useCallback(async (query: string, key: FilterKey) => {
     if (!mounted) return;
@@ -301,6 +689,489 @@ export default function Page() {
         }}
       />
 
+      {productsOpen ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setProductsOpen(false)}
+            aria-label="Close"
+          />
+          <div className="relative w-full max-w-5xl overflow-hidden rounded-[26px] border border-white/70 bg-white/85 shadow-[0_20px_80px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-6 py-4">
+              <div>
+                <div className="text-[14px] font-black text-[#1A1A1A]/85">Product content</div>
+                <div className="text-[12px] font-medium text-[#1A1A1A]/40">Manage specifications and documents for your product page.</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="hidden sm:inline-flex items-center rounded-full border border-black/[0.08] bg-white p-1">
+                  <button
+                    type="button"
+                    onClick={() => setProductManagerTab("specs")}
+                    className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                      productManagerTab === "specs" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                    }`}
+                  >
+                    Specifications
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProductManagerTab("shipping")}
+                    className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                      productManagerTab === "shipping" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                    }`}
+                  >
+                    Shipping
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProductManagerTab("docs")}
+                    className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                      productManagerTab === "docs" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                    }`}
+                  >
+                    Documents
+                  </button>
+                </div>
+                {productManagerTab === "specs" ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveSpecifications()}
+                    disabled={!activeProduct?.id || savingSpecs}
+                    className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                  >
+                    {savingSpecs ? "Saving…" : "Save"}
+                  </button>
+                ) : productManagerTab === "shipping" ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveShipping()}
+                    disabled={!activeProduct?.id || savingShipping}
+                    className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                  >
+                    {savingShipping ? "Saving…" : "Save"}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setProductsOpen(false)}
+                  className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-0 md:grid-cols-[280px_1fr]">
+              <div className="border-b border-black/[0.06] p-4 md:border-b-0 md:border-r">
+                <div className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">YOUR PRODUCTS</div>
+                <div className="mt-3 space-y-2 max-h-[70dvh] overflow-auto pr-1">
+                  {productsLoading && !products.length ? (
+                    <div className="rounded-2xl border border-black/[0.06] bg-white p-4 text-[12px] text-[#1A1A1A]/45">Loading…</div>
+                  ) : products.length === 0 ? (
+                    <div className="rounded-2xl border border-black/[0.06] bg-white p-4 text-[12px] text-[#1A1A1A]/45">
+                      No products found.
+                    </div>
+                  ) : (
+                    products.map((p) => {
+                      const active = p.id === activeProduct?.id;
+                      const label = (p.title || p.name || `Product #${p.id}`).toString();
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => void selectProductForSpecs(p.id)}
+                          className={`w-full rounded-2xl border p-3 text-left transition ${
+                            active ? "bg-black/[0.03] border-black/20" : "bg-white border-black/[0.06] hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          <div className="text-[13px] font-bold text-[#1A1A1A]/80 truncate">{label}</div>
+                          <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">ID: {p.id}</div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="p-5">
+                {!activeProduct ? (
+                  <div className="rounded-2xl border border-black/[0.06] bg-white p-5 text-[12px] text-[#1A1A1A]/45">
+                    Select a product to edit specifications.
+                  </div>
+                ) : (
+                  <div className="max-h-[70dvh] overflow-auto pr-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[13px] font-bold text-[#1A1A1A]/80">
+                        {(activeProduct.title || activeProduct.name || `Product #${activeProduct.id}`).toString()}
+                      </div>
+                      <div className="inline-flex sm:hidden items-center rounded-full border border-black/[0.08] bg-white p-1">
+                        <button
+                          type="button"
+                          onClick={() => setProductManagerTab("specs")}
+                          className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                            productManagerTab === "specs" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          Specs
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProductManagerTab("shipping")}
+                          className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                            productManagerTab === "shipping" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          Shipping
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProductManagerTab("docs")}
+                          className={`h-9 rounded-full px-4 text-[12px] font-bold transition ${
+                            productManagerTab === "docs" ? "bg-black text-white" : "text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                          }`}
+                        >
+                          Docs
+                        </button>
+                      </div>
+                      {productManagerTab === "specs" ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSpecDraft((prev) => [
+                              ...prev,
+                              { title: "New section", collapsed: false, items: [{ label: "New spec", value: "Value" }] },
+                            ])
+                          }
+                          className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                        >
+                          Add section
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {productManagerTab === "specs" ? (
+                      <div className="mt-4 space-y-4">
+                        {specDraft.length === 0 ? (
+                          <div className="rounded-2xl border border-black/[0.06] bg-white p-5 text-[12px] text-[#1A1A1A]/45">
+                            No specifications yet. Add a section to start.
+                          </div>
+                        ) : (
+                          specDraft.map((g, gi) => (
+                            <div key={`${g.title}-${gi}`} className="rounded-3xl border border-black/[0.06] bg-white overflow-hidden">
+                              <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-4 py-3">
+                                <input
+                                  value={g.title}
+                                  onChange={(e) =>
+                                    setSpecDraft((prev) => prev.map((x, i) => (i === gi ? { ...x, title: e.target.value } : x)))
+                                  }
+                                  className="w-full bg-transparent text-[13px] font-extrabold text-[#1A1A1A]/80 outline-none"
+                                  placeholder="Section title"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSpecDraft((prev) => prev.map((x, i) => (i === gi ? { ...x, collapsed: !x.collapsed } : x)))
+                                    }
+                                    className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-black/[0.02]"
+                                  >
+                                    {g.collapsed ? "Collapsed" : "Open"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSpecDraft((prev) => prev.filter((_, i) => i !== gi))}
+                                    className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="p-4">
+                                <div className="space-y-2">
+                                  {g.items.map((it, ii) => (
+                                    <div key={`${ii}`} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                                      <input
+                                        value={it.label}
+                                        onChange={(e) =>
+                                          setSpecDraft((prev) =>
+                                            prev.map((x, i) =>
+                                              i === gi
+                                                ? {
+                                                    ...x,
+                                                    items: x.items.map((y, j) => (j === ii ? { ...y, label: e.target.value } : y)),
+                                                  }
+                                                : x,
+                                            ),
+                                          )
+                                        }
+                                        className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                                        placeholder="Label"
+                                      />
+                                      <input
+                                        value={it.value}
+                                        onChange={(e) =>
+                                          setSpecDraft((prev) =>
+                                            prev.map((x, i) =>
+                                              i === gi
+                                                ? {
+                                                    ...x,
+                                                    items: x.items.map((y, j) => (j === ii ? { ...y, value: e.target.value } : y)),
+                                                  }
+                                                : x,
+                                            ),
+                                          )
+                                        }
+                                        className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                                        placeholder="Value"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSpecDraft((prev) =>
+                                            prev.map((x, i) =>
+                                              i === gi ? { ...x, items: x.items.filter((_, j) => j !== ii) } : x,
+                                            ),
+                                          )
+                                        }
+                                        className="h-10 rounded-2xl border border-black/[0.06] bg-white px-4 text-[12px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div className="mt-3 flex items-center justify-between gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSpecDraft((prev) =>
+                                        prev.map((x, i) =>
+                                          i === gi ? { ...x, items: [...x.items, { label: "", value: "" }] } : x,
+                                        ),
+                                      )
+                                    }
+                                    className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                                  >
+                                    Add row
+                                  </button>
+                                  <div className="text-[11px] font-semibold text-[#1A1A1A]/35">
+                                    {(g.items || []).filter((x) => (x.label || "").trim() && (x.value || "").trim()).length} rows
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    ) : productManagerTab === "shipping" ? (
+                      <div className="mt-4 space-y-5">
+                        <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[12px] font-bold text-[#1A1A1A]/70">Product shipping & samples</div>
+                              <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">
+                                These fields drive buyer shipping quotes and the sample banner.
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void saveShipping()}
+                              disabled={savingShipping || !activeProduct?.id}
+                              className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02] disabled:opacity-60"
+                            >
+                              {savingShipping ? "Saving…" : "Save"}
+                            </button>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <input
+                              value={shippingDraft.weight_grams}
+                              onChange={(e) => setShippingDraft((p) => ({ ...p, weight_grams: e.target.value }))}
+                              placeholder="Weight (grams) e.g. 500"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <div className="grid grid-cols-2 gap-2">
+                              <input
+                                value={shippingDraft.ship_time_min_days}
+                                onChange={(e) => setShippingDraft((p) => ({ ...p, ship_time_min_days: e.target.value }))}
+                                placeholder="Handling min days"
+                                className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                              />
+                              <input
+                                value={shippingDraft.ship_time_max_days}
+                                onChange={(e) => setShippingDraft((p) => ({ ...p, ship_time_max_days: e.target.value }))}
+                                placeholder="Handling max days"
+                                className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                              />
+                            </div>
+
+                            <label className="inline-flex items-center gap-2 rounded-2xl border border-black/[0.06] bg-white px-4 py-2 text-[12px] font-semibold text-[#1A1A1A]/70">
+                              <input
+                                type="checkbox"
+                                checked={shippingDraft.sample_available}
+                                onChange={(e) => setShippingDraft((p) => ({ ...p, sample_available: e.target.checked }))}
+                              />
+                              Sample available
+                            </label>
+                            <input
+                              value={shippingDraft.sample_ship_days}
+                              onChange={(e) => setShippingDraft((p) => ({ ...p, sample_ship_days: e.target.value }))}
+                              placeholder="Sample ships in (days)"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+
+                            <input
+                              value={shippingDraft.origin_country}
+                              onChange={(e) => setShippingDraft((p) => ({ ...p, origin_country: e.target.value }))}
+                              placeholder="Origin country"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              value={shippingDraft.origin_region}
+                              onChange={(e) => setShippingDraft((p) => ({ ...p, origin_region: e.target.value }))}
+                              placeholder="Origin region/state"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              value={shippingDraft.origin_city}
+                              onChange={(e) => setShippingDraft((p) => ({ ...p, origin_city: e.target.value }))}
+                              placeholder="Origin city"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[12px] font-bold text-[#1A1A1A]/70">Warehouse location</div>
+                              <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35">
+                                Used as fallback origin for shipping quotes when product origin is empty.
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void saveWarehouse()}
+                              disabled={savingWarehouse}
+                              className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02] disabled:opacity-60"
+                            >
+                              {savingWarehouse ? "Saving…" : "Save"}
+                            </button>
+                          </div>
+                          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                            <input
+                              value={warehouseDraft.country}
+                              onChange={(e) => setWarehouseDraft((p) => ({ ...p, country: e.target.value }))}
+                              placeholder="Country"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              value={warehouseDraft.region}
+                              onChange={(e) => setWarehouseDraft((p) => ({ ...p, region: e.target.value }))}
+                              placeholder="Region/state"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              value={warehouseDraft.city}
+                              onChange={(e) => setWarehouseDraft((p) => ({ ...p, city: e.target.value }))}
+                              placeholder="City"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 space-y-5">
+                        <div className="rounded-3xl border border-black/[0.06] bg-white p-5">
+                          <div className="text-[12px] font-bold text-[#1A1A1A]/70">Upload document</div>
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <input
+                              value={docTitle}
+                              onChange={(e) => setDocTitle(e.target.value)}
+                              placeholder="Document title (e.g. User manual)"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              value={docUrl}
+                              onChange={(e) => setDocUrl(e.target.value)}
+                              placeholder="Or paste a public URL"
+                              className="h-10 rounded-2xl border border-black/[0.06] bg-black/[0.01] px-4 text-[12px] font-semibold text-[#1A1A1A]/70 outline-none"
+                            />
+                            <input
+                              type="file"
+                              onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+                              className="sm:col-span-2 block w-full text-[12px] text-[#1A1A1A]/60"
+                            />
+                          </div>
+                          <div className="mt-4 flex items-center justify-between gap-3">
+                            <div className="text-[11px] font-semibold text-[#1A1A1A]/35">
+                              Use file upload now; later you can use cloud URLs and store them in DB.
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void uploadDocument()}
+                              disabled={savingDoc || !activeProduct?.id}
+                              className="rounded-full bg-black px-4 py-2 text-[12px] font-bold text-white disabled:bg-black/20 disabled:text-white/70"
+                            >
+                              {savingDoc ? "Uploading…" : "Upload"}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">CURRENT DOCUMENTS</div>
+                          <div className="mt-3 space-y-2">
+                            {productDocuments.length === 0 ? (
+                              <div className="rounded-2xl border border-black/[0.06] bg-white p-4 text-[12px] text-[#1A1A1A]/45">
+                                No documents yet.
+                              </div>
+                            ) : (
+                              productDocuments.map((d) => (
+                                <div
+                                  key={d.id}
+                                  className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white p-4"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">{d.title || `Document #${d.id}`}</div>
+                                    <div className="mt-1 text-[11px] font-semibold text-[#1A1A1A]/35 truncate">
+                                      {d.contentType || "document"} {d.sizeBytes ? `· ${fmtBytes(d.sizeBytes)}` : ""}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <a
+                                      href={d.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#1A1A1A]/65 hover:bg-black/[0.02]"
+                                    >
+                                      Open
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteDocument(d.id)}
+                                      className="rounded-full border border-black/[0.08] bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff3b30] hover:bg-black/[0.02]"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="max-w-[1120px] mx-auto px-4 sm:px-6 pt-10 pb-10">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div>
@@ -328,6 +1199,14 @@ export default function Page() {
                 className="w-full rounded-full pl-9 pr-3 py-2.5 text-[13px] font-semibold outline-none bg-white/60 border border-white/70 shadow-[0_1px_10px_rgba(0,0,0,0.04)]"
               />
             </div>
+            {isSeller ? (
+              <button
+                onClick={() => void openProductsManager()}
+                className="rounded-full px-4 py-2.5 text-[12px] font-bold bg-white/70 border border-white/80 hover:bg-white/90 transition"
+              >
+                Products
+              </button>
+            ) : null}
             <button
               onClick={() => fetchOrders(q, filter)}
               className="rounded-full px-4 py-2.5 text-[12px] font-bold bg-white/70 border border-white/80 hover:bg-white/90 transition"

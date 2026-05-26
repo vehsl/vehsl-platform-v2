@@ -7,7 +7,7 @@ from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.db.models import Count, Sum
 from django.utils import timezone
 
-from apps.catalog.models import Category, ComplianceRule, PricingTier, Product, ProductMedia, ProductVariation, Trademark
+from apps.catalog.models import Category, ComplianceRule, PricingTier, Product, ProductMedia, ProductVariation, ShippingRate, Trademark, Warehouse
 from apps.inventory.models import Sample, SampleRequest
 from apps.orders.models import Cart, CartItem, Dispute, Document, Order, OrderItem, Review, Shipment, ShipmentEvent
 from apps.payments.models import Payment
@@ -255,6 +255,33 @@ class TrademarkAdmin(admin.ModelAdmin):
 class ComplianceRuleAdmin(admin.ModelAdmin):
     list_display = ("id", "category", "rule_type", "created_at")
     list_filter = ("rule_type",)
+
+
+@admin.register(ShippingRate, site=admin_site)
+class ShippingRateAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "method",
+        "origin_country",
+        "dest_country",
+        "currency",
+        "base_fee",
+        "price_per_kg",
+        "per_unit_fee",
+        "transit_min_days",
+        "transit_max_days",
+        "active",
+        "updated_at",
+    )
+    list_filter = ("method", "currency", "active")
+    search_fields = ("origin_country", "dest_country")
+
+
+@admin.register(Warehouse, site=admin_site)
+class WarehouseAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "code", "country", "region", "city", "active", "updated_at")
+    list_filter = ("active", "country", "city")
+    search_fields = ("name", "code", "country", "region", "city", "street1")
 
 
 @admin.register(Cart, site=admin_site)

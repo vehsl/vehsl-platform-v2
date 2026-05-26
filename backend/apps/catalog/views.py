@@ -1,18 +1,35 @@
 import csv
 
-from django.db.models import BooleanField, Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField, Q, Sum, Value, When
+from decimal import Decimal
+from uuid import uuid4
+
+from django.core.files.storage import default_storage
+from django.db.models import Avg, BooleanField, Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.accounts.admin_utils import AdminPageNumberPagination, audit
 from apps.accounts.permissions import IsAdmin, IsSeller
 from apps.accounts.models import Notification, User
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
+from .models import (
+    Category,
+    ComplianceRule,
+    ListingRequest,
+    ListingRequestPhoto,
+    PricingTier,
+    Product,
+    ProductMedia,
+    ProductVariation,
+    ShippingRate,
+    Trademark,
+    Warehouse,
+)
 from .serializers import (
     AdminProductListSerializer,
     AdminProductWriteSerializer,
@@ -25,6 +42,7 @@ from .serializers import (
     ProductSerializer,
     ProductVariationSerializer,
     TrademarkSerializer,
+    WarehouseSerializer,
 )
 
 
@@ -58,20 +76,96 @@ class CategoryViewSet(viewsets.ModelViewSet):
         audit(self.request.user, action="admin_category_deleted", target_type="category", target_id=str(obj_id), payload={})
         super().perform_destroy(instance)
 
+    @action(detail=False, methods=["get"], url_path="explore")
+    def explore(self, request):
+        base_qs = Category.objects.filter(deleted_at__isnull=True).exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
+        top = list(base_qs.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
+        if not top:
+            return Response({"categories": [], "total_products": 0})
+
+        top_ids = [c.id for c in top]
+        children = list(base_qs.filter(parent_id__in=top_ids).order_by("display_order", "sort_order", "name"))
+        all_cat_ids = top_ids + [c.id for c in children]
+
+        product_qs = Product.objects.filter(
+            deleted_at__isnull=True,
+            status__in=[Product.Status.APPROVED, Product.Status.ACTIVE],
+            category_id__in=all_cat_ids,
+        )
+        counts = {row["category_id"]: row["c"] for row in product_qs.values("category_id").annotate(c=Count("id"))}
+
+        children_by_parent: dict[int, list[Category]] = {}
+        for ch in children:
+            children_by_parent.setdefault(int(ch.parent_id), []).append(ch)
+
+        out = []
+        total_products = 0
+        for c in top:
+            chs = children_by_parent.get(int(c.id), [])
+            children_out = []
+            subtotal = int(counts.get(c.id, 0) or 0)
+            for ch in chs:
+                ch_count = int(counts.get(ch.id, 0) or 0)
+                subtotal += ch_count
+                children_out.append(
+                    {
+                        "id": int(ch.id),
+                        "name": ch.name,
+                        "slug": ch.slug,
+                        "accent": ch.accent or "",
+                        "icon": ch.icon or "",
+                        "product_count": ch_count,
+                        "parent_id": int(c.id),
+                    }
+                )
+
+            total_products += subtotal
+            out.append(
+                {
+                    "id": int(c.id),
+                    "name": c.name,
+                    "slug": c.slug,
+                    "accent": c.accent or "",
+                    "icon": c.icon or "",
+                    "product_count": subtotal,
+                    "children": children_out,
+                }
+            )
+
+        return Response({"categories": out, "total_products": total_products})
+
 
 class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
+    pagination_class = AdminPageNumberPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["name", "sku", "description"]
+    search_fields = ["name", "title", "sku", "description"]
     ordering_fields = ["created_at", "price"]
     ordering = ["-created_at"]
 
     def get_queryset(self):
-        qs = Product.objects.select_related("category", "seller").filter(deleted_at__isnull=True)
+        qs = Product.objects.select_related("category", "seller").prefetch_related("media").filter(deleted_at__isnull=True)
         user = self.request.user
         if user.is_authenticated and user.account_type == "seller":
-            return qs.filter(seller=user)
-        return qs.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+            out = qs.filter(seller=user)
+        else:
+            out = qs.filter(status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+
+        cat = (self.request.query_params.get("category") or "").strip()
+        if cat:
+            try:
+                cat_id = int(cat)
+            except Exception:
+                cat_id = None
+            if cat_id:
+                out = out.filter(category_id=cat_id)
+            else:
+                out = out.filter(category__slug__iexact=cat)
+        out = out.annotate(
+            review_count=Count("reviews", filter=Q(reviews__deleted_at__isnull=True), distinct=True),
+            average_rating=Avg("reviews__rating", filter=Q(reviews__deleted_at__isnull=True)),
+        )
+        return out.prefetch_related("variations", "pricing_tiers")
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:
@@ -80,6 +174,234 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(seller=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="compare")
+    def compare(self, request, *args, **kwargs):
+        raw = (request.query_params.get("ids") or "").strip()
+        if not raw:
+            return Response({"results": []})
+        ids = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ids.append(int(part))
+            except Exception:
+                continue
+        uniq = []
+        seen = set()
+        for i in ids:
+            if i in seen:
+                continue
+            seen.add(i)
+            uniq.append(i)
+        uniq = uniq[:4]
+        qs = self.get_queryset().filter(id__in=uniq).prefetch_related("media", "variations", "pricing_tiers")
+        rows = list(qs)
+        order = {pid: idx for idx, pid in enumerate(uniq)}
+        rows.sort(key=lambda p: order.get(getattr(p, "id", 0), 999))
+        data = ProductSerializer(rows, many=True, context={"request": request}).data
+        return Response({"results": data})
+
+
+class WarehouseViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = WarehouseSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        qs = Warehouse.objects.filter(active=True).order_by("country", "city", "name", "id")
+        country = (self.request.query_params.get("country") or "").strip()
+        city = (self.request.query_params.get("city") or "").strip()
+        region = (self.request.query_params.get("region") or "").strip()
+        if country:
+            qs = qs.filter(country__iexact=country)
+        if region:
+            qs = qs.filter(region__iexact=region)
+        if city:
+            qs = qs.filter(city__iexact=city)
+        return qs
+
+
+class ShippingQuoteAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        raw_pid = (request.query_params.get("product_id") or "").strip()
+        try:
+            product_id = int(raw_pid)
+        except Exception:
+            product_id = 0
+        if not product_id:
+            return Response({"detail": "product_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_qty = (request.query_params.get("quantity") or "").strip()
+        try:
+            qty = int(raw_qty or 1)
+        except Exception:
+            qty = 1
+        qty = max(1, min(100000, qty))
+
+        product = (
+            Product.objects.select_related("seller")
+            .filter(id=product_id, deleted_at__isnull=True)
+            .first()
+        )
+        if not product:
+            return Response({"detail": "Product not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        def norm_country(val: str) -> str:
+            return (val or "").strip().lower()
+
+        def country_from_location(loc: object) -> str:
+            if not loc or not isinstance(loc, dict):
+                return ""
+            return str(loc.get("country") or "").strip()
+
+        origin_country = ""
+        try:
+            origin_country = country_from_location(getattr(product, "origin_location", None))
+        except Exception:
+            origin_country = ""
+
+        if not origin_country:
+            try:
+                sp = getattr(getattr(product, "seller", None), "seller_profile", None)
+                if sp:
+                    origin_country = country_from_location(getattr(sp, "warehouse_location", None)) or (getattr(sp, "country", "") or "")
+            except Exception:
+                origin_country = ""
+
+        dest_country = (request.query_params.get("country") or "").strip()
+        raw_addr_id = (request.query_params.get("address_id") or "").strip()
+        if raw_addr_id:
+            if not request.user.is_authenticated:
+                return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+            try:
+                addr_id = int(raw_addr_id)
+            except Exception:
+                addr_id = 0
+            if not addr_id:
+                return Response({"detail": "Invalid address_id."}, status=status.HTTP_400_BAD_REQUEST)
+            from apps.accounts.models import BuyerAddress
+
+            addr = BuyerAddress.objects.filter(id=addr_id, user=request.user).first()
+            if not addr:
+                return Response({"detail": "Address not found."}, status=status.HTTP_404_NOT_FOUND)
+            dest_country = (getattr(addr, "country", "") or "").strip()
+
+        methods = [
+            ("sea", "Sea Freight"),
+            ("air", "Air Freight"),
+            ("express", "Express Air"),
+        ]
+
+        try:
+            weight_grams = int(getattr(product, "weight_grams", 0) or 0)
+        except Exception:
+            weight_grams = 0
+        weight_grams = max(1, weight_grams or 1)
+        total_kg = Decimal(weight_grams * qty) / Decimal(1000)
+        if total_kg <= 0:
+            total_kg = Decimal("0.01")
+
+        try:
+            handling_min = int(getattr(product, "ship_time_min_days", 0) or 0)
+        except Exception:
+            handling_min = 0
+        try:
+            handling_max = int(getattr(product, "ship_time_max_days", handling_min) or handling_min)
+        except Exception:
+            handling_max = handling_min
+        handling_min = max(0, handling_min)
+        handling_max = max(handling_min, handling_max)
+
+        origin_norm = norm_country(origin_country)
+        dest_norm = norm_country(dest_country)
+
+        def pick_rate(method: str):
+            candidates = list(ShippingRate.objects.filter(active=True, method=method).order_by("-updated_at", "-id")[:200])
+            if not candidates:
+                return None
+            best = None
+            best_score = -1
+            for r in candidates:
+                ro = norm_country(getattr(r, "origin_country", ""))
+                rd = norm_country(getattr(r, "dest_country", ""))
+                if ro and origin_norm and ro != origin_norm:
+                    continue
+                if rd and dest_norm and rd != dest_norm:
+                    continue
+                if rd and not dest_norm:
+                    continue
+                score = 0
+                if ro:
+                    score += 2
+                if rd:
+                    score += 2
+                if score > best_score:
+                    best = r
+                    best_score = score
+            return best
+
+        def fallback_rate(method: str) -> dict:
+            if method == "sea":
+                return {"currency": "USD", "base_fee": Decimal("20.00"), "price_per_kg": Decimal("0.90"), "per_unit_fee": Decimal("0.00"), "min": 30, "max": 40}
+            if method == "air":
+                return {"currency": "USD", "base_fee": Decimal("35.00"), "price_per_kg": Decimal("4.25"), "per_unit_fee": Decimal("0.00"), "min": 7, "max": 12}
+            return {"currency": "USD", "base_fee": Decimal("45.00"), "price_per_kg": Decimal("6.50"), "per_unit_fee": Decimal("0.00"), "min": 3, "max": 5}
+
+        results = []
+        for method, label in methods:
+            r = pick_rate(method)
+            if r:
+                currency = (getattr(r, "currency", "") or "USD").upper()
+                base_fee = Decimal(getattr(r, "base_fee", 0) or 0)
+                ppk = Decimal(getattr(r, "price_per_kg", 0) or 0)
+                ppu = Decimal(getattr(r, "per_unit_fee", 0) or 0)
+                tmin = int(getattr(r, "transit_min_days", 0) or 0)
+                tmax = int(getattr(r, "transit_max_days", tmin) or tmin)
+                source = "rate_card"
+            else:
+                fb = fallback_rate(method)
+                currency = fb["currency"]
+                base_fee = fb["base_fee"]
+                ppk = fb["price_per_kg"]
+                ppu = fb["per_unit_fee"]
+                tmin = int(fb["min"])
+                tmax = int(fb["max"])
+                source = "fallback"
+
+            tmin = max(0, tmin)
+            tmax = max(tmin, tmax)
+
+            total = base_fee + (ppk * total_kg) + (ppu * Decimal(qty))
+            if total < 0:
+                total = Decimal("0")
+            unit = total / Decimal(qty)
+
+            results.append(
+                {
+                    "method": method,
+                    "label": label,
+                    "currency": currency,
+                    "unit_price": f"{unit.quantize(Decimal('0.01'))}",
+                    "total_price": f"{total.quantize(Decimal('0.01'))}",
+                    "min_days": int(handling_min + tmin),
+                    "max_days": int(handling_max + tmax),
+                    "handling_min_days": handling_min,
+                    "handling_max_days": handling_max,
+                    "transit_min_days": tmin,
+                    "transit_max_days": tmax,
+                    "origin_country": origin_country,
+                    "dest_country": dest_country,
+                    "weight_grams": weight_grams,
+                    "quantity": qty,
+                    "source": source,
+                }
+            )
+
+        return Response({"results": results})
 
 
 class SellerListingRequestViewSet(viewsets.GenericViewSet):
@@ -246,6 +568,7 @@ class PricingTierViewSet(viewsets.ModelViewSet):
 
 class ProductMediaViewSet(viewsets.ModelViewSet):
     serializer_class = ProductMediaSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         qs = ProductMedia.objects.select_related("product", "product__seller").filter(deleted_at__isnull=True)
@@ -267,6 +590,86 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
         if product.seller_id != self.request.user.id:
             raise permissions.PermissionDenied("You do not own this product.")
         serializer.save()
+
+    @action(detail=False, methods=["post"], url_path="upload")
+    def upload(self, request, *args, **kwargs):
+        product_id = (request.data.get("product") or "").strip()
+        try:
+            pid = int(product_id)
+        except Exception:
+            pid = None
+        if not pid:
+            return Response({"detail": "product is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        product = Product.objects.filter(id=pid, deleted_at__isnull=True).select_related("seller").first()
+        if not product:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if product.seller_id != request.user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+
+        media_type = (request.data.get("media_type") or ProductMedia.MediaType.DOCUMENT).strip()
+        if media_type not in {m for (m, _) in ProductMedia.MediaType.choices}:
+            return Response({"detail": "Invalid media_type."}, status=status.HTTP_400_BAD_REQUEST)
+
+        upload = request.FILES.get("file")
+        raw_url = (request.data.get("url") or "").strip()
+        title = (request.data.get("title") or "").strip()
+        variation_raw = (request.data.get("variation") or "").strip()
+        try:
+            variation_id = int(variation_raw) if variation_raw else None
+        except Exception:
+            variation_id = None
+
+        variation = None
+        if variation_id:
+            variation = ProductVariation.objects.filter(id=variation_id, product_id=product.id, deleted_at__isnull=True).first()
+            if not variation:
+                return Response({"detail": "Invalid variation."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not upload and not raw_url:
+            return Response({"detail": "Either file or url is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        url = ""
+        storage_key = ""
+        content_type = ""
+        size_bytes = 0
+        if upload:
+            content_type = (getattr(upload, "content_type", "") or "").strip()
+            size_bytes = int(getattr(upload, "size", 0) or 0)
+            name = getattr(upload, "name", "") or "file"
+            safe_name = name.replace("/", "_").replace("\\", "_")
+            key = f"product_media/{product.id}/{uuid4()}/{safe_name}"
+            storage_key = default_storage.save(key, upload)
+            if not title:
+                title = name
+        else:
+            url = raw_url
+
+        last = (
+            ProductMedia.objects.filter(product_id=product.id, deleted_at__isnull=True)
+            .order_by("-position", "-id")
+            .values_list("position", flat=True)
+            .first()
+        )
+        position = int(last or 0) + 1
+
+        obj = ProductMedia.objects.create(
+            product=product,
+            variation=variation,
+            media_type=media_type,
+            url=url,
+            storage_key=storage_key,
+            title=title,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            position=position,
+        )
+        data = ProductMediaSerializer(obj, context={"request": request}).data
+        if "url" in data:
+            data.pop("url", None)
+        if "storage_key" in data:
+            data.pop("storage_key", None)
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class TrademarkViewSet(viewsets.ModelViewSet):

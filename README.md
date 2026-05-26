@@ -44,3 +44,40 @@ docker compose up --build
 - Override via `.env`: `DJANGO_SUPERUSER_EMAIL`, `DJANGO_SUPERUSER_PASSWORD`
 
 Do not use these credentials in production.
+
+## Seed catalog data (categories + products)
+
+Use this to populate the database with categories/subcategories (matching the Explore UI) and a large set of products (with images) so you can test buyer/seller/admin flows.
+
+### Run (Docker)
+
+```bash
+docker compose run --rm backend python manage.py migrate
+docker compose run --rm backend python manage.py seed_catalog --reset --with-kyc
+```
+
+### What it creates
+
+- Categories + subcategories: Vehicles, Industrial, Hardware, Electronics, Furniture, Energy, Apparel, Beauty, Mining, Agriculture, Sports (excludes “Other”)
+- Users:
+  - Admin: `admin@vehsl.local`
+  - Buyer: `buyer@vehsl.local`
+  - Sellers: `seller1@vehsl.local`, `seller2@vehsl.local`, …
+  - Password (default): `Test123!@#` (override via `SEED_DEFAULT_PASSWORD`)
+- Products:
+  - Created under each subcategory (configurable)
+  - `status=active`, with `hs_code`, ratings, and location
+  - 3 images per product (picsum URLs) so cards render
+
+### Options
+
+```bash
+# seed more products per subcategory
+docker compose run --rm backend python manage.py seed_catalog --products-per-subcategory 20
+
+# include more subcategories per category (default is 9)
+docker compose run --rm backend python manage.py seed_catalog --max-subcategories-per-category 9999
+
+# create more seller accounts (default is 3)
+docker compose run --rm backend python manage.py seed_catalog --sellers 10
+```

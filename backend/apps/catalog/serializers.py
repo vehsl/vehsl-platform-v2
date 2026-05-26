@@ -1,8 +1,9 @@
 from rest_framework import serializers
 
 from django.db.models import Q
+from django.core.files.storage import default_storage
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark, Warehouse
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -24,9 +25,85 @@ class PricingTierSerializer(serializers.ModelSerializer):
 
 
 class ProductMediaSerializer(serializers.ModelSerializer):
+    public_url = serializers.SerializerMethodField()
+
     class Meta:
         model = ProductMedia
-        fields = ["id", "product", "media_type", "url", "position"]
+        fields = [
+            "id",
+            "product",
+            "variation",
+            "media_type",
+            "title",
+            "content_type",
+            "size_bytes",
+            "url",
+            "storage_key",
+            "position",
+            "public_url",
+        ]
+
+    def get_public_url(self, obj: ProductMedia):
+        raw = (getattr(obj, "url", "") or "").strip()
+        if raw:
+            req = self.context.get("request")
+            if req and raw.startswith("/"):
+                try:
+                    return req.build_absolute_uri(raw)
+                except Exception:
+                    return raw
+            return raw
+
+        key = (getattr(obj, "storage_key", "") or "").strip()
+        if not key:
+            return ""
+        try:
+            url = default_storage.url(key)
+        except Exception:
+            url = key
+        req = self.context.get("request")
+        if req and isinstance(url, str) and url.startswith("/"):
+            try:
+                return req.build_absolute_uri(url)
+            except Exception:
+                return url
+        return url
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        url = (data.get("url") or "").strip()
+        storage_key = (data.get("storage_key") or "").strip()
+        if not url and not storage_key:
+            raise serializers.ValidationError("Either url or storage_key is required.")
+        variation = data.get("variation")
+        product = data.get("product")
+        if variation and product and getattr(variation, "product_id", None) != getattr(product, "id", None):
+            raise serializers.ValidationError("Variation must belong to the given product.")
+        return data
+
+    def create(self, validated_data):
+        product = validated_data.get("product")
+        media_type = validated_data.get("media_type")
+        if product and media_type == ProductMedia.MediaType.IMAGE:
+            existing = ProductMedia.objects.filter(
+                product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE
+            ).count()
+            if existing >= 8:
+                raise serializers.ValidationError("A product can have at most 8 images.")
+
+        if "position" not in validated_data or validated_data.get("position") is None:
+            if product:
+                last = (
+                    ProductMedia.objects.filter(product=product, deleted_at__isnull=True)
+                    .order_by("-position", "-id")
+                    .values_list("position", flat=True)
+                    .first()
+                )
+                validated_data["position"] = int(last or 0) + 1
+            else:
+                validated_data["position"] = 0
+
+        return super().create(validated_data)
 
 
 class TrademarkSerializer(serializers.ModelSerializer):
@@ -42,15 +119,44 @@ class ComplianceRuleSerializer(serializers.ModelSerializer):
         fields = ["id", "category", "rule_type", "countries", "payload", "created_at", "updated_at"]
 
 
+class WarehouseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Warehouse
+        fields = [
+            "id",
+            "name",
+            "code",
+            "country",
+            "region",
+            "city",
+            "street1",
+            "street2",
+            "postal_code",
+            "active",
+        ]
+
+
 class ProductSerializer(serializers.ModelSerializer):
     seller_id = serializers.IntegerField(read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    hero_image_url = serializers.SerializerMethodField()
+    images = serializers.SerializerMethodField()
+    media = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+    variations = ProductVariationSerializer(many=True, read_only=True)
+    pricing_tiers = PricingTierSerializer(many=True, read_only=True)
+    detail_config = serializers.JSONField(required=False)
 
     class Meta:
         model = Product
         fields = [
             "id",
             "seller_id",
+            "seller_name",
             "category",
+            "category_name",
             "name",
             "title",
             "sku",
@@ -58,15 +164,97 @@ class ProductSerializer(serializers.ModelSerializer):
             "description",
             "currency",
             "price",
+            "review_count",
+            "average_rating",
+            "hero_image_url",
+            "images",
+            "media",
+            "variations",
+            "pricing_tiers",
+            "detail_config",
             "status",
             "origin_location",
             "lead_time_days",
+            "weight_grams",
+            "ship_time_min_days",
+            "ship_time_max_days",
+            "sample_available",
+            "sample_ship_days",
             "vehsl_rating",
             "seller_rating",
             "ip_protection_level",
             "created_at",
             "updated_at",
         ]
+
+    def get_seller_name(self, obj: Product):
+        s = getattr(obj, "seller", None)
+        if not s:
+            return ""
+        full = f"{(getattr(s, 'first_name', '') or '').strip()} {(getattr(s, 'last_name', '') or '').strip()}".strip()
+        return full or getattr(s, "email", "") or getattr(s, "phone", "") or f"seller:{getattr(s, 'id', '')}"
+
+    def get_hero_image_url(self, obj: Product):
+        try:
+            media = list(getattr(obj, "media", []).all()) if hasattr(obj, "media") else []
+        except Exception:
+            media = []
+        for m in media:
+            try:
+                if (getattr(m, "deleted_at", None) is not None) or (getattr(m, "media_type", "") or "") != "image":
+                    continue
+                ser = ProductMediaSerializer(m, context=self.context).data
+                u = (ser.get("public_url") or "").strip()
+                if u:
+                    return u
+            except Exception:
+                continue
+        return ""
+
+    def get_images(self, obj: Product):
+        try:
+            qs = obj.media.filter(deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE).order_by("position", "id")
+        except Exception:
+            return []
+        out = []
+        for m in qs[:8]:
+            u = (ProductMediaSerializer(m, context=self.context).data.get("public_url") or "").strip()
+            if u:
+                out.append(u)
+        return out
+
+    def get_media(self, obj: Product):
+        try:
+            qs = obj.media.filter(deleted_at__isnull=True).order_by("position", "id")
+        except Exception:
+            return []
+        data = ProductMediaSerializer(qs, many=True, context=self.context).data
+        for row in data:
+            if "url" in row:
+                row.pop("url", None)
+            if "storage_key" in row:
+                row.pop("storage_key", None)
+        return data
+
+    def get_review_count(self, obj: Product):
+        val = getattr(obj, "review_count", None)
+        try:
+            n = int(val)
+            return max(0, n)
+        except Exception:
+            return 0
+
+    def get_average_rating(self, obj: Product):
+        val = getattr(obj, "average_rating", None)
+        if val is None:
+            return None
+        try:
+            num = float(val)
+        except Exception:
+            return None
+        if not (0.0 <= num <= 5.0):
+            return None
+        return round(num, 2)
 
     def validate_currency(self, value: str):
         if not value or len(value) != 3:
@@ -76,6 +264,105 @@ class ProductSerializer(serializers.ModelSerializer):
     def validate_price(self, value):
         if value < 0:
             raise serializers.ValidationError("Price must be >= 0.")
+        return value
+
+    def validate_weight_grams(self, value):
+        try:
+            n = int(value)
+        except Exception:
+            raise serializers.ValidationError("weight_grams must be an integer.")
+        if n <= 0:
+            raise serializers.ValidationError("weight_grams must be > 0.")
+        return n
+
+    def validate_ship_time_min_days(self, value):
+        try:
+            n = int(value)
+        except Exception:
+            raise serializers.ValidationError("ship_time_min_days must be an integer.")
+        if n < 0:
+            raise serializers.ValidationError("ship_time_min_days must be >= 0.")
+        return n
+
+    def validate_ship_time_max_days(self, value):
+        try:
+            n = int(value)
+        except Exception:
+            raise serializers.ValidationError("ship_time_max_days must be an integer.")
+        if n < 0:
+            raise serializers.ValidationError("ship_time_max_days must be >= 0.")
+        return n
+
+    def validate_sample_ship_days(self, value):
+        try:
+            n = int(value)
+        except Exception:
+            raise serializers.ValidationError("sample_ship_days must be an integer.")
+        if n < 0:
+            raise serializers.ValidationError("sample_ship_days must be >= 0.")
+        return n
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        mn = data.get("ship_time_min_days")
+        mx = data.get("ship_time_max_days")
+        if mn is not None and mx is not None and int(mx) < int(mn):
+            raise serializers.ValidationError({"ship_time_max_days": "ship_time_max_days must be >= ship_time_min_days."})
+        return data
+
+    def validate_detail_config(self, value):
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("detail_config must be an object.")
+
+        specs = value.get("specifications")
+        if specs is None:
+            return value
+        if not isinstance(specs, list):
+            raise serializers.ValidationError("detail_config.specifications must be a list.")
+
+        if len(specs) > 20:
+            raise serializers.ValidationError("detail_config.specifications can have at most 20 groups.")
+
+        total_items = 0
+        cleaned_groups = []
+        for g in specs:
+            if not isinstance(g, dict):
+                raise serializers.ValidationError("Each specification group must be an object.")
+            title = str(g.get("title") or "").strip()
+            if not title:
+                raise serializers.ValidationError("Each specification group requires a title.")
+            if len(title) > 80:
+                raise serializers.ValidationError("Specification group title too long (max 80).")
+
+            collapsed = bool(g.get("collapsed")) if "collapsed" in g else False
+            items = g.get("items") or []
+            if not isinstance(items, list):
+                raise serializers.ValidationError(f'Specification group "{title}" items must be a list.')
+
+            if len(items) > 60:
+                raise serializers.ValidationError(f'Specification group "{title}" can have at most 60 items.')
+
+            cleaned_items = []
+            for it in items:
+                if not isinstance(it, dict):
+                    raise serializers.ValidationError(f'Specification group "{title}" items must be objects.')
+                label = str(it.get("label") or "").strip()
+                val = str(it.get("value") or "").strip()
+                if not label or not val:
+                    raise serializers.ValidationError(f'Specification group "{title}" items require label and value.')
+                if len(label) > 120 or len(val) > 220:
+                    raise serializers.ValidationError(f'Specification group "{title}" item too long.')
+                cleaned_items.append({"label": label, "value": val})
+                total_items += 1
+
+            cleaned_groups.append({"title": title, "collapsed": collapsed, "items": cleaned_items})
+
+        if total_items > 250:
+            raise serializers.ValidationError("detail_config.specifications can have at most 250 items total.")
+
+        value = {**value, "specifications": cleaned_groups}
         return value
 
 

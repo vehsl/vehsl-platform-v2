@@ -9,8 +9,10 @@ from .views import (
     ProductMediaViewSet,
     ProductVariationViewSet,
     ProductViewSet,
+    ShippingQuoteAPIView,
     SellerListingRequestViewSet,
     TrademarkViewSet,
+    WarehouseViewSet,
 )
 
 router = DefaultRouter()
@@ -23,7 +25,9 @@ router.register(r"pricing-tiers", PricingTierViewSet, basename="pricing-tier")
 router.register(r"product-media", ProductMediaViewSet, basename="product-media")
 router.register(r"trademarks", TrademarkViewSet, basename="trademark")
 router.register(r"compliance-rules", ComplianceRuleViewSet, basename="compliance-rule")
+router.register(r"warehouses", WarehouseViewSet, basename="warehouse")
 
 urlpatterns = [
+    path("shipping/quote/", ShippingQuoteAPIView.as_view(), name="shipping-quote"),
     path("", include(router.urls)),
 ]
