@@ -45,6 +45,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastError, setLastError] = useState("");
+  const [_tokenSnapshot, setTokenSnapshot] = useState("");
 
   const hasAccessToken = useCallback(() => {
     try {
@@ -78,6 +79,47 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const readToken = () => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
+    };
+
+    let prev = readToken();
+    setTokenSnapshot(prev);
+
+    const tick = () => {
+      const next = readToken();
+      if (next === prev) return;
+      prev = next;
+      setTokenSnapshot(next);
+      void refresh();
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key) return;
+      if (e.key === "vehsl.access" || e.key === "vehsl.refresh" || e.key === "vehsl.user") tick();
+    };
+
+    const onVis = () => {
+      if (!document.hidden) tick();
+    };
+
+    const intervalId = window.setInterval(tick, 800);
+    window.addEventListener("focus", tick);
+    window.addEventListener("storage", onStorage);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", tick);
+      window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [refresh]);
 
   const addToCart = useCallback(
