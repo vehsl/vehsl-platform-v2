@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.db.models import Q
 from django.core.files.storage import default_storage
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark, Warehouse
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -117,6 +117,23 @@ class ComplianceRuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = ComplianceRule
         fields = ["id", "category", "rule_type", "countries", "payload", "created_at", "updated_at"]
+
+
+class WarehouseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Warehouse
+        fields = [
+            "id",
+            "name",
+            "code",
+            "country",
+            "region",
+            "city",
+            "street1",
+            "street2",
+            "postal_code",
+            "active",
+        ]
 
 
 class ProductSerializer(serializers.ModelSerializer):

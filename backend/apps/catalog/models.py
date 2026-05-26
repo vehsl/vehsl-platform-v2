@@ -306,3 +306,39 @@ class ShippingRate(models.Model):
 
     def __str__(self):
         return f"shipping_rate:{self.method}:{self.origin_country or '*'}->{self.dest_country or '*'}:{self.id}"
+
+
+class Warehouse(models.Model):
+    name = models.CharField(max_length=160)
+    code = models.SlugField(max_length=180, unique=True, blank=True)
+
+    country = models.CharField(max_length=64, blank=True)
+    region = models.CharField(max_length=64, blank=True)
+    city = models.CharField(max_length=64, blank=True)
+    street1 = models.CharField(max_length=128, blank=True)
+    street2 = models.CharField(max_length=128, blank=True)
+    postal_code = models.CharField(max_length=32, blank=True)
+
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["country", "city", "name"]
+        indexes = [
+            models.Index(fields=["active", "country", "city"], name="warehouse_active_country_city"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.code:
+            base = slugify(self.name) or "warehouse"
+            code = base
+            n = 2
+            while Warehouse.objects.filter(code=code).exclude(pk=self.pk).exists():
+                code = f"{base}-{n}"
+                n += 1
+            self.code = code
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"warehouse:{self.code or self.id}"

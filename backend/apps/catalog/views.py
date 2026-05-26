@@ -17,7 +17,19 @@ from apps.accounts.admin_utils import AdminPageNumberPagination, audit
 from apps.accounts.permissions import IsAdmin, IsSeller
 from apps.accounts.models import Notification, User
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, ShippingRate, Trademark
+from .models import (
+    Category,
+    ComplianceRule,
+    ListingRequest,
+    ListingRequestPhoto,
+    PricingTier,
+    Product,
+    ProductMedia,
+    ProductVariation,
+    ShippingRate,
+    Trademark,
+    Warehouse,
+)
 from .serializers import (
     AdminProductListSerializer,
     AdminProductWriteSerializer,
@@ -30,6 +42,7 @@ from .serializers import (
     ProductSerializer,
     ProductVariationSerializer,
     TrademarkSerializer,
+    WarehouseSerializer,
 )
 
 
@@ -190,6 +203,24 @@ class ProductViewSet(viewsets.ModelViewSet):
         rows.sort(key=lambda p: order.get(getattr(p, "id", 0), 999))
         data = ProductSerializer(rows, many=True, context={"request": request}).data
         return Response({"results": data})
+
+
+class WarehouseViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = WarehouseSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        qs = Warehouse.objects.filter(active=True).order_by("country", "city", "name", "id")
+        country = (self.request.query_params.get("country") or "").strip()
+        city = (self.request.query_params.get("city") or "").strip()
+        region = (self.request.query_params.get("region") or "").strip()
+        if country:
+            qs = qs.filter(country__iexact=country)
+        if region:
+            qs = qs.filter(region__iexact=region)
+        if city:
+            qs = qs.filter(city__iexact=city)
+        return qs
 
 
 class ShippingQuoteAPIView(APIView):
