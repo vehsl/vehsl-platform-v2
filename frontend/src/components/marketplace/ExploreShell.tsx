@@ -465,17 +465,46 @@ export function ExploreShell() {
   const [subLoading, setSubLoading] = useState(false);
   const [subPage, setSubPage] = useState(1);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [openProfileFromQuery, setOpenProfileFromQuery] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileForm, setProfileForm] = useState({
     first_name: "",
     last_name: "",
     phone: "",
-    country: "",
-    city: "",
-    address: "",
   });
 
   const { totalQuantity, refresh: refreshCart } = useCart();
+
+  type BuyerAddress = {
+    id: number;
+    kind: "primary" | "secondary";
+    contact_name: string;
+    phone: string;
+    country: string;
+    region: string;
+    city: string;
+    street1: string;
+    street2: string;
+    postal_code: string;
+  };
+
+  const [addresses, setAddresses] = useState<BuyerAddress[]>([]);
+  const [addressesLoading, setAddressesLoading] = useState(false);
+  const [addressModalOpen, setAddressModalOpen] = useState(false);
+  const [addressModalKind, setAddressModalKind] = useState<"primary" | "secondary">("primary");
+  const [addressDraft, setAddressDraft] = useState<BuyerAddress>({
+    id: 0,
+    kind: "primary",
+    contact_name: "",
+    phone: "",
+    country: "",
+    region: "",
+    city: "",
+    street1: "",
+    street2: "",
+    postal_code: "",
+  });
+  const [addressSaving, setAddressSaving] = useState(false);
 
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
@@ -484,6 +513,16 @@ export function ExploreShell() {
   const setRef = (id: string, el: HTMLElement | null) => {
     sectionRefs.current[id] = el;
   };
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get("profileSettings") !== "1") return;
+    setOpenProfileFromQuery(true);
+    sp.delete("profileSettings");
+    const q = sp.toString();
+    const next = `${window.location.pathname}${q ? `?${q}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState({}, "", next);
+  }, []);
 
   useEffect(() => {
     const onScroll = () => {
@@ -678,20 +717,55 @@ export function ExploreShell() {
     setProfileOpen(true);
     try {
       const me = (await fetchJsonAuthed("/api/v1/auth/me")) as any;
-      const profile = me?.profile || {};
       setProfileForm({
         first_name: String(me?.first_name || ""),
         last_name: String(me?.last_name || ""),
         phone: String(me?.phone || ""),
-        country: String(profile?.country || ""),
-        city: String(profile?.city || ""),
-        address: String(profile?.address || ""),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load profile.";
       toast.error(msg);
     }
   }, []);
+
+  const fetchAddresses = useCallback(async () => {
+    setAddressesLoading(true);
+    try {
+      const data = await fetchJsonAuthed("/api/v1/auth/addresses/?page_size=50");
+      const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+      const parsed: BuyerAddress[] = rows
+        .map((r: any) => ({
+          id: Number(r?.id || 0),
+          kind: (r?.kind || "") as any,
+          contact_name: r?.contact_name || "",
+          phone: r?.phone || "",
+          country: r?.country || "",
+          region: r?.region || "",
+          city: r?.city || "",
+          street1: r?.street1 || "",
+          street2: r?.street2 || "",
+          postal_code: r?.postal_code || "",
+        }))
+        .filter((r: BuyerAddress) => r.id && (r.kind === "primary" || r.kind === "secondary"));
+      parsed.sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === "primary" ? -1 : 1));
+      setAddresses(parsed);
+    } catch {
+      setAddresses([]);
+    } finally {
+      setAddressesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!openProfileFromQuery) return;
+    void openProfile();
+    setOpenProfileFromQuery(false);
+  }, [openProfile, openProfileFromQuery]);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    void fetchAddresses();
+  }, [fetchAddresses, profileOpen]);
 
   const saveProfile = useCallback(async () => {
     if (savingProfile) return;
@@ -701,9 +775,6 @@ export function ExploreShell() {
         first_name: profileForm.first_name,
         last_name: profileForm.last_name,
         phone: profileForm.phone || null,
-        country: profileForm.country,
-        city: profileForm.city,
-        address: profileForm.address,
       };
       const updated = (await fetchJsonAuthed("/api/v1/auth/me", {
         method: "PATCH",
@@ -722,6 +793,77 @@ export function ExploreShell() {
       setSavingProfile(false);
     }
   }, [profileForm, savingProfile]);
+
+  const primaryAddress = useMemo(() => addresses.find((a) => a.kind === "primary") || null, [addresses]);
+  const secondaryAddress = useMemo(() => addresses.find((a) => a.kind === "secondary") || null, [addresses]);
+
+  const openAddressModal = useCallback(
+    (kind: "primary" | "secondary") => {
+      setAddressModalKind(kind);
+      const existing = (kind === "primary" ? primaryAddress : secondaryAddress) || null;
+      if (existing) {
+        setAddressDraft({ ...existing });
+      } else {
+        setAddressDraft({
+          id: 0,
+          kind,
+          contact_name: "",
+          phone: "",
+          country: "",
+          region: "",
+          city: "",
+          street1: "",
+          street2: "",
+          postal_code: "",
+        });
+      }
+      setAddressModalOpen(true);
+    },
+    [primaryAddress, secondaryAddress],
+  );
+
+  const saveAddress = useCallback(async () => {
+    if (addressSaving) return;
+    const payload = {
+      kind: addressModalKind,
+      contact_name: String(addressDraft.contact_name || "").trim(),
+      phone: String(addressDraft.phone || "").trim(),
+      country: String(addressDraft.country || "").trim(),
+      region: String(addressDraft.region || "").trim(),
+      city: String(addressDraft.city || "").trim(),
+      street1: String(addressDraft.street1 || "").trim(),
+      street2: String(addressDraft.street2 || "").trim(),
+      postal_code: String(addressDraft.postal_code || "").trim(),
+    };
+    if (!payload.country || !payload.city || !payload.street1) {
+      toast.error(t("Country, City and Street are required.", "国家、城市和街道为必填项。"));
+      return;
+    }
+    setAddressSaving(true);
+    try {
+      const existing = (addressModalKind === "primary" ? primaryAddress : secondaryAddress) || null;
+      if (existing?.id) {
+        await fetchJsonAuthed(`/api/v1/auth/addresses/${existing.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await fetchJsonAuthed("/api/v1/auth/addresses/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+      toast.success(t("Address saved.", "地址已保存。"));
+      setAddressModalOpen(false);
+      await fetchAddresses();
+    } catch (e: any) {
+      toast.error(e?.message || t("Failed to save address.", "保存地址失败。"));
+    } finally {
+      setAddressSaving(false);
+    }
+  }, [addressDraft, addressModalKind, addressSaving, fetchAddresses, primaryAddress, secondaryAddress, t]);
 
   const logout = useCallback(async () => {
     const refresh = window.localStorage.getItem("vehsl.refresh") || "";
@@ -955,26 +1097,43 @@ export function ExploreShell() {
                   value={profileForm.phone}
                   onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))}
                   placeholder={t("Phone", "电话")}
-                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none sm:col-span-2"
                 />
-                <input
-                  value={profileForm.country}
-                  onChange={(e) => setProfileForm((p) => ({ ...p, country: e.target.value }))}
-                  placeholder={t("Country", "国家")}
-                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
-                />
-                <input
-                  value={profileForm.city}
-                  onChange={(e) => setProfileForm((p) => ({ ...p, city: e.target.value }))}
-                  placeholder={t("City", "城市")}
-                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
-                />
-                <input
-                  value={profileForm.address}
-                  onChange={(e) => setProfileForm((p) => ({ ...p, address: e.target.value }))}
-                  placeholder={t("Address", "地址")}
-                  className="h-12 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
-                />
+              </div>
+
+              <div className="mt-8">
+                <div className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">{t("ADDRESS BOOK", "地址簿")}</div>
+                <div className="mt-2 text-[12px] text-[#7c7f87]">{t("Used for shipping quotes and checkout.", "用于运费报价与结算。")}</div>
+                <div className="mt-4 space-y-3">
+                  {[
+                    { kind: "primary" as const, title: t("Primary address", "主地址"), addr: primaryAddress },
+                    { kind: "secondary" as const, title: t("Secondary address", "次地址"), addr: secondaryAddress },
+                  ].map((row) => {
+                    const a = row.addr;
+                    const addrLine = a
+                      ? [a.street1, a.street2, a.city, a.region, a.country, a.postal_code].map((x) => String(x || "").trim()).filter(Boolean).join(", ")
+                      : "";
+                    return (
+                      <div key={row.kind} className="rounded-3xl border border-black/[0.06] bg-white/80 px-5 py-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-extrabold text-[#0f1115]">{row.title}</div>
+                            <div className="mt-1 text-[12px] text-[#7c7f87] truncate">
+                              {addressesLoading ? t("Loading…", "加载中…") : addrLine || t("Not set yet", "尚未设置")}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openAddressModal(row.kind)}
+                            className="h-9 rounded-full bg-black px-4 text-[12px] font-semibold text-white hover:bg-black/90"
+                          >
+                            {a ? t("Edit", "编辑") : t("Add", "添加")}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
@@ -989,6 +1148,96 @@ export function ExploreShell() {
               </div>
             </div>
           </div>
+
+          {addressModalOpen ? (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+              <button
+                type="button"
+                className="absolute inset-0 bg-black/30"
+                onClick={() => setAddressModalOpen(false)}
+                aria-label="Close"
+              />
+              <div className="relative w-full max-w-2xl overflow-hidden rounded-[26px] border border-white/70 bg-white/90 shadow-[0_20px_80px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
+                <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-6 py-4">
+                  <div>
+                    <div className="text-[14px] font-black text-[#1A1A1A]/85">
+                      {addressModalKind === "primary" ? t("Primary address", "主地址") : t("Secondary address", "次地址")}
+                    </div>
+                    <div className="text-[12px] font-medium text-[#1A1A1A]/40">{t("Used for shipping quotes and delivery.", "用于运费报价与配送。")}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAddressModalOpen(false)}
+                    className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                  >
+                    {t("Close", "关闭")}
+                  </button>
+                </div>
+                <div className="p-6">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <input
+                      value={addressDraft.contact_name}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, contact_name: e.target.value }))}
+                      placeholder={t("Contact name", "联系人")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                    />
+                    <input
+                      value={addressDraft.phone}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, phone: e.target.value }))}
+                      placeholder={t("Phone", "电话")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                    />
+                    <input
+                      value={addressDraft.country}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, country: e.target.value }))}
+                      placeholder={t("Country", "国家")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                    />
+                    <input
+                      value={addressDraft.region}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, region: e.target.value }))}
+                      placeholder={t("State/Region", "省/州")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                    />
+                    <input
+                      value={addressDraft.city}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, city: e.target.value }))}
+                      placeholder={t("City", "城市")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                    />
+                    <input
+                      value={addressDraft.postal_code}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, postal_code: e.target.value }))}
+                      placeholder={t("Postal code", "邮编")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                    />
+                    <input
+                      value={addressDraft.street1}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, street1: e.target.value }))}
+                      placeholder={t("Street address", "街道地址")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none sm:col-span-2"
+                    />
+                    <input
+                      value={addressDraft.street2}
+                      onChange={(e) => setAddressDraft((p) => ({ ...p, street2: e.target.value }))}
+                      placeholder={t("Apt/Suite (optional)", "门牌/楼层（可选）")}
+                      className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none sm:col-span-2"
+                    />
+                  </div>
+                  <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={addressSaving}
+                      onClick={() => void saveAddress()}
+                      className="rounded-full bg-black px-5 py-2.5 text-[12px] font-semibold text-white hover:bg-black/90 disabled:opacity-60"
+                    >
+                      {addressSaving ? t("Saving…", "保存中…") : t("Save address", "保存地址")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

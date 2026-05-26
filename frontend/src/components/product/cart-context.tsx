@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState, useCallback, type ReactNode } from "react";
+import { toast } from "sonner";
 import { fetchJsonAuthed } from "@/lib/api";
 
 export interface CartItem {
@@ -34,12 +35,16 @@ interface CartContextValue {
   clearCart: () => Promise<void>;
   totalQuantity: number;
   totalPrice: number;
+  loading: boolean;
+  lastError: string;
 }
 
 const CartContext = createContext<CartContextValue | null>(null);
 
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [lastError, setLastError] = useState("");
 
   const hasAccessToken = useCallback(() => {
     try {
@@ -52,14 +57,22 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!hasAccessToken()) {
       setItems([]);
+      setLastError("");
       return;
     }
+    setLoading(true);
     try {
       const data = (await fetchJsonAuthed("/api/v1/cart")) as CartResponse;
       const rows = Array.isArray(data?.items) ? (data.items as CartItem[]) : [];
       setItems(rows);
-    } catch {
+      setLastError("");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load cart.";
+      setLastError(msg);
       setItems([]);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
     }
   }, [hasAccessToken]);
 
@@ -69,6 +82,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   const addToCart = useCallback(
     async (productId: number, quantity: number = 1, variationId: number | null = null) => {
+      if (!hasAccessToken()) throw new Error("Please sign in.");
       const existing = items.find((it) => it.product_id === productId && (it.variation || null) === (variationId || null));
       const nextQty = (existing?.quantity || 0) + Math.max(1, quantity);
       await fetchJsonAuthed("/api/v1/cart", {
@@ -78,11 +92,12 @@ export function CartProvider({ children }: { children: ReactNode }) {
       });
       await refresh();
     },
-    [items, refresh],
+    [hasAccessToken, items, refresh],
   );
 
   const updateQuantity = useCallback(
     async (cartItemId: number, quantity: number) => {
+      if (!hasAccessToken()) throw new Error("Please sign in.");
       await fetchJsonAuthed(`/api/v1/cart/items/${cartItemId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -90,21 +105,24 @@ export function CartProvider({ children }: { children: ReactNode }) {
       });
       await refresh();
     },
-    [refresh],
+    [hasAccessToken, refresh],
   );
 
   const removeItem = useCallback(
     async (cartItemId: number) => {
+      if (!hasAccessToken()) throw new Error("Please sign in.");
       await fetchJsonAuthed(`/api/v1/cart/items/${cartItemId}`, { method: "DELETE" });
       await refresh();
     },
-    [refresh],
+    [hasAccessToken, refresh],
   );
 
   const clearCart = useCallback(async () => {
+    if (!hasAccessToken()) throw new Error("Please sign in.");
     await fetchJsonAuthed("/api/v1/cart", { method: "DELETE" });
     setItems([]);
-  }, []);
+    setLastError("");
+  }, [hasAccessToken]);
 
   const totalQuantity = useMemo(() => items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0), [items]);
   const totalPrice = useMemo(() => {
@@ -126,6 +144,8 @@ export function CartProvider({ children }: { children: ReactNode }) {
         clearCart,
         totalQuantity,
         totalPrice,
+        loading,
+        lastError,
       }}
     >
       {children}
@@ -145,6 +165,8 @@ export function useCart() {
       clearCart: async () => {},
       totalQuantity: 0,
       totalPrice: 0,
+      loading: false,
+      lastError: "",
     } as CartContextValue;
   }
   return ctx;

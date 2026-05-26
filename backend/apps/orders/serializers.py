@@ -149,6 +149,8 @@ class OrderCreateItemInputSerializer(serializers.Serializer):
 
 class OrderCreateSerializer(serializers.Serializer):
     items = serializers.ListField(child=OrderCreateItemInputSerializer(), allow_empty=False)
+    payment_method = serializers.ChoiceField(choices=Order.PaymentMethod.choices, required=False)
+    address_id = serializers.IntegerField(required=False)
 
     def validate_items(self, items):
         seen = set()
@@ -162,6 +164,34 @@ class OrderCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         buyer = self.context["request"].user
         items_data = validated_data["items"]
+        payment_method = validated_data.get("payment_method") or Order.PaymentMethod.CARD
+        raw_address_id = validated_data.get("address_id")
+        if raw_address_id is None:
+            raise serializers.ValidationError({"address_id": "address_id is required."})
+        try:
+            address_id = int(raw_address_id)
+        except Exception:
+            raise serializers.ValidationError({"address_id": "Invalid address_id."})
+        if address_id <= 0:
+            raise serializers.ValidationError({"address_id": "Invalid address_id."})
+
+        from apps.accounts.models import BuyerAddress
+
+        addr = BuyerAddress.objects.filter(id=address_id, user=buyer).first()
+        if not addr:
+            raise serializers.ValidationError({"address_id": "Address not found."})
+        shipping_address = {
+            "kind": getattr(addr, "kind", "") or "",
+            "contact_name": getattr(addr, "contact_name", "") or "",
+            "phone": getattr(addr, "phone", "") or "",
+            "country": getattr(addr, "country", "") or "",
+            "region": getattr(addr, "region", "") or "",
+            "city": getattr(addr, "city", "") or "",
+            "street1": getattr(addr, "street1", "") or "",
+            "street2": getattr(addr, "street2", "") or "",
+            "postal_code": getattr(addr, "postal_code", "") or "",
+        }
+        payment_status = Order.PaymentStatus.COD_PENDING if payment_method == Order.PaymentMethod.COD else Order.PaymentStatus.UNPAID
 
         products = Product.objects.filter(
             id__in=[i["product_id"] for i in items_data],
@@ -188,7 +218,15 @@ class OrderCreateSerializer(serializers.Serializer):
             if len(variation_map) != len(set(variation_ids)):
                 raise serializers.ValidationError("One or more variations are invalid.")
 
-        order = Order.objects.create(buyer=buyer, seller_id=seller_id, currency=currency, status=Order.Status.CREATED)
+        order = Order.objects.create(
+            buyer=buyer,
+            seller_id=seller_id,
+            currency=currency,
+            status=Order.Status.CREATED,
+            payment_method=payment_method,
+            payment_status=payment_status,
+            shipping_address=shipping_address,
+        )
 
         total = Decimal("0")
         for item in items_data:
@@ -224,6 +262,9 @@ class OrderSerializer(serializers.ModelSerializer):
             "status",
             "currency",
             "total_amount",
+            "payment_method",
+            "payment_status",
+            "shipping_address",
             "deadline_at",
             "created_at",
             "updated_at",

@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Search,
   Share2,
+  ShoppingCart,
   Star,
   X,
 } from "lucide-react";
@@ -138,7 +139,7 @@ export function ProductPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const productId = useMemo(() => Number(params?.id || 0), [params?.id]);
-  const { addToCart } = useCart();
+  const { addToCart, totalQuantity } = useCart();
   const { language } = useLanguage();
   const t = useCallback((en: string, zh: string) => (language === "zh" ? zh : en), [language]);
 
@@ -678,13 +679,35 @@ export function ProductPage() {
     return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
   }, [product?.review_count]);
 
-  const hasAccessToken = useMemo(() => {
-    try {
-      return typeof window !== "undefined" && Boolean(window.localStorage.getItem("vehsl.access"));
-    } catch {
-      return false;
-    }
+  const [hasAccessToken, setHasAccessToken] = useState(false);
+  useEffect(() => {
+    const read = () => {
+      try {
+        setHasAccessToken(typeof window !== "undefined" && Boolean(window.localStorage.getItem("vehsl.access")));
+      } catch {
+        setHasAccessToken(false);
+      }
+    };
+    read();
+    window.addEventListener("storage", read);
+    return () => window.removeEventListener("storage", read);
   }, []);
+
+  const [addressModalOpen, setAddressModalOpen] = useState(false);
+  const [addressModalKind, setAddressModalKind] = useState<"primary" | "secondary">("primary");
+  const [addressDraft, setAddressDraft] = useState<BuyerAddress>({
+    id: 0,
+    kind: "primary",
+    contact_name: "",
+    phone: "",
+    country: "",
+    region: "",
+    city: "",
+    street1: "",
+    street2: "",
+    postal_code: "",
+  });
+  const [addressSaving, setAddressSaving] = useState(false);
 
   const primaryAddress = useMemo(() => addresses.find((a) => a.kind === "primary") || null, [addresses]);
   const secondaryAddress = useMemo(() => addresses.find((a) => a.kind === "secondary") || null, [addresses]);
@@ -701,43 +724,113 @@ export function ProductPage() {
     return parts.join(", ");
   }, [selectedAddress]);
 
-  useEffect(() => {
+  const fetchAddresses = useCallback(async () => {
     if (!hasAccessToken) return;
     setAddressesLoading(true);
-    let cancelled = false;
-    fetchJsonAuthed("/api/v1/auth/addresses/?page_size=50")
-      .then((data) => {
-        if (cancelled) return;
-        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
-        const parsed: BuyerAddress[] = rows
-          .map((r: any) => ({
-            id: Number(r?.id || 0),
-            kind: (r?.kind || "") as any,
-            contact_name: r?.contact_name || "",
-            phone: r?.phone || "",
-            country: r?.country || "",
-            region: r?.region || "",
-            city: r?.city || "",
-            street1: r?.street1 || "",
-            street2: r?.street2 || "",
-            postal_code: r?.postal_code || "",
-          }))
-          .filter((r: BuyerAddress) => r.id && (r.kind === "primary" || r.kind === "secondary"));
-        parsed.sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === "primary" ? -1 : 1));
-        setAddresses(parsed);
-        if (!parsed.some((a) => a.kind === "primary") && parsed.some((a) => a.kind === "secondary")) {
-          setDeliveryLocation("secondary");
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (cancelled) return;
-        setAddressesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const data = await fetchJsonAuthed("/api/v1/auth/addresses/?page_size=50");
+      const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+      const parsed: BuyerAddress[] = rows
+        .map((r: any) => ({
+          id: Number(r?.id || 0),
+          kind: (r?.kind || "") as any,
+          contact_name: r?.contact_name || "",
+          phone: r?.phone || "",
+          country: r?.country || "",
+          region: r?.region || "",
+          city: r?.city || "",
+          street1: r?.street1 || "",
+          street2: r?.street2 || "",
+          postal_code: r?.postal_code || "",
+        }))
+        .filter((r: BuyerAddress) => r.id && (r.kind === "primary" || r.kind === "secondary"));
+      parsed.sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === "primary" ? -1 : 1));
+      setAddresses(parsed);
+      if (!parsed.some((a) => a.kind === "primary") && parsed.some((a) => a.kind === "secondary")) {
+        setDeliveryLocation("secondary");
+      }
+    } catch {
+    } finally {
+      setAddressesLoading(false);
+    }
   }, [hasAccessToken]);
+
+  useEffect(() => {
+    void fetchAddresses();
+  }, [fetchAddresses]);
+
+  const openAddressModal = useCallback(
+    (kind: "primary" | "secondary") => {
+      if (!hasAccessToken) {
+        toast.error(t("Please sign in to manage addresses.", "请先登录以管理地址。"));
+        window.location.assign("/?signin=1");
+        return;
+      }
+      setAddressModalKind(kind);
+      const existing = (kind === "primary" ? primaryAddress : secondaryAddress) || null;
+      if (existing) {
+        setAddressDraft({ ...existing });
+      } else {
+        setAddressDraft({
+          id: 0,
+          kind,
+          contact_name: "",
+          phone: "",
+          country: "",
+          region: "",
+          city: "",
+          street1: "",
+          street2: "",
+          postal_code: "",
+        });
+      }
+      setAddressModalOpen(true);
+    },
+    [hasAccessToken, primaryAddress, secondaryAddress, t],
+  );
+
+  const saveAddress = useCallback(async () => {
+    if (!hasAccessToken) return;
+    const payload = {
+      kind: addressModalKind,
+      contact_name: String(addressDraft.contact_name || "").trim(),
+      phone: String(addressDraft.phone || "").trim(),
+      country: String(addressDraft.country || "").trim(),
+      region: String(addressDraft.region || "").trim(),
+      city: String(addressDraft.city || "").trim(),
+      street1: String(addressDraft.street1 || "").trim(),
+      street2: String(addressDraft.street2 || "").trim(),
+      postal_code: String(addressDraft.postal_code || "").trim(),
+    };
+    if (!payload.country || !payload.city || !payload.street1) {
+      toast.error(t("Country, City and Street are required.", "国家、城市和街道为必填项。"));
+      return;
+    }
+    setAddressSaving(true);
+    try {
+      const existing = (addressModalKind === "primary" ? primaryAddress : secondaryAddress) || null;
+      if (existing?.id) {
+        await fetchJsonAuthed(`/api/v1/auth/addresses/${existing.id}/`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await fetchJsonAuthed("/api/v1/auth/addresses/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+      toast.success(t("Address saved.", "地址已保存。"));
+      setAddressModalOpen(false);
+      await fetchAddresses();
+    } catch (e: any) {
+      toast.error(e?.message || t("Failed to save address.", "保存地址失败。"));
+    } finally {
+      setAddressSaving(false);
+    }
+  }, [addressDraft, addressModalKind, fetchAddresses, hasAccessToken, primaryAddress, secondaryAddress, t]);
 
   useEffect(() => {
     if (!productId || !Number.isFinite(productId)) return;
@@ -1048,15 +1141,31 @@ export function ProductPage() {
             <ArrowLeft size={14} />
             {t("Back to explore", "返回探索")}
           </button>
-          <button
-            type="button"
-            onClick={() => void fetchProduct()}
-            className="inline-flex h-10 items-center gap-2 rounded-full border border-black/[0.06] bg-white px-4 text-[12px] font-semibold text-[#1A1A1A]/70 hover:bg-black/[0.02] disabled:opacity-60"
-            disabled={loading}
-          >
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-            {t("Refresh", "刷新")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void fetchProduct()}
+              className="inline-flex h-10 items-center gap-2 rounded-full border border-black/[0.06] bg-white px-4 text-[12px] font-semibold text-[#1A1A1A]/70 hover:bg-black/[0.02] disabled:opacity-60"
+              disabled={loading}
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              {t("Refresh", "刷新")}
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/checkout")}
+              className="relative inline-flex h-10 items-center gap-2 rounded-full border border-black/[0.06] bg-white px-4 text-[12px] font-semibold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+              aria-label={t("Open cart", "打开购物车")}
+            >
+              <ShoppingCart size={14} className="text-[#1A1A1A]/55" />
+              {t("Cart", "购物车")}
+              {totalQuantity > 0 ? (
+                <span className="absolute -right-1.5 -top-1.5 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-black px-1.5 text-[11px] font-extrabold text-white">
+                  {totalQuantity}
+                </span>
+              ) : null}
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -1516,6 +1625,24 @@ export function ProductPage() {
                           </button>
                         );
                       })}
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openAddressModal("primary")}
+                        disabled={!hasAccessToken}
+                        className="h-9 rounded-full border border-black/[0.08] bg-white px-4 text-[12px] font-semibold text-[#1A1A1A]/70 hover:bg-black/[0.02] disabled:opacity-60"
+                      >
+                        {primaryAddress ? t("Edit primary address", "编辑主地址") : t("Add primary address", "添加主地址")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openAddressModal("secondary")}
+                        disabled={!hasAccessToken}
+                        className="h-9 rounded-full border border-black/[0.08] bg-white px-4 text-[12px] font-semibold text-[#1A1A1A]/70 hover:bg-black/[0.02] disabled:opacity-60"
+                      >
+                        {secondaryAddress ? t("Edit secondary address", "编辑次地址") : t("Add secondary address", "添加次地址")}
+                      </button>
                     </div>
                   </div>
 
@@ -1978,6 +2105,96 @@ export function ProductPage() {
                 )}
               </div>
             </div>
+
+            {addressModalOpen ? (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+                <button
+                  type="button"
+                  className="absolute inset-0 bg-black/30"
+                  onClick={() => setAddressModalOpen(false)}
+                  aria-label="Close"
+                />
+                <div className="relative w-full max-w-2xl overflow-hidden rounded-[26px] border border-white/70 bg-white/90 shadow-[0_20px_80px_rgba(0,0,0,0.22)] backdrop-blur-2xl">
+                  <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-6 py-4">
+                    <div>
+                      <div className="text-[14px] font-black text-[#1A1A1A]/85">
+                        {addressModalKind === "primary" ? t("Primary address", "主地址") : t("Secondary address", "次地址")}
+                      </div>
+                      <div className="text-[12px] font-medium text-[#1A1A1A]/40">{t("Used for shipping quotes and delivery.", "用于运费报价与配送。")}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAddressModalOpen(false)}
+                      className="rounded-full border border-black/[0.08] bg-white px-4 py-2 text-[12px] font-bold text-[#1A1A1A]/70 hover:bg-black/[0.02]"
+                    >
+                      {t("Close", "关闭")}
+                    </button>
+                  </div>
+                  <div className="p-6">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <input
+                        value={addressDraft.contact_name}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, contact_name: e.target.value }))}
+                        placeholder={t("Contact name", "联系人")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                      />
+                      <input
+                        value={addressDraft.phone}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, phone: e.target.value }))}
+                        placeholder={t("Phone", "电话")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                      />
+                      <input
+                        value={addressDraft.country}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, country: e.target.value }))}
+                        placeholder={t("Country", "国家")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                      />
+                      <input
+                        value={addressDraft.region}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, region: e.target.value }))}
+                        placeholder={t("State/Region", "省/州")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                      />
+                      <input
+                        value={addressDraft.city}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, city: e.target.value }))}
+                        placeholder={t("City", "城市")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                      />
+                      <input
+                        value={addressDraft.postal_code}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, postal_code: e.target.value }))}
+                        placeholder={t("Postal code", "邮编")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none"
+                      />
+                      <input
+                        value={addressDraft.street1}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, street1: e.target.value }))}
+                        placeholder={t("Street address", "街道地址")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none sm:col-span-2"
+                      />
+                      <input
+                        value={addressDraft.street2}
+                        onChange={(e) => setAddressDraft((p) => ({ ...p, street2: e.target.value }))}
+                        placeholder={t("Apt/Suite (optional)", "门牌/楼层（可选）")}
+                        className="h-11 rounded-2xl border border-black/[0.06] bg-white/80 px-4 text-[13px] font-semibold text-[#0f1115] outline-none sm:col-span-2"
+                      />
+                    </div>
+                    <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        disabled={addressSaving}
+                        onClick={() => void saveAddress()}
+                        className="rounded-full bg-black px-5 py-2.5 text-[12px] font-semibold text-white hover:bg-black/90 disabled:opacity-60"
+                      >
+                        {addressSaving ? t("Saving…", "保存中…") : t("Save address", "保存地址")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </>
         )}
       </div>

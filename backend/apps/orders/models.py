@@ -71,11 +71,23 @@ class Order(models.Model):
         COMPLETED = "completed", "Completed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class PaymentMethod(models.TextChoices):
+        CARD = "card", "Card"
+        COD = "cod", "Cash on Delivery"
+
+    class PaymentStatus(models.TextChoices):
+        UNPAID = "unpaid", "Unpaid"
+        PAID = "paid", "Paid"
+        COD_PENDING = "cod_pending", "COD Pending"
+
     buyer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="orders")
     seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sales")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.CREATED)
     currency = models.CharField(max_length=3, default="USD")
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+    payment_method = models.CharField(max_length=16, choices=PaymentMethod.choices, default=PaymentMethod.CARD)
+    payment_status = models.CharField(max_length=16, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)
+    shipping_address = models.JSONField(default=dict, blank=True)
     deadline_at = models.DateTimeField(null=True, blank=True)
     release_authorized_at = models.DateTimeField(null=True, blank=True)
     release_authorized_by = models.ForeignKey(

@@ -40,7 +40,7 @@ from .serializers import (
 
 
 class CartMeView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsBuyer]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         cart, _ = Cart.objects.get_or_create(buyer=request.user)
@@ -87,7 +87,7 @@ class CartMeView(APIView):
 
 
 class CartItemMeDetailView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsBuyer]
+    permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, pk: int):
         try:
@@ -321,7 +321,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action == "create":
-            return [permissions.IsAuthenticated(), IsBuyer()]
+            return [permissions.IsAuthenticated()]
         if self.action in {"update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
         if self.action in {"accept", "reject", "mark_shipped"}:
