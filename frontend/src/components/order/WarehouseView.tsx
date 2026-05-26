@@ -1669,6 +1669,8 @@ export function WarehouseView() {
     const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>(mockReleaseRequests);
     const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>(mockReleaseRecords);
     const [loading, setLoading] = useState(true);
+    const [inventoryPage, setInventoryPage] = useState(1);
+    const [inventorySearch, setInventorySearch] = useState('');
 
     const fetchWarehouseData = useCallback(async () => {
         try {
@@ -1731,6 +1733,14 @@ export function WarehouseView() {
         fetchInventory(selectedWarehouse.id);
     }, [selectedWarehouse?.id, fetchInventory, mounted]);
 
+    useEffect(() => {
+        setInventoryPage(1);
+    }, [selectedWarehouse?.id]);
+
+    useEffect(() => {
+        setInventoryPage(1);
+    }, [inventorySearch]);
+
     const [releasingItem, setReleasingItem] = useState<InventoryItem | null>(null);
     const [prefillData, setPrefillData] = useState<{ name: string; idCard: string; vehicle: string; boxes: number } | undefined>();
     const [showAllFacilities, setShowAllFacilities] = useState(false);
@@ -1764,7 +1774,25 @@ export function WarehouseView() {
         return { boxes, value, productCount: len, products, pallets };
     };
 
-    const warehouseInventory = inventory.filter(i => i.warehouseId === selectedWarehouse.id);
+    const PAGE_SIZE = 10;
+
+    const warehouseInventoryAll = inventory.filter(i => i.warehouseId === selectedWarehouse.id);
+    const invSearch = inventorySearch.trim().toLowerCase();
+    const warehouseInventory = invSearch
+        ? warehouseInventoryAll.filter((it) => {
+            const name = (it.productName || '').toLowerCase();
+            const sku = (it.sku || '').toLowerCase();
+            return name.includes(invSearch) || sku.includes(invSearch);
+        })
+        : warehouseInventoryAll;
+
+    const inventoryTotal = warehouseInventory.length;
+    const inventoryTotalPages = Math.max(1, Math.ceil(inventoryTotal / PAGE_SIZE));
+    const inventoryPageSafe = Math.min(Math.max(1, inventoryPage), inventoryTotalPages);
+    const inventoryStart = (inventoryPageSafe - 1) * PAGE_SIZE;
+    const warehouseInventoryPage = warehouseInventory.slice(inventoryStart, inventoryStart + PAGE_SIZE);
+    const inventoryRangeStart = inventoryTotal ? inventoryStart + 1 : 0;
+    const inventoryRangeEnd = inventoryTotal ? Math.min(inventoryTotal, inventoryStart + warehouseInventoryPage.length) : 0;
     const totalBoxes = warehouseInventory.reduce((sum, i) => sum + (i.totalBoxes - i.releasedBoxes), 0);
     const totalPallets = warehouseInventory.reduce((sum, i) => sum + i.palletsCount, 0);
     const weeklyCharge = selectedWarehouse.pricePerWeek;
@@ -2128,9 +2156,20 @@ export function WarehouseView() {
                                     <>
                                         <div className="flex items-center justify-between mb-3 px-1">
                                             <span className="text-[9px] font-bold text-[#1A1A1A]/30 tracking-[1.5px] uppercase">Auto-Order Limits</span>
-                                            <span className="text-[9px] font-bold text-[#0171E3]/35">{warehouseInventory.length} products</span>
+                                            <span className="text-[9px] font-bold text-[#0171E3]/35">{inventoryTotal} products</span>
                                         </div>
                                         <Glass className="bg-white/50 rounded-[20px] overflow-hidden">
+                                            <div className="px-6 py-3 border-b border-[#1A1A1A]/[0.04]">
+                                                <div className="relative">
+                                                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#1A1A1A]/25" />
+                                                    <input
+                                                        value={inventorySearch}
+                                                        onChange={(e) => setInventorySearch(e.target.value)}
+                                                        placeholder="Search products or SKU…"
+                                                        className="w-full h-9 rounded-full pl-9 pr-3 text-[12px] font-semibold outline-none bg-white/70 border border-[#1A1A1A]/[0.06]"
+                                                    />
+                                                </div>
+                                            </div>
                                             {/* Table header */}
                                             <div className="grid grid-cols-[1fr_auto_120px_auto] items-center gap-x-6 px-6 py-2.5 border-b border-[#1A1A1A]/[0.04]">
                                                 <span className="text-[9px] font-bold text-[#1A1A1A]/22 tracking-[1px] uppercase">Product</span>
@@ -2139,7 +2178,7 @@ export function WarehouseView() {
                                                 <span className="text-[9px] font-bold text-[#1A1A1A]/22 tracking-[1px] uppercase text-center">Auto-Order</span>
                                             </div>
                                             <div className="px-3 py-1">
-                                                {warehouseInventory.map((item, i) => {
+                                                {warehouseInventoryPage.map((item, i) => {
                                                     const currentStock = item.totalBoxes - item.releasedBoxes;
                                                     const totalStock = item.totalBoxes;
                                                     
@@ -2157,7 +2196,7 @@ export function WarehouseView() {
                                                             initial={{ opacity: 0, y: 8 }}
                                                             animate={{ opacity: 1, y: 0 }}
                                                             transition={{ duration: 0.5, ease: EASE, delay: i * 0.05 }}
-                                                            className={`grid grid-cols-[1fr_auto_120px_auto] items-center gap-x-6 py-[16px] px-3 ${ i !== warehouseInventory.length - 1 ? 'border-b border-[#1A1A1A]/[0.04]' : '' } group cursor-default rounded-[14px] hover:bg-white/30 transition-all duration-400`}
+                                                            className={`grid grid-cols-[1fr_auto_120px_auto] items-center gap-x-6 py-[16px] px-3 ${ i !== warehouseInventoryPage.length - 1 ? 'border-b border-[#1A1A1A]/[0.04]' : '' } group cursor-default rounded-[14px] hover:bg-white/30 transition-all duration-400`}
                                                         >
                                                             {/* Column 1: Product */}
                                                             <div className="flex items-center gap-3.5 min-w-0">
@@ -2235,6 +2274,33 @@ export function WarehouseView() {
                                                     );
                                                 })}
                                             </div>
+                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-6 py-3 border-t border-[#1A1A1A]/[0.04]">
+                                                <div className="text-[10px] font-semibold text-[#1A1A1A]/35">
+                                                    Showing <span className="tabular-nums">{inventoryRangeStart}</span>–<span className="tabular-nums">{inventoryRangeEnd}</span> of{" "}
+                                                    <span className="tabular-nums">{inventoryTotal}</span>
+                                                </div>
+                                                <div className="flex items-center justify-between sm:justify-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setInventoryPage((p) => Math.max(1, p - 1))}
+                                                        disabled={inventoryPageSafe <= 1}
+                                                        className="h-8 rounded-full border border-[#1A1A1A]/[0.08] bg-white/70 px-3 text-[11px] font-bold text-[#1A1A1A]/60 disabled:opacity-40"
+                                                    >
+                                                        Prev
+                                                    </button>
+                                                    <div className="text-[11px] font-bold text-[#1A1A1A]/45 tabular-nums px-2">
+                                                        {inventoryPageSafe} / {inventoryTotalPages}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setInventoryPage((p) => Math.min(inventoryTotalPages, p + 1))}
+                                                        disabled={inventoryPageSafe >= inventoryTotalPages}
+                                                        className="h-8 rounded-full border border-[#1A1A1A]/[0.08] bg-white/70 px-3 text-[11px] font-bold text-[#1A1A1A]/60 disabled:opacity-40"
+                                                    >
+                                                        Next
+                                                    </button>
+                                                </div>
+                                            </div>
                                         </Glass>
                                     </>
                                 ) : (
@@ -2242,9 +2308,20 @@ export function WarehouseView() {
                                     <>
                                         <div className="flex items-center justify-between mb-3 px-1">
                                             <span className="text-[9px] font-bold text-[#1A1A1A]/30 tracking-[1.5px] uppercase">Inventory</span>
-                                            <span className="text-[9px] font-bold text-[#1A1A1A]/20">{warehouseInventory.length} products</span>
+                                            <span className="text-[9px] font-bold text-[#1A1A1A]/20">{inventoryTotal} products</span>
                                         </div>
                                         <Glass className="bg-white/50 rounded-[20px] overflow-hidden">
+                                            <div className="px-6 py-3 border-b border-[#1A1A1A]/[0.04]">
+                                                <div className="relative">
+                                                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#1A1A1A]/25" />
+                                                    <input
+                                                        value={inventorySearch}
+                                                        onChange={(e) => setInventorySearch(e.target.value)}
+                                                        placeholder="Search products or SKU…"
+                                                        className="w-full h-9 rounded-full pl-9 pr-3 text-[12px] font-semibold outline-none bg-white/70 border border-[#1A1A1A]/[0.06]"
+                                                    />
+                                                </div>
+                                            </div>
                                             {/* Table header */}
                                             <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-5 px-6 py-2.5 border-b border-[#1A1A1A]/[0.04]">
                                                 <span className="text-[9px] font-bold text-[#1A1A1A]/22 tracking-[1px] uppercase">Product</span>
@@ -2253,16 +2330,43 @@ export function WarehouseView() {
                                                 <span className="text-[9px] font-bold text-[#1A1A1A]/22 tracking-[1px] uppercase text-right pl-2">Action</span>
                                             </div>
                                             <div className="px-3 py-1">
-                                                {warehouseInventory.map((item, i) => (
+                                                {warehouseInventoryPage.map((item, i) => (
                                                     <InventoryRow
                                                         key={item.id}
                                                         item={item}
-                                                        isLast={i === warehouseInventory.length - 1}
+                                                        isLast={i === warehouseInventoryPage.length - 1}
                                                         onRelease={() => { setReleasingItem(item); setPrefillData(undefined); }}
                                                         index={i}
                                                         productColor={productColorMap[item.id]}
                                                     />
                                                 ))}
+                                            </div>
+                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-6 py-3 border-t border-[#1A1A1A]/[0.04]">
+                                                <div className="text-[10px] font-semibold text-[#1A1A1A]/35">
+                                                    Showing <span className="tabular-nums">{inventoryRangeStart}</span>–<span className="tabular-nums">{inventoryRangeEnd}</span> of{" "}
+                                                    <span className="tabular-nums">{inventoryTotal}</span>
+                                                </div>
+                                                <div className="flex items-center justify-between sm:justify-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setInventoryPage((p) => Math.max(1, p - 1))}
+                                                        disabled={inventoryPageSafe <= 1}
+                                                        className="h-8 rounded-full border border-[#1A1A1A]/[0.08] bg-white/70 px-3 text-[11px] font-bold text-[#1A1A1A]/60 disabled:opacity-40"
+                                                    >
+                                                        Prev
+                                                    </button>
+                                                    <div className="text-[11px] font-bold text-[#1A1A1A]/45 tabular-nums px-2">
+                                                        {inventoryPageSafe} / {inventoryTotalPages}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setInventoryPage((p) => Math.min(inventoryTotalPages, p + 1))}
+                                                        disabled={inventoryPageSafe >= inventoryTotalPages}
+                                                        className="h-8 rounded-full border border-[#1A1A1A]/[0.08] bg-white/70 px-3 text-[11px] font-bold text-[#1A1A1A]/60 disabled:opacity-40"
+                                                    >
+                                                        Next
+                                                    </button>
+                                                </div>
                                             </div>
                                         </Glass>
                                     </>
@@ -2305,13 +2409,43 @@ export function WarehouseView() {
 
                                                 <div className="relative z-10 px-4 pt-3.5 pb-3">
                                                     {(() => {
-                                                        /* Product composition data — uses shared prodColor gradient */
-                                                        const products = warehouseInventory.map((item, idx, arr) => ({
-                                                            name: item.productName.split(/\s*[—–]\s*/)[0].trim(),
-                                                            remaining: item.totalBoxes - item.releasedBoxes,
-                                                            flex: totalFull > 0 ? ((item.totalBoxes - item.releasedBoxes) / totalFull) * 100 : 0,
-                                                            color: prodColor(arr.length > 1 ? idx / (arr.length - 1) : 0.2),
-                                                        })).filter(p => p.remaining > 0);
+                                                        const productsAll = warehouseInventory
+                                                            .map((item, idx, arr) => ({
+                                                                name: item.productName.split(/\s*[—–]\s*/)[0].trim(),
+                                                                remaining: item.totalBoxes - item.releasedBoxes,
+                                                                flex: totalFull > 0 ? ((item.totalBoxes - item.releasedBoxes) / totalFull) * 100 : 0,
+                                                                color: prodColor(arr.length > 1 ? idx / (arr.length - 1) : 0.2),
+                                                            }))
+                                                            .filter((p) => p.remaining > 0)
+                                                            .sort((a, b) => b.remaining - a.remaining);
+
+                                                        const top = productsAll.slice(0, 12);
+                                                        const rest = productsAll.slice(12);
+                                                        const restRemaining = rest.reduce((s, p) => s + p.remaining, 0);
+                                                        const restFlex = totalFull > 0 ? (restRemaining / totalFull) * 100 : 0;
+                                                        const segments = rest.length
+                                                            ? [
+                                                                ...top,
+                                                                {
+                                                                    name: "Other",
+                                                                    remaining: restRemaining,
+                                                                    flex: restFlex,
+                                                                    color: "rgb(180,180,180)",
+                                                                },
+                                                            ]
+                                                            : top;
+                                                        const legend = rest.length
+                                                            ? [
+                                                                ...top,
+                                                                {
+                                                                    name: `+${rest.length} more`,
+                                                                    remaining: restRemaining,
+                                                                    flex: restFlex,
+                                                                    color: "rgb(180,180,180)",
+                                                                },
+                                                            ]
+                                                            : top;
+
                                                         const releasedFlex = totalFull > 0 ? ((totalFull - totalBoxes) / totalFull) * 100 : 0;
 
                                                         return (<>
@@ -2337,7 +2471,7 @@ export function WarehouseView() {
                                                             {/* Product composition bar — segmented pills */}
                                                             <div className="relative rounded-[6px] overflow-hidden mb-4">
                                                                 <div className="flex gap-[2.5px] h-[9px] p-[1px] rounded-[6px] bg-[#1A1A1A]/[0.025]" style={{ boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.03)' }}>
-                                                                    {products.map((p, i) => (
+                                                                    {segments.map((p, i) => (
                                                                         <motion.div
                                                                             key={p.name + i}
                                                                             className="h-full rounded-[4.5px] relative overflow-hidden"
@@ -2396,7 +2530,7 @@ export function WarehouseView() {
                                                                 animate={{ opacity: 1 }}
                                                                 transition={{ duration: 0.5, delay: 0.55, ease: EASE_OUT }}
                                                             >
-                                                                {products.map((p, i) => (
+                                                                {legend.map((p, i) => (
                                                                     <div key={i} className="flex items-center gap-[5px]">
                                                                         <div className="w-[8px] h-[4px] rounded-[1.5px] flex-shrink-0" style={{
                                                                             backgroundColor: p.color,

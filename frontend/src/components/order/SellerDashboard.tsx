@@ -13,6 +13,7 @@ import {
     Star, Copy, Share2, Image, CalendarClock, Receipt, HelpCircle, BookOpen, CheckCircle2,
     CircleDollarSign, BadgeCheck, CircleX, Coins,
     Lightbulb, Sparkles, ZoomIn, MapPin, Home, Factory, Palette, Trash2, CreditCard,
+    Search,
 } from 'lucide-react';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { NewSellerOnboarding } from './NewSellerOnboarding';
@@ -34,24 +35,87 @@ export function SellerDashboard() {
     const [mounted, setMounted] = useState(false);
     useEffect(() => { setMounted(true); }, []);
 
+    const PRODUCTS_PAGE_SIZE = 10;
+
     const { bounce, ripple } = useBounce();
     const pageRef = useRef<HTMLDivElement>(null);
     const [isNewSeller, setIsNewSeller] = useState(false);
     const [showNewProductForm, setShowNewProductForm] = useState(false);
     const [orders, setOrders] = useState<ActionOrder[]>([]);
     const [products, setProducts] = useState<ListedProduct[]>([]);
+    const [productsTotal, setProductsTotal] = useState(0);
+    const [productsPage, setProductsPage] = useState(1);
+    const [productsSearch, setProductsSearch] = useState('');
     const [metrics, setMetrics] = useState({ totalPending: 0, lastPaid: 12912, unreadMessages: 0, activeOrders: 0, protectionScore: 68 });
     const [loading, setLoading] = useState(true);
     const [activities, setActivities] = useState<Activity[]>([]);
 
+    useEffect(() => {
+        setProductsPage(1);
+    }, [productsSearch]);
+
+    const fetchProducts = useCallback(async () => {
+        try {
+            const params = new URLSearchParams();
+            params.set("page", String(productsPage));
+            if (productsSearch.trim()) params.set("search", productsSearch.trim());
+            const url = `/api/v1/seller/dashboard/products/?${params.toString()}`;
+            const pRes = await authedFetch(url);
+            if (!pRes.ok) {
+                if (pRes.status === 404 && productsPage > 1) {
+                    setProductsPage(1);
+                    return;
+                }
+                const text = await pRes.text().catch(() => "");
+                throw new Error(text || `Failed to load products (${pRes.status})`);
+            }
+            const data = await pRes.json();
+
+            const rows = Array.isArray(data) ? data : (data?.results ?? []);
+            const total = typeof data?.count === "number" ? data.count : (Array.isArray(rows) ? rows.length : 0);
+
+            const mappedProducts = (rows || []).map((p: any) => ({
+                id: p.id,
+                name: p.name,
+                image: p.image || PRODUCTS.headphones,
+                price: Number(p.price),
+                status: p.status,
+                sold: p.sold,
+                inWarehouse: p.in_warehouse,
+                inTransit: p.in_transit,
+                isOnline: p.status === 'active',
+                rating: Number(p.vehsl_rating || 0),
+            }));
+
+            if (mappedProducts.length > 0) {
+                setProducts(mappedProducts);
+                setProductsTotal(total);
+            } else if (!productsSearch.trim() && productsPage === 1) {
+                setProducts(LISTED.slice(0, PRODUCTS_PAGE_SIZE));
+                setProductsTotal(LISTED.length);
+            } else {
+                setProducts([]);
+                setProductsTotal(0);
+            }
+        } catch (err) {
+            console.error('Products fetch error:', err);
+            if (!productsSearch.trim() && productsPage === 1) {
+                setProducts(LISTED.slice(0, PRODUCTS_PAGE_SIZE));
+                setProductsTotal(LISTED.length);
+            } else {
+                setProducts([]);
+                setProductsTotal(0);
+            }
+        }
+    }, [PRODUCTS_PAGE_SIZE, productsPage, productsSearch]);
+
     const fetchDashboardData = useCallback(async () => {
         try {
             setLoading(true);
-            const [mRes, oRes, aRes, pRes] = await Promise.all([
+            const [mRes, oRes, aRes] = await Promise.all([
                 authedFetch('/api/v1/seller/dashboard/metrics/'),
                 authedFetch('/api/v1/seller/dashboard/orders/'),
                 authedFetch('/api/v1/seller/dashboard/activities/'),
-                authedFetch('/api/v1/seller/dashboard/products/'),
             ]);
 
             if (mRes.ok) {
@@ -111,31 +175,12 @@ export function SellerDashboard() {
                 }
             }
 
-            if (pRes.ok) {
-                const data = await pRes.json();
-                const mappedProducts = data.map((p: any) => ({
-                    id: p.id,
-                    name: p.name,
-                    image: p.image || PRODUCTS.headphones,
-                    price: Number(p.price),
-                    status: p.status,
-                    sold: p.sold,
-                    inWarehouse: p.in_warehouse,
-                    inTransit: p.in_transit,
-                    isOnline: p.status === 'active',
-                    rating: Number(p.vehsl_rating || 0),
-                }));
-                if (mappedProducts.length > 0) setProducts(mappedProducts);
-                else setProducts(LISTED);
-            }
-
             setIsNewSeller(false);
         } catch (err) {
             console.error('Dashboard fetch error:', err);
             // Fallback to mocks if everything fails
             setOrders(ACTION_ORDERS);
             setActivities(ACTIVITIES);
-            setProducts(LISTED);
         } finally {
             setLoading(false);
         }
@@ -145,6 +190,11 @@ export function SellerDashboard() {
         if (!mounted) return;
         fetchDashboardData();
     }, [fetchDashboardData, mounted]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        fetchProducts();
+    }, [fetchProducts, mounted]);
 
     const [showListingForm, setShowListingForm] = useState(false);
     const [listingPickupLocation, setListingPickupLocation] = useState<string>('factory');
@@ -3208,27 +3258,38 @@ export function SellerDashboard() {
                 transition={{ delay: 0.25, duration: 0.55, ease: EASE }}
                 className="mb-5"
             >
-                <div className="flex items-center justify-between mb-4 px-1">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4 px-1">
                     <p className="text-[12px] font-semibold text-[#1A1A1A]/30">
                         Your products
                     </p>
-                    <motion.button
-                        whileHover={{ scale: 1.03 }}
-                        whileTap={{ scale: 0.97 }}
-                        onClick={(e) => {
-                            bounce(e.currentTarget);
-                            setShowNewProductForm(true);
-                        }}
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-full border-none cursor-pointer"
-                        style={{
-                            background: '#1A1A1A',
-                            color: '#fff',
-                            boxShadow: '0 2px 6px rgba(0,0,0,0.1), 0 6px 16px -6px rgba(0,0,0,0.14)',
-                        }}
-                    >
-                        <Plus size={13} strokeWidth={2.5} />
-                        <span className="text-[11px] font-bold">New Listing</span>
-                    </motion.button>
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <div className="relative flex-1 sm:flex-none sm:w-[260px]">
+                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#1A1A1A]/25" />
+                            <input
+                                value={productsSearch}
+                                onChange={(e) => setProductsSearch(e.target.value)}
+                                placeholder="Search products or SKU…"
+                                className="w-full h-9 rounded-full pl-9 pr-3 text-[12px] font-semibold outline-none bg-white/60 border border-black/[0.05]"
+                            />
+                        </div>
+                        <motion.button
+                            whileHover={{ scale: 1.03 }}
+                            whileTap={{ scale: 0.97 }}
+                            onClick={(e) => {
+                                bounce(e.currentTarget);
+                                setShowNewProductForm(true);
+                            }}
+                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full border-none cursor-pointer flex-shrink-0"
+                            style={{
+                                background: '#1A1A1A',
+                                color: '#fff',
+                                boxShadow: '0 2px 6px rgba(0,0,0,0.1), 0 6px 16px -6px rgba(0,0,0,0.14)',
+                            }}
+                        >
+                            <Plus size={13} strokeWidth={2.5} />
+                            <span className="text-[11px] font-bold">New Listing</span>
+                        </motion.button>
+                    </div>
                 </div>
 
                 {/* ── Compact product list ── */}
@@ -3453,6 +3514,41 @@ export function SellerDashboard() {
                                 </motion.div>
                             );
                         });
+                    })()}
+                    {(() => {
+                        const totalPages = Math.max(1, Math.ceil(productsTotal / PRODUCTS_PAGE_SIZE));
+                        const pageSafe = Math.min(Math.max(1, productsPage), totalPages);
+                        const rangeStart = productsTotal ? (pageSafe - 1) * PRODUCTS_PAGE_SIZE + 1 : 0;
+                        const rangeEnd = productsTotal ? Math.min(productsTotal, (pageSafe - 1) * PRODUCTS_PAGE_SIZE + products.length) : 0;
+
+                        return (
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-3 py-2 border-t border-black/[0.03]">
+                                <div className="text-[10px] font-semibold text-[#1A1A1A]/35 tabular-nums">
+                                    {products.length === 0 ? "No products found." : `Showing ${rangeStart}–${rangeEnd} of ${productsTotal}`}
+                                </div>
+                                <div className="flex items-center justify-between sm:justify-end gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setProductsPage((p) => Math.max(1, p - 1))}
+                                        disabled={pageSafe <= 1}
+                                        className="h-8 rounded-full border border-black/[0.06] bg-white/60 px-3 text-[11px] font-bold text-[#1A1A1A]/60 disabled:opacity-40"
+                                    >
+                                        Prev
+                                    </button>
+                                    <div className="text-[11px] font-bold text-[#1A1A1A]/45 tabular-nums px-2">
+                                        {pageSafe} / {totalPages}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setProductsPage((p) => Math.min(totalPages, p + 1))}
+                                        disabled={pageSafe >= totalPages}
+                                        className="h-8 rounded-full border border-black/[0.06] bg-white/60 px-3 text-[11px] font-bold text-[#1A1A1A]/60 disabled:opacity-40"
+                                    >
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+                        );
                     })()}
                 </div>
 

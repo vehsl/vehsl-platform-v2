@@ -3304,9 +3304,22 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
         user = request.user
+        search = (request.query_params.get("search") or "").strip()
+
         qs = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
-        ser = SellerProductSerializer(qs, many=True)
-        return Response(ser.data)
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(sku__icontains=search))
+
+        qs = qs.order_by("-id")
+
+        class _SellerDashboardProductsPagination(AdminPageNumberPagination):
+            page_size = 10
+            max_page_size = 10
+
+        paginator = _SellerDashboardProductsPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        data = SellerProductSerializer(page, many=True, context={"request": request}).data
+        return paginator.get_paginated_response(data)
 
 class WarehouseDashboardViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSeller]
