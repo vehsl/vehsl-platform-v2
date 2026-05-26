@@ -33,6 +33,15 @@ type BuyerAddress = {
   postal_code?: string;
 };
 
+type CreatedOrder = {
+  id: number;
+  status?: string;
+  currency?: string;
+  total_amount?: string;
+  payment_method?: string;
+  seller_id?: number;
+};
+
 export function CheckoutPage() {
   const router = useRouter();
   const { language } = useLanguage();
@@ -44,53 +53,75 @@ export function CheckoutPage() {
   const [addressesLoading, setAddressesLoading] = useState(false);
   const [addresses, setAddresses] = useState<BuyerAddress[]>([]);
   const [addressId, setAddressId] = useState<number | null>(null);
-  const hasAccessToken = useMemo(() => {
-    try {
-      return typeof window !== "undefined" && Boolean(window.localStorage.getItem("vehsl.access"));
-    } catch {
-      return false;
-    }
-  }, []);
+  const [hasAccessToken, setHasAccessToken] = useState(false);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   useEffect(() => {
-    let cancelled = false;
-    setAddressesLoading(true);
-    fetchJsonAuthed("/api/v1/auth/addresses/?page_size=50")
-      .then((data) => {
-        if (cancelled) return;
-        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
-        const parsed: BuyerAddress[] = rows
-          .map((r: any) => ({
-            id: Number(r?.id || 0),
-            kind: (r?.kind || "") as any,
-            contact_name: r?.contact_name || "",
-            phone: r?.phone || "",
-            country: r?.country || "",
-            region: r?.region || "",
-            city: r?.city || "",
-            street1: r?.street1 || "",
-            street2: r?.street2 || "",
-            postal_code: r?.postal_code || "",
-          }))
-          .filter((r: BuyerAddress) => r.id && (r.kind === "primary" || r.kind === "secondary"));
-        parsed.sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === "primary" ? -1 : 1));
-        setAddresses(parsed);
-        const primary = parsed.find((a) => a.kind === "primary") || parsed[0] || null;
-        setAddressId((prev) => prev ?? primary?.id ?? null);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (cancelled) return;
-        setAddressesLoading(false);
-      });
+    const read = () => {
+      try {
+        setHasAccessToken(typeof window !== "undefined" && Boolean(window.localStorage.getItem("vehsl.access")));
+      } catch {
+        setHasAccessToken(false);
+      }
+    };
+    read();
+    const onVis = () => {
+      if (!document.hidden) read();
+    };
+    const intervalId = window.setInterval(read, 800);
+    window.addEventListener("focus", read);
+    window.addEventListener("storage", read);
+    document.addEventListener("visibilitychange", onVis);
     return () => {
-      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", read);
+      window.removeEventListener("storage", read);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
+
+  const fetchAddresses = useCallback(async () => {
+    if (!hasAccessToken) {
+      setAddresses([]);
+      setAddressId(null);
+      setAddressesLoading(false);
+      return;
+    }
+    setAddressesLoading(true);
+    try {
+      const data = await fetchJsonAuthed("/api/v1/auth/addresses/?page_size=50");
+      const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+      const parsed: BuyerAddress[] = rows
+        .map((r: any) => ({
+          id: Number(r?.id || 0),
+          kind: (r?.kind || "") as any,
+          contact_name: r?.contact_name || "",
+          phone: r?.phone || "",
+          country: r?.country || "",
+          region: r?.region || "",
+          city: r?.city || "",
+          street1: r?.street1 || "",
+          street2: r?.street2 || "",
+          postal_code: r?.postal_code || "",
+        }))
+        .filter((r: BuyerAddress) => r.id && (r.kind === "primary" || r.kind === "secondary"));
+      parsed.sort((a, b) => (a.kind === b.kind ? a.id - b.id : a.kind === "primary" ? -1 : 1));
+      setAddresses(parsed);
+      const primary = parsed.find((a) => a.kind === "primary") || parsed[0] || null;
+      setAddressId((prev) => prev ?? primary?.id ?? null);
+    } catch {
+      setAddresses([]);
+    } finally {
+      setAddressesLoading(false);
+    }
+  }, [hasAccessToken]);
+
+  useEffect(() => {
+    void fetchAddresses();
+  }, [fetchAddresses]);
 
   const currency = useMemo(() => items[0]?.currency || "USD", [items]);
 
@@ -102,11 +133,40 @@ export function CheckoutPage() {
     return [...map.entries()].map(([sellerId, rows]) => ({ sellerId, rows }));
   }, [items]);
 
+  const selectedAddress = useMemo(() => addresses.find((a) => a.id === addressId) || null, [addressId, addresses]);
+  const selectedAddressLine = useMemo(() => {
+    const a = selectedAddress;
+    if (!a) return "";
+    const parts = [a.street1, a.street2, a.city, a.region, a.country, a.postal_code].map((x) => String(x || "").trim()).filter(Boolean);
+    return parts.join(", ");
+  }, [selectedAddress]);
+
+  const isAddressComplete = useMemo(() => {
+    const a = selectedAddress;
+    if (!a) return false;
+    const country = String(a.country || "").trim();
+    const city = String(a.city || "").trim();
+    const street1 = String(a.street1 || "").trim();
+    return Boolean(country && city && street1);
+  }, [selectedAddress]);
+
+  const validationError = useMemo(() => {
+    if (!hasAccessToken) return t("Please sign in to place an order.", "请先登录以提交订单。");
+    if (cartLoading) return t("Cart is still loading.", "购物车仍在加载中。");
+    if (lastError) return t("Fix cart loading error first.", "请先修复购物车加载错误。");
+    if (items.length === 0) return t("Your cart is empty.", "你的购物车是空的。");
+    if (!addressId) return t("Select a delivery address first.", "请先选择收货地址。");
+    if (!isAddressComplete) return t("Selected address is incomplete.", "所选地址不完整。");
+    if (!paymentMethod) return t("Select a payment method.", "请选择支付方式。");
+    const badQty = items.find((it) => !Number.isFinite(Number(it.quantity)) || Number(it.quantity) < 1);
+    if (badQty) return t("Invalid item quantity in cart.", "购物车商品数量无效。");
+    return "";
+  }, [addressId, cartLoading, hasAccessToken, isAddressComplete, items, lastError, paymentMethod, t]);
+
   const placeOrders = useCallback(async () => {
     if (placing) return;
-    if (items.length === 0) return;
-    if (!addressId) {
-      toast.error(t("Select a delivery address first.", "请先选择收货地址。"));
+    if (validationError) {
+      toast.error(validationError);
       return;
     }
     setPlacing(true);
@@ -129,22 +189,14 @@ export function CheckoutPage() {
       }
       await clearCart();
       toast.success(t("Order placed.", "订单已提交。"));
-      router.push("/orders");
+      router.push("/");
     } catch (e) {
       const msg = e instanceof Error ? e.message : t("Checkout failed.", "结算失败。");
       toast.error(msg);
     } finally {
       setPlacing(false);
     }
-  }, [placing, items.length, addressId, groups, paymentMethod, clearCart, router, t]);
-
-  const selectedAddress = useMemo(() => addresses.find((a) => a.id === addressId) || null, [addressId, addresses]);
-  const selectedAddressLine = useMemo(() => {
-    const a = selectedAddress;
-    if (!a) return "";
-    const parts = [a.street1, a.street2, a.city, a.region, a.country, a.postal_code].map((x) => String(x || "").trim()).filter(Boolean);
-    return parts.join(", ");
-  }, [selectedAddress]);
+  }, [addressId, clearCart, groups, paymentMethod, placing, router, t, validationError]);
 
   return (
     <div className="min-h-dvh bg-white">
@@ -307,7 +359,12 @@ export function CheckoutPage() {
                     </div>
                   ) : addresses.length === 0 ? (
                     <div className="rounded-2xl border border-black/[0.06] bg-black/[0.02] p-3 text-[12px] text-[#7c7f87]">
-                      {t("No address found. Add one in Profile settings.", "未找到地址。请在个人设置中添加地址。")}
+                      <div>{t("No address found.", "未找到地址。")}</div>
+                      <div className="mt-1">
+                        <Link href="/explore?profileSettings=1" className="font-semibold text-[#0f1115] hover:underline">
+                          {t("Add address in Profile settings", "在个人设置中添加地址")}
+                        </Link>
+                      </div>
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -340,6 +397,9 @@ export function CheckoutPage() {
                 </div>
                 {selectedAddressLine ? (
                   <div className="mt-2 text-[11px] text-[#7c7f87]">{selectedAddressLine}</div>
+                ) : null}
+                {addressId && !isAddressComplete ? (
+                  <div className="mt-2 text-[11px] text-[#ff3b30]">{t("Address must include Country, City, and Street.", "地址必须包含国家、城市和街道。")}</div>
                 ) : null}
               </div>
 
@@ -379,12 +439,13 @@ export function CheckoutPage() {
 
               <button
                 type="button"
-                disabled={placing || items.length === 0 || !addressId}
+                disabled={placing || Boolean(validationError)}
                 onClick={() => void placeOrders()}
                 className="mt-5 w-full rounded-full bg-black px-5 py-3 text-[12px] font-semibold text-white hover:bg-black/90 disabled:opacity-60"
               >
                 {placing ? t("Placing order…", "提交中…") : t("Place order", "提交订单")}
               </button>
+              {validationError ? <div className="mt-2 text-[11px] text-[#ff3b30]">{validationError}</div> : null}
 
               <button
                 type="button"
