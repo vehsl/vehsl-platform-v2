@@ -1,6 +1,7 @@
 import os
 import random
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -12,9 +13,9 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.text import slugify
 
-from apps.accounts.models import AdminProfile, BuyerAddress, BuyerProfile, KycDocument, SellerProfile, User, UserProfile
+from apps.accounts.models import AdminProfile, BuyerAddress, BuyerProfile, KycDocument, Notification, SellerProfile, User, UserProfile
 from apps.catalog.models import Category, PricingTier, Product, ProductMedia, ProductVariation, ShippingRate
-from apps.orders.models import CartItem, WishlistItem
+from apps.orders.models import CartItem, Order, OrderItem, Shipment, WishlistItem
 
 
 @dataclass(frozen=True)
@@ -907,6 +908,123 @@ class Command(BaseCommand):
                             size_bytes=0,
                             position=10,
                         )
+
+                        if created_products % 5 == 0:
+                            ProductMedia.objects.create(
+                                product=p,
+                                variation=None,
+                                media_type=ProductMedia.MediaType.VIDEO,
+                                url=f"https://picsum.photos/seed/{p.sku}-reel/1080/1920",
+                                title="Behind the scenes",
+                                content_type="video/mp4",
+                                size_bytes=0,
+                                position=20,
+                            )
+
+            if reset:
+                Order.objects.filter(buyer=buyer, seller=primary_seller, items__product__sku__startswith="SEED-").delete()
+
+            seed_products = list(
+                Product.objects.filter(seller=primary_seller, deleted_at__isnull=True, sku__startswith="SEED-")
+                .exclude(status=Product.Status.ARCHIVED)
+                .order_by("id")[:6]
+            )
+            addr = BuyerAddress.objects.filter(user=buyer, kind=BuyerAddress.Kind.PRIMARY).first()
+            ship_addr = {
+                "contact_name": getattr(addr, "contact_name", "") or "",
+                "phone": getattr(addr, "phone", "") or "",
+                "country": getattr(addr, "country", "") or "",
+                "region": getattr(addr, "region", "") or "",
+                "city": getattr(addr, "city", "") or "",
+                "street1": getattr(addr, "street1", "") or "",
+                "street2": getattr(addr, "street2", "") or "",
+                "postal_code": getattr(addr, "postal_code", "") or "",
+            }
+
+            def _create_order(*, product: Product, quantity: int, status: str, payment_method: str, payment_status: str, authorized: bool, shipped: bool):
+                qty = max(1, int(quantity))
+                unit_price = product.price
+                total = unit_price * qty
+                deadline = timezone.now() + timedelta(days=max(1, int(getattr(product, "ship_time_max_days", 3) or 3)))
+                o = Order.objects.create(
+                    buyer=buyer,
+                    seller=primary_seller,
+                    status=status,
+                    currency=product.currency or "USD",
+                    total_amount=total,
+                    payment_method=payment_method,
+                    payment_status=payment_status,
+                    shipping_address=ship_addr,
+                    deadline_at=deadline,
+                    release_authorized_at=(timezone.now() if authorized else None),
+                    release_authorized_by=(admin if authorized else None),
+                )
+                OrderItem.objects.create(order=o, product=product, variation=None, quantity=qty, unit_price=unit_price)
+                if shipped:
+                    Shipment.objects.create(
+                        order=o,
+                        carrier_id="seed",
+                        tracking_number=f"SEED-TRK-{o.id}",
+                        status=Shipment.Status.IN_TRANSIT,
+                        origin="Seed Warehouse",
+                        destination=f"{ship_addr.get('city')}, {ship_addr.get('country')}".strip(", "),
+                    )
+                return o
+
+            if seed_products:
+                _create_order(
+                    product=seed_products[0],
+                    quantity=150,
+                    status=Order.Status.CREATED,
+                    payment_method=Order.PaymentMethod.CARD,
+                    payment_status=Order.PaymentStatus.UNPAID,
+                    authorized=False,
+                    shipped=False,
+                )
+                _create_order(
+                    product=seed_products[min(1, len(seed_products) - 1)],
+                    quantity=60,
+                    status=Order.Status.ACCEPTED,
+                    payment_method=Order.PaymentMethod.CARD,
+                    payment_status=Order.PaymentStatus.PAID,
+                    authorized=False,
+                    shipped=False,
+                )
+                _create_order(
+                    product=seed_products[min(2, len(seed_products) - 1)],
+                    quantity=200,
+                    status=Order.Status.SHIPPED,
+                    payment_method=Order.PaymentMethod.COD,
+                    payment_status=Order.PaymentStatus.COD_PENDING,
+                    authorized=False,
+                    shipped=True,
+                )
+                _create_order(
+                    product=seed_products[min(3, len(seed_products) - 1)],
+                    quantity=90,
+                    status=Order.Status.SHIPPED,
+                    payment_method=Order.PaymentMethod.CARD,
+                    payment_status=Order.PaymentStatus.PAID,
+                    authorized=True,
+                    shipped=True,
+                )
+
+                Notification.objects.create(
+                    user=primary_seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="product_media_requested",
+                    payload={"kind": "deal", "title": "product_media_requested", "tint": "#e67e22", "icon": "📦"},
+                    status=Notification.Status.SENT,
+                    sent_at=timezone.now(),
+                )
+                Notification.objects.create(
+                    user=primary_seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="new_order",
+                    payload={"kind": "deal", "title": "New order received", "tint": "#0171e3", "icon": "🧾"},
+                    status=Notification.Status.SENT,
+                    sent_at=timezone.now(),
+                )
 
         self.stdout.write(self.style.SUCCESS(f"seed_catalog: sellers={sellers_n} products_created={created_products} media_created={created_media}"))
         self.stdout.write(self.style.SUCCESS(f"seed_catalog password: {password}"))

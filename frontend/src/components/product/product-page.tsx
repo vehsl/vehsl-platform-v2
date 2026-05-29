@@ -23,23 +23,9 @@ import {
 import { toast } from "sonner";
 
 import { fetchJsonAuthed } from "@/lib/api";
+import { safeJsonParse } from "@/lib/utils";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
-import { categories as fallbackCategories } from "@/lib/categories";
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function localizeByDictionary(value: string, dict: Array<{ from: string; to: string }>) {
-  let out = value;
-  for (const pair of dict) {
-    if (!pair.from || !pair.to) continue;
-    const re = new RegExp(`\\b${escapeRegExp(pair.from)}\\b`, "gi");
-    out = out.replace(re, pair.to);
-  }
-  return out;
-}
 
 type Product = {
   id: number;
@@ -142,23 +128,6 @@ export function ProductPage() {
   const { addToCart, totalQuantity } = useCart();
   const { language } = useLanguage();
   const t = useCallback((en: string, zh: string) => (language === "zh" ? zh : en), [language]);
-
-  const productTitleDict = useMemo(() => {
-    const pairs: Array<{ from: string; to: string }> = [];
-    for (const c of fallbackCategories) {
-      if (c.nameZh) pairs.push({ from: c.name, to: c.nameZh });
-      for (const s of c.subcategories) {
-        if (s.nameZh) pairs.push({ from: s.name, to: s.nameZh });
-      }
-    }
-    pairs.sort((a, b) => b.from.length - a.from.length);
-    return pairs;
-  }, []);
-
-  const localizeProductTitle = useCallback(
-    (raw: string) => (language === "zh" ? localizeByDictionary(raw, productTitleDict) : raw),
-    [language, productTitleDict],
-  );
 
   const [loading, setLoading] = useState(true);
   const [product, setProduct] = useState<Product | null>(null);
@@ -396,9 +365,8 @@ export function ProductPage() {
   const localizedCategory = useMemo(() => {
     const raw = (product?.category_name || "").trim();
     if (!raw) return t("Category", "分类");
-    if (language !== "zh") return raw;
-    return localizeByDictionary(raw, productTitleDict);
-  }, [language, product?.category_name, productTitleDict, t]);
+    return raw;
+  }, [product?.category_name, t]);
 
   const localizedSeller = useMemo(() => {
     const raw = (product?.seller_name || "").trim();
@@ -946,7 +914,7 @@ export function ProductPage() {
 
     try {
       const raw = window.localStorage.getItem(compareStorageKey) || "";
-      const arr = raw ? (JSON.parse(raw) as unknown) : [];
+      const arr = safeJsonParse<unknown>(raw, []);
       const ids = Array.isArray(arr) ? arr.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0) : [];
       const uniq = Array.from(new Set(ids)).filter((n) => n !== productId).slice(0, 3);
       setCompareIds(uniq);
@@ -1192,7 +1160,7 @@ export function ProductPage() {
                   {images[activeImage] ? (
                     <img
                       src={images[activeImage]}
-                      alt={localizeProductTitle(product.title || product.name)}
+                      alt={product.title || product.name}
                       className="h-[340px] w-full object-cover sm:h-[420px]"
                       loading="eager"
                       decoding="async"
@@ -1314,7 +1282,7 @@ export function ProductPage() {
                       {localizedCategory} / {localizedSeller}
                     </div>
                     <div className="mt-2 text-[28px] sm:text-[36px] font-extrabold tracking-tight text-[#1A1A1A] leading-[1.05]">
-                      {localizeProductTitle(product.title || product.name)}
+                      {product.title || product.name}
                     </div>
                     <div className="mt-3 text-[16px] font-bold text-[#1A1A1A]/80">
                       {fmtMoney(product.currency, product.price)}
@@ -1411,7 +1379,7 @@ export function ProductPage() {
                           <div className="mt-3 flex flex-wrap gap-2">
                             {g.values.map((v) => {
                               const selected = v === value;
-                              const label = language === "zh" ? localizeByDictionary(v, productTitleDict) : v;
+                              const label = v;
                               return (
                                 <button
                                   key={v}
@@ -1443,7 +1411,7 @@ export function ProductPage() {
                           <div className="mt-3 grid gap-3 sm:grid-cols-2">
                             {g.values.slice(0, 2).map((v) => {
                               const selected = v === value;
-                              const label = language === "zh" ? localizeByDictionary(v, productTitleDict) : v;
+                              const label = v;
                               return (
                                 <button
                                   key={v}
@@ -1475,7 +1443,7 @@ export function ProductPage() {
                           <div className="mt-3 flex flex-wrap gap-2">
                             {g.values.map((v) => {
                               const selected = v === value;
-                              const label = language === "zh" ? localizeByDictionary(v, productTitleDict) : v;
+                              const label = v;
                               return (
                                 <button
                                   key={v}
@@ -1914,7 +1882,7 @@ export function ProductPage() {
                             ) : null}
                           </div>
                           <div className="mt-3 text-[13px] font-extrabold text-[#0a84ff]">
-                            {localizeProductTitle(product.title || product.name)}
+                            {product.title || product.name}
                           </div>
                           <div className="mt-1 text-[13px] font-extrabold text-[#1A1A1A]/80">
                             {fmtMoney(product.currency, product.price)}
@@ -1964,7 +1932,7 @@ export function ProductPage() {
                             .map((p) => (
                               <div key={p.id} className="inline-flex items-center gap-2 rounded-full border border-black/[0.08] bg-white px-3 py-2">
                                 <div className="text-[12px] font-semibold text-[#1A1A1A]/70">
-                                  {localizeProductTitle(p.title || p.name)}
+                                  {p.title || p.name}
                                 </div>
                                 <button type="button" onClick={() => removeCompare(p.id)} className="text-[#1A1A1A]/35 hover:text-[#ff3b30]">
                                   <X className="h-4 w-4" />
@@ -1985,7 +1953,7 @@ export function ProductPage() {
                                 </div>
                                 {compareColumns.map((p) => (
                                   <div key={p.id} className="px-5 py-4 text-[12px] font-extrabold text-[#1A1A1A]/75">
-                                    {localizeProductTitle(p.title || p.name)}
+                                    {p.title || p.name}
                                   </div>
                                 ))}
                               </div>
@@ -2084,7 +2052,7 @@ export function ProductPage() {
                                     </div>
                                     <div className="min-w-0 flex-1">
                                       <div className="text-[13px] font-extrabold text-[#1A1A1A]/80 truncate">
-                                        {localizeProductTitle((r.title || r.name) as string)}
+                                        {(r.title || r.name) as string}
                                       </div>
                                       <div className="mt-1 text-[12px] font-semibold text-[#1A1A1A]/45">
                                         {fmtMoney(r.currency, r.price)}

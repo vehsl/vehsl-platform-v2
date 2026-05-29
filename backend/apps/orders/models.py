@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
-from apps.catalog.models import Product, ProductVariation
+from apps.catalog.models import Product, ProductVariation, Warehouse
 
 
 class Cart(models.Model):
@@ -89,6 +89,8 @@ class Order(models.Model):
     payment_status = models.CharField(max_length=16, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)
     shipping_address = models.JSONField(default=dict, blank=True)
     deadline_at = models.DateTimeField(null=True, blank=True)
+    extension_reason = models.TextField(blank=True, default="")
+    extension_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     release_authorized_at = models.DateTimeField(null=True, blank=True)
     release_authorized_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -97,6 +99,15 @@ class Order(models.Model):
         blank=True,
         related_name="release_authorizations",
     )
+    release_declined_at = models.DateTimeField(null=True, blank=True)
+    release_declined_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="release_declines",
+    )
+    release_decline_reason = models.TextField(blank=True, default="")
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -339,3 +350,34 @@ class ReleaseConditionProof(models.Model):
 
     def __str__(self):
         return f"release_proof:{self.pk}"
+
+
+class WarehouseRelease(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        DECLINED = "declined", "Declined"
+
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name="warehouse_release")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="warehouse_releases")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="warehouse_releases")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="warehouse_releases")
+    recipient_name = models.CharField(max_length=200, blank=True, default="")
+    id_card_number = models.CharField(max_length=64, blank=True, default="")
+    vehicle_number = models.CharField(max_length=64, blank=True, default="")
+    boxes_released = models.PositiveIntegerField(default=0)
+    payment_amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.COMPLETED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["seller", "created_at"]),
+            models.Index(fields=["warehouse", "created_at"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"warehouse_release:{self.pk}"

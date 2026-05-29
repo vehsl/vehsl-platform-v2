@@ -1,32 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import type { LucideIcon } from "lucide-react";
-import { ArrowLeft, ChevronRight, LogOut, Search, Settings, ShoppingCart, User, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, LogOut, Package, Search, Settings, ShoppingCart, User, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/components/ui/utils";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
-import { categories as fallbackCategories } from "@/lib/categories";
 import { fetchJsonAuthed } from "@/lib/api";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function localizeByDictionary(value: string, dict: Array<{ from: string; to: string }>) {
-  let out = value;
-  for (const pair of dict) {
-    if (!pair.from || !pair.to) continue;
-    const re = new RegExp(`\\b${escapeRegExp(pair.from)}\\b`, "gi");
-    out = out.replace(re, pair.to);
-  }
-  return out;
-}
 
 type UiSubcategory = {
   id: string;
@@ -90,16 +76,6 @@ type ProductsApiResponse = {
   previous: string | null;
   results: ProductRow[];
 };
-
-function slugifyName(value: string) {
-  return value
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(/['’]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-");
-}
 
 function fmtMoney(currency: string, amount: string) {
   const num = Number(amount);
@@ -578,71 +554,26 @@ export function ExploreShell() {
     };
   }, []);
 
-  const fallbackUiCategories: UiCategory[] = useMemo(() => {
-    return fallbackCategories
-      .filter((c) => c.id.toLowerCase() !== "other" && c.name.toLowerCase() !== "other")
-      .map((c) => ({
-        id: c.id,
-        name: c.name,
-        nameZh: c.nameZh,
-        icon: c.icon,
-        accent: c.accent,
-        count: 0,
-        subcategories: c.subcategories.map((s) => {
-          const slug = `${c.id}-${slugifyName(s.name)}`;
-          return {
-            id: `${c.id}-${s.name.toLowerCase().replace(/\s+/g, "-")}`,
-            name: s.name,
-            nameZh: s.nameZh,
-            slug,
-            icon: s.icon,
-            items: s.items,
-            itemsZh: s.itemsZh,
-            count: 0,
-          };
-        }),
-      }));
-  }, []);
-
-  const productTitleDict = useMemo(() => {
-    const pairs: Array<{ from: string; to: string }> = [];
-    for (const c of fallbackCategories) {
-      if (c.nameZh) pairs.push({ from: c.name, to: c.nameZh });
-      for (const s of c.subcategories) {
-        if (s.nameZh) pairs.push({ from: s.name, to: s.nameZh });
-      }
-    }
-    pairs.sort((a, b) => b.from.length - a.from.length);
-    return pairs;
-  }, []);
-
-  const localizeProductTitle = useCallback(
-    (raw: string) => (language === "zh" ? localizeByDictionary(raw, productTitleDict) : raw),
-    [language, productTitleDict],
-  );
-
   const uiCategories: UiCategory[] = useMemo(() => {
     const server = Array.isArray(serverCategories) ? serverCategories : [];
-    const serverBySlug = new Map(server.map((c) => [String(c.slug || "").toLowerCase(), c]));
-
-    return fallbackUiCategories.map((c) => {
-      const serverCat = serverBySlug.get(c.id.toLowerCase()) || null;
-      const accent = (serverCat?.accent || c.accent || "#3B82F6").toString();
-      const children = Array.isArray(serverCat?.children) ? serverCat!.children : [];
-      const bySlug = new Map(children.map((ch) => [String(ch.slug || "").toLowerCase(), ch]));
-      const byName = new Map(children.map((ch) => [String(ch.name || "").toLowerCase(), ch]));
-
-      return {
-        ...c,
-        accent,
-        count: Number(serverCat?.product_count || 0),
-        subcategories: c.subcategories.map((s) => {
-          const match = bySlug.get(s.slug.toLowerCase()) || byName.get(s.name.toLowerCase()) || null;
-          return { ...s, count: Number(match?.product_count || 0) };
-        }),
-      };
-    });
-  }, [fallbackUiCategories, serverCategories]);
+    return server
+      .filter((c) => String(c.slug || "").toLowerCase() !== "other" && String(c.name || "").toLowerCase() !== "other")
+      .map((c) => ({
+        id: String(c.slug || c.id),
+        name: String(c.name || ""),
+        icon: Package,
+        accent: (c.accent || "#3B82F6").toString(),
+        count: Number(c.product_count || 0),
+        subcategories: (Array.isArray(c.children) ? c.children : []).map((ch) => ({
+          id: String(ch.slug || ch.id),
+          name: String(ch.name || ""),
+          slug: String(ch.slug || ch.id),
+          icon: Package,
+          items: [],
+          count: Number(ch.product_count || 0),
+        })),
+      }));
+  }, [serverCategories]);
 
   const stats = useMemo(() => {
     const categoryCount = uiCategories.length;
@@ -692,21 +623,13 @@ export function ExploreShell() {
   };
 
   const onSelectSubcategory = (category: UiCategory, sub: UiSubcategory) => {
-    const server = Array.isArray(serverCategories) ? serverCategories : [];
-    const serverCat = server.find((c) => String(c.slug || "").toLowerCase() === category.id.toLowerCase()) || null;
-    const serverChildren = Array.isArray(serverCat?.children) ? serverCat!.children : [];
-    const resolvedSlug =
-      serverChildren.find((ch) => String(ch.slug || "").toLowerCase() === sub.slug.toLowerCase())?.slug ||
-      serverChildren.find((ch) => String(ch.name || "").toLowerCase() === sub.name.toLowerCase())?.slug ||
-      sub.slug;
-
-    setSelected({ category, sub: { ...sub, slug: resolvedSlug } });
+    setSelected({ category, sub });
     setSubSearch("");
     setSubProducts([]);
     setSubTotal(null);
     setSubHasMore(false);
     setSubPage(1);
-    void fetchSubProducts(1, resolvedSlug, "");
+    void fetchSubProducts(1, sub.slug, "");
   };
 
   const goDashboard = () => {
@@ -1009,7 +932,7 @@ export function ExploreShell() {
                 {subProducts.map((p) => (
                   <Link
                     key={p.id}
-                    href={`/products/${p.id}`}
+                    href={`/product/${p.id}`}
                     className="h-full rounded-2xl border border-white/60 bg-white/85 shadow-soft overflow-hidden hover:bg-white/95 transition flex flex-col"
                   >
                     {p.hero_image_url ? (
@@ -1019,7 +942,7 @@ export function ExploreShell() {
                     )}
                     <div className="p-4 flex-1 flex flex-col">
                       <div className="text-[13px] font-semibold text-[#0f1115] line-clamp-2">
-                        {localizeProductTitle(p.title || p.name)}
+                        {p.title || p.name}
                       </div>
                       <div className="mt-1 text-[12px] text-[#7c7f87] truncate">{p.seller_name || ""}</div>
                       <div className="mt-auto pt-3 text-[12px] font-semibold text-[#0f1115]">
@@ -1325,13 +1248,13 @@ export function ExploreShell() {
                     {searchResults.map((p) => (
                       <Link
                         key={p.id}
-                        href={`/products/${p.id}`}
+                        href={`/product/${p.id}`}
                         className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-black/[0.02]"
                         onClick={() => setSearchOpen(false)}
                       >
                         <div className="min-w-0">
                           <div className="truncate text-[13px] font-semibold text-[#0f1115]">
-                            {localizeProductTitle(p.title || p.name)}
+                            {p.title || p.name}
                           </div>
                           <div className="truncate text-[12px] text-[#7c7f87]">{p.seller_name || ""}</div>
                         </div>

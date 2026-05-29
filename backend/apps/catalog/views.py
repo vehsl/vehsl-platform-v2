@@ -7,6 +7,7 @@ from django.core.files.storage import default_storage
 from django.db.models import Avg, BooleanField, Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -591,6 +592,97 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
             raise permissions.PermissionDenied("You do not own this product.")
         serializer.save()
 
+    def _serialize(self, obj, request):
+        data = ProductMediaSerializer(obj, context={"request": request}).data
+        if "url" in data:
+            data.pop("url", None)
+        if "storage_key" in data:
+            data.pop("storage_key", None)
+        return data
+
+    def partial_update(self, request, *args, **kwargs):
+        obj: ProductMedia = self.get_object()
+        if getattr(obj.product, "seller_id", None) != request.user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data or {})
+        upload = request.FILES.get("file")
+        raw_url = (data.get("url") or "").strip()
+
+        if upload:
+            content_type = (getattr(upload, "content_type", "") or "").strip()
+            size_bytes = int(getattr(upload, "size", 0) or 0)
+            name = getattr(upload, "name", "") or "file"
+            safe_name = name.replace("/", "_").replace("\\", "_")
+            key = f"product_media/{obj.product_id}/{uuid4()}/{safe_name}"
+            new_storage_key = default_storage.save(key, upload)
+            old_key = (obj.storage_key or "").strip()
+            obj.storage_key = new_storage_key
+            obj.url = ""
+            obj.content_type = content_type
+            obj.size_bytes = size_bytes
+            if not (data.get("title") or "").strip():
+                obj.title = name
+            if old_key and old_key != new_storage_key:
+                try:
+                    default_storage.delete(old_key)
+                except Exception:
+                    pass
+        elif raw_url:
+            old_key = (obj.storage_key or "").strip()
+            obj.url = raw_url
+            obj.storage_key = ""
+            obj.content_type = ""
+            obj.size_bytes = 0
+            if old_key:
+                try:
+                    default_storage.delete(old_key)
+                except Exception:
+                    pass
+
+        title = (data.get("title") or "").strip()
+        if title != "":
+            obj.title = title
+
+        pos_raw = (data.get("position") or "").strip()
+        if pos_raw:
+            try:
+                obj.position = max(0, int(pos_raw))
+            except Exception:
+                pass
+
+        var_raw = (data.get("variation") or "").strip()
+        if var_raw:
+            try:
+                var_id = int(var_raw)
+            except Exception:
+                var_id = None
+            if var_id:
+                variation = ProductVariation.objects.filter(id=var_id, product_id=obj.product_id, deleted_at__isnull=True).first()
+                if not variation:
+                    return Response({"detail": "Invalid variation."}, status=status.HTTP_400_BAD_REQUEST)
+                obj.variation = variation
+
+        obj.save()
+        return Response(self._serialize(obj, request))
+
+    def update(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        obj: ProductMedia = self.get_object()
+        if getattr(obj.product, "seller_id", None) != request.user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        obj.deleted_at = timezone.now()
+        obj.save(update_fields=["deleted_at"])
+        key = (obj.storage_key or "").strip()
+        if key:
+            try:
+                default_storage.delete(key)
+            except Exception:
+                pass
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=["post"], url_path="upload")
     def upload(self, request, *args, **kwargs):
         product_id = (request.data.get("product") or "").strip()
@@ -664,12 +756,7 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
             size_bytes=size_bytes,
             position=position,
         )
-        data = ProductMediaSerializer(obj, context={"request": request}).data
-        if "url" in data:
-            data.pop("url", None)
-        if "storage_key" in data:
-            data.pop("storage_key", None)
-        return Response(data, status=status.HTTP_201_CREATED)
+        return Response(self._serialize(obj, request), status=status.HTTP_201_CREATED)
 
 
 class TrademarkViewSet(viewsets.ModelViewSet):

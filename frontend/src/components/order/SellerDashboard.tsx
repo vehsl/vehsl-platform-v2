@@ -22,9 +22,10 @@ import { SellerReels } from './SellerReels';
 import { PaymentSheet } from './PaymentSheet';
 import paymentSvgPaths from './imports/svg-bdwoyeteyk';
 import { authedFetch } from '@/lib/api';
+import { safeJsonParse } from "@/lib/utils";
 import {
     FONT, EASE, GLASS, GLASS_ELEVATED, useBounce, fmt, PRODUCTS,
-    ACTION_ORDERS, LISTED, ACTIVITIES, ACTIVITY_ICONS, ACTION_BUTTON_STYLES,
+    ACTIVITY_ICONS, ACTION_BUTTON_STYLES,
     greet,
 } from './seller-dashboard-data';
 import type { ActionType, ActionOrder, ListedProduct, Activity, ActivityType, ActivityActionKind } from './seller-dashboard-data';
@@ -41,14 +42,37 @@ export function SellerDashboard() {
     const pageRef = useRef<HTMLDivElement>(null);
     const [isNewSeller, setIsNewSeller] = useState(false);
     const [showNewProductForm, setShowNewProductForm] = useState(false);
+    const [sellerName, setSellerName] = useState<string>('Seller');
     const [orders, setOrders] = useState<ActionOrder[]>([]);
     const [products, setProducts] = useState<ListedProduct[]>([]);
     const [productsTotal, setProductsTotal] = useState(0);
     const [productsPage, setProductsPage] = useState(1);
     const [productsSearch, setProductsSearch] = useState('');
-    const [metrics, setMetrics] = useState({ totalPending: 0, lastPaid: 12912, unreadMessages: 0, activeOrders: 0, protectionScore: 68 });
+    const [shipments, setShipments] = useState<{ id: string; item: string; image: string; qty: number; unitPrice: number; dest: string; orderRef: string; shipmentStatus: string; trackingNumber: string }[]>([]);
+    const [metrics, setMetrics] = useState({ totalPending: 0, lastPaid: 0, unreadMessages: 0, activeOrders: 0, protectionScore: 0 });
     const [loading, setLoading] = useState(true);
     const [activities, setActivities] = useState<Activity[]>([]);
+    const [orderActionLoadingId, setOrderActionLoadingId] = useState<string | null>(null);
+    const [activityDismissLoadingId, setActivityDismissLoadingId] = useState<string | null>(null);
+    const [shipmentDetailId, setShipmentDetailId] = useState<string | null>(null);
+    const [shipmentDetail, setShipmentDetail] = useState<any>(null);
+    const [shipmentDetailLoading, setShipmentDetailLoading] = useState(false);
+    const [shipmentDetailError, setShipmentDetailError] = useState<string | null>(null);
+    const [productToggleSaving, setProductToggleSaving] = useState(false);
+
+    useEffect(() => {
+        if (!mounted) return;
+        try {
+            const raw = window.localStorage.getItem("vehsl.user") || "";
+            const u = safeJsonParse<any | null>(raw, null);
+            const fn = (u?.first_name || u?.firstName || "").trim();
+            const ln = (u?.last_name || u?.lastName || "").trim();
+            const full = `${fn} ${ln}`.trim();
+            if (full) setSellerName(full);
+            else if (u?.email) setSellerName(String(u.email).split("@")[0] || "Seller");
+        } catch (e) {
+        }
+    }, [mounted]);
 
     useEffect(() => {
         setProductsPage(1);
@@ -87,35 +111,23 @@ export function SellerDashboard() {
                 rating: Number(p.vehsl_rating || 0),
             }));
 
-            if (mappedProducts.length > 0) {
-                setProducts(mappedProducts);
-                setProductsTotal(total);
-            } else if (!productsSearch.trim() && productsPage === 1) {
-                setProducts(LISTED.slice(0, PRODUCTS_PAGE_SIZE));
-                setProductsTotal(LISTED.length);
-            } else {
-                setProducts([]);
-                setProductsTotal(0);
-            }
+            setProducts(mappedProducts);
+            setProductsTotal(total);
         } catch (err) {
             console.error('Products fetch error:', err);
-            if (!productsSearch.trim() && productsPage === 1) {
-                setProducts(LISTED.slice(0, PRODUCTS_PAGE_SIZE));
-                setProductsTotal(LISTED.length);
-            } else {
-                setProducts([]);
-                setProductsTotal(0);
-            }
+            setProducts([]);
+            setProductsTotal(0);
         }
     }, [PRODUCTS_PAGE_SIZE, productsPage, productsSearch]);
 
     const fetchDashboardData = useCallback(async () => {
         try {
             setLoading(true);
-            const [mRes, oRes, aRes] = await Promise.all([
+            const [mRes, oRes, aRes, sRes] = await Promise.all([
                 authedFetch('/api/v1/seller/dashboard/metrics/'),
                 authedFetch('/api/v1/seller/dashboard/orders/'),
                 authedFetch('/api/v1/seller/dashboard/activities/'),
+                authedFetch('/api/v1/seller/dashboard/shipments/'),
             ]);
 
             if (mRes.ok) {
@@ -150,41 +162,104 @@ export function SellerDashboard() {
                     productionStep: o.production_step,
                     timelineStep: o.timeline_step,
                 }));
-                // If no real orders, keep the mock ones for better UI demo if requested by user implicitly
-                if (mappedOrders.length > 0) {
-                    setOrders(mappedOrders);
-                } else {
-                    setOrders(ACTION_ORDERS);
-                }
+                setOrders(mappedOrders);
             }
 
             if (aRes.ok) {
                 const data = await aRes.json();
-                if (data.length > 0) {
-                    const mappedActivities = data.map((a: any) => ({
-                        id: a.id,
+                const mappedActivities = Array.isArray(data)
+                    ? data.map((a: any) => ({
+                        id: String(a.id),
                         type: a.kind as ActivityType,
                         title: a.sentence,
+                        subtitle: a.subtitle || '',
+                        detail: a.detail || '',
                         time: a.moment,
+                        orderRef: a.order_ref || '',
+                        productName: a.product_name || '',
+                        clientComment: a.client_comment || '',
+                        trackingNumber: a.tracking_number || '',
+                        actionKind: (a.action_kind || (a.kind === 'sample_feedback' ? 'reply' : a.kind === 'sample_report' ? 'download' : 'none')) as any,
+                        actionLabel: a.action_label || '',
                         tint: a.tint,
                         icon: a.icon,
-                    }));
-                    setActivities(mappedActivities);
-                } else {
-                    setActivities(ACTIVITIES);
-                }
+                    }))
+                    : [];
+                setActivities(mappedActivities);
+            }
+
+            if (sRes.ok) {
+                const data = await sRes.json();
+                const rows = Array.isArray(data) ? data : [];
+                setShipments(
+                    rows.map((s: any) => ({
+                        id: String(s.id),
+                        item: String(s.item || ''),
+                        image: String(s.image || ''),
+                        qty: Number(s.qty || 0),
+                        unitPrice: Number(s.unit_price || 0),
+                        dest: String(s.dest || ''),
+                        orderRef: String(s.order_ref || ''),
+                        shipmentStatus: String(s.shipment_status || ''),
+                        trackingNumber: String(s.tracking_number || ''),
+                    }))
+                );
             }
 
             setIsNewSeller(false);
         } catch (err) {
             console.error('Dashboard fetch error:', err);
-            // Fallback to mocks if everything fails
-            setOrders(ACTION_ORDERS);
-            setActivities(ACTIVITIES);
+            setOrders([]);
+            setActivities([]);
+            setShipments([]);
         } finally {
             setLoading(false);
         }
     }, [authedFetch]);
+
+    const openShipmentDetails = useCallback(async (id: string) => {
+        setShipmentDetailId(String(id));
+        setShipmentDetail(null);
+        setShipmentDetailError(null);
+        setShipmentDetailLoading(true);
+        try {
+            const res = await authedFetch(`/api/v1/shipments/${id}/`);
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(text || `Failed to load shipment (${res.status})`);
+            }
+            const data = await res.json();
+            setShipmentDetail(data);
+        } catch (e: any) {
+            setShipmentDetailError((e?.message || "Failed to load shipment details").toString());
+        } finally {
+            setShipmentDetailLoading(false);
+        }
+    }, []);
+
+    const performOrderAction = useCallback(async (orderId: string, action: "accept" | "reject", opts?: { showToast?: boolean }) => {
+        const showToast = opts?.showToast !== false;
+        setOrderActionLoadingId(orderId);
+        try {
+            if (action === "reject") {
+                setOrders(prev => prev.filter(o => o.id !== orderId));
+            }
+            const res = await authedFetch(`/api/v1/orders/${orderId}/${action}/`, { method: "POST" });
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(text || `Failed to ${action} order (${res.status})`);
+            }
+            if (showToast) {
+                toast.success(action === "accept" ? "Order accepted" : "Order rejected");
+            }
+            await fetchDashboardData();
+        } catch (e: any) {
+            toast.error("Action failed", { description: (e?.message || "").toString() || undefined });
+            await fetchDashboardData();
+        } finally {
+            setOrderActionLoadingId(null);
+        }
+    }, [fetchDashboardData]);
 
     useEffect(() => {
         if (!mounted) return;
@@ -281,6 +356,7 @@ export function SellerDashboard() {
     const [showAllActivity, setShowAllActivity] = useState(false);
     const [activityReplyId, setActivityReplyId] = useState<string | null>(null);
     const [activityReplyText, setActivityReplyText] = useState('');
+    const [activityReplyLoadingId, setActivityReplyLoadingId] = useState<string | null>(null);
     const [newOrdersExpanded, setNewOrdersExpanded] = useState(false);
     const [depositConfirmId, setDepositConfirmId] = useState<string | null>(null);
     const [declineConfirmId, setDeclineConfirmId] = useState<string | null>(null);
@@ -344,10 +420,19 @@ export function SellerDashboard() {
     };
 
     const handleApproveSample = (id: string) => {
-        setOrders(prev => prev.filter(o => o.id !== id));
-        toast.success('Sample marked as ready', {
-            description: 'Our team will collect it from your location shortly',
-        });
+        (async () => {
+            try {
+                const res = await authedFetch(`/api/v1/orders/${id}/sample-ready/`, { method: "POST" });
+                if (!res.ok) {
+                    const text = await res.text().catch(() => "");
+                    throw new Error(text || `Failed to mark sample ready (${res.status})`);
+                }
+                toast.success('Sample marked as ready', { description: 'Our team will collect it from your location shortly' });
+                await fetchDashboardData();
+            } catch (e: any) {
+                toast.error("Failed", { description: (e?.message || "").toString() || undefined });
+            }
+        })();
     };
 
     const handleApproveAndProduce = (id: string) => {
@@ -379,56 +464,56 @@ export function SellerDashboard() {
     const BIG_ORDER_THRESHOLD = 25000; // Orders above this require security deposit
     const SECURITY_DEPOSIT_PCT = 9; // 9% refundable deposit for large orders
 
-    const handleAdjustTimeline = (id: string, days: number) => {
+    const handleAdjustTimeline = async (id: string, days: number) => {
         const order = orders.find(o => o.id === id);
         if (!order || days === 0) return;
-        const totalValue = order.qty * order.unitPrice;
-        const dailyCost = Math.round(totalValue * DAILY_RATE_PCT / 100);
-        const isEarly = days < 0;
-        const maxBonus = Math.round(totalValue * 1.5 / 100);
-        const totalAmount = isEarly ? Math.min(dailyCost * Math.abs(days), maxBonus) : dailyCost * days;
-        const newDeadline = new Date();
-        newDeadline.setDate(newDeadline.getDate() + days);
-        const dateStr = newDeadline.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-        setOrders(prev => prev.map(o => {
-            if (o.id !== id) return o;
-            return {
-                ...o,
-                deadline: isEarly ? `Early · ${dateStr}` : `Delayed to ${dateStr}`,
-                deadlineUrgent: !isEarly,
-                message: isEarly
-                    ? `Finishing ${Math.abs(days)} day${Math.abs(days) > 1 ? 's' : ''} early · ${fmt(totalAmount)} bonus added`
-                    : `Delayed ${days} day${days > 1 ? 's' : ''} · ${fmt(totalAmount)} penalty will be deducted`,
-                respondedAt: Date.now(),
-            };
-        }));
-        setAdjustId(null);
-        setAdjustDays(0);
-        if (isEarly) {
-            toast.success(`Early delivery confirmed · ${fmt(totalAmount)} bonus`, {
-                description: `New deadline: ${dateStr}. ${fmt(dailyCost)}/day bonus added to your payout.`,
+        try {
+            const res = await authedFetch(`/api/v1/orders/${id}/extend-deadline/`, {
+                method: "POST",
+                body: JSON.stringify({ days, reason: "" }),
             });
-        } else {
-            toast(`Extension confirmed · ${fmt(totalAmount)} fee`, {
-                description: `New deadline: ${dateStr}. ${fmt(dailyCost)}/day will be deducted from your payout.`,
-            });
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(text || `Failed to update timeline (${res.status})`);
+            }
+            const data = await res.json().catch(() => null);
+            const fee = Number(data?.extension_fee || 0);
+            const isEarly = days < 0;
+            const absFee = Math.abs(fee);
+            toast(isEarly ? `Early delivery confirmed · ${fmt(absFee)} bonus` : `Extension confirmed · ${fmt(absFee)} fee`);
+            setAdjustId(null);
+            setAdjustDays(0);
+            await fetchDashboardData();
+        } catch (e: any) {
+            toast.error("Timeline update failed", { description: (e?.message || "").toString() || undefined });
+            await fetchDashboardData();
         }
     };
 
-    const handleCancelOrder = (id: string) => {
+    const handleCancelOrder = async (id: string) => {
         const order = orders.find(o => o.id === id);
         if (!order) return;
-        const totalValue = order.qty * order.unitPrice;
-        const penalty = Math.round(totalValue * CANCEL_PENALTY_PCT / 100);
-        setOrders(prev => prev.filter(o => o.id !== id));
-        setAdjustId(null);
-        setCancelConfirmId(null);
-        setCancelPassword('');
-        setCancelPasswordError(false);
-        setAdjustDays(0);
-        toast.error(`Order cancelled · ${fmt(penalty)} penalty`, {
-            description: `${CANCEL_PENALTY_PCT}% of ${fmt(totalValue)} will be deducted from your next payout`,
-        });
+        try {
+            const res = await authedFetch(`/api/v1/orders/${id}/cancel/`, {
+                method: "POST",
+                body: JSON.stringify({ password: cancelPassword }),
+            });
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(text || `Failed to cancel order (${res.status})`);
+            }
+            setOrders(prev => prev.filter(o => o.id !== id));
+            setAdjustId(null);
+            setCancelConfirmId(null);
+            setCancelPassword('');
+            setCancelPasswordError(false);
+            setAdjustDays(0);
+            toast.error("Order cancelled");
+            await fetchDashboardData();
+        } catch (e: any) {
+            toast.error("Cancel failed", { description: (e?.message || "").toString() || undefined });
+            await fetchDashboardData();
+        }
     };
 
     const handleRequestChanges = (id: string) => {
@@ -473,9 +558,47 @@ export function SellerDashboard() {
         }
     };
 
-    const handleDismissActivity = (id: string) => {
+    const handleDismissActivity = async (id: string) => {
+        setActivityDismissLoadingId(id);
         setActivities(prev => prev.filter(a => a.id !== id));
-        toast('Dismissed', { description: 'Notification removed' });
+        try {
+            const res = await authedFetch(`/api/v1/seller/dashboard/activities/${id}/dismiss/`, { method: "POST" });
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(text || `Failed to dismiss activity (${res.status})`);
+            }
+        } catch (e: any) {
+            toast.error("Failed to dismiss", { description: (e?.message || "").toString() || undefined });
+            await fetchDashboardData();
+        } finally {
+            setActivityDismissLoadingId(null);
+        }
+    };
+
+    const sendActivityReply = async (activity: Activity) => {
+        const content = activityReplyText.trim();
+        if (!content) return;
+        setActivityReplyLoadingId(activity.id);
+        try {
+            const m = String(activity.orderRef || "").match(/#VH-(\d+)/);
+            const orderId = m ? Number(m[1]) : undefined;
+            const res = await authedFetch(`/api/v1/seller/dashboard/activities/${activity.id}/reply/`, {
+                method: "POST",
+                body: JSON.stringify({ content, order_id: orderId }),
+            });
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(text || `Failed to send reply (${res.status})`);
+            }
+            setActivities(prev => prev.filter(a => a.id !== activity.id));
+            toast.success("Reply sent");
+            setActivityReplyId(null);
+            setActivityReplyText('');
+        } catch (e: any) {
+            toast.error("Reply failed", { description: (e?.message || "").toString() || undefined });
+        } finally {
+            setActivityReplyLoadingId(null);
+        }
     };
 
     if (!mounted) return null;
@@ -483,7 +606,7 @@ export function SellerDashboard() {
     if (showNewProductForm) {
         return (
             <NewSellerOnboarding
-                sellerName="Noah"
+                sellerName={sellerName}
                 showWelcome={false}
                 initialStep="request"
                 onComplete={() => {
@@ -498,7 +621,7 @@ export function SellerDashboard() {
     if (isNewSeller) {
         return (
             <NewSellerOnboarding
-                sellerName="Noah"
+                sellerName={sellerName}
                 onComplete={() => setIsNewSeller(false)}
             />
         );
@@ -519,7 +642,7 @@ export function SellerDashboard() {
             >
                 <div className="flex items-center justify-between">
                     <p className="text-[13px] font-semibold text-[#1A1A1A]/30 tracking-wide">
-                        {greet()}, Noah
+                        {greet()}, {sellerName}
                     </p>
                     <div className="flex items-center gap-2">
                         <motion.button
@@ -1352,8 +1475,21 @@ export function SellerDashboard() {
                                                                                                 onClick={(e) => {
                                                                                                     bounce(e.currentTarget);
                                                                                                     if (pageRef.current) ripple(pageRef.current, 1);
-                                                                                                    setOrders(prev => prev.map(o => o.id !== order.id ? o : { ...o, productionStep: 1, respondedAt: Date.now() }));
-                                                                                                    toast.success(hasExtraSample ? 'Revised sample ready' : 'Sample marked as ready', { description: 'Our team will collect it from your location shortly' });
+                                                                                                    (async () => {
+                                                                                                        try {
+                                                                                                            const res = await authedFetch(`/api/v1/orders/${order.id}/sample-ready/`, { method: "POST" });
+                                                                                                            if (!res.ok) {
+                                                                                                                const text = await res.text().catch(() => "");
+                                                                                                                throw new Error(text || `Failed to mark sample ready (${res.status})`);
+                                                                                                            }
+                                                                                                            setOrders(prev => prev.map(o => o.id !== order.id ? o : { ...o, productionStep: 1, respondedAt: Date.now() }));
+                                                                                                            toast.success(hasExtraSample ? 'Revised sample ready' : 'Sample marked as ready', { description: 'Our team will collect it from your location shortly' });
+                                                                                                            await fetchDashboardData();
+                                                                                                        } catch (err: any) {
+                                                                                                            toast.error("Failed", { description: (err?.message || "").toString() || undefined });
+                                                                                                            await fetchDashboardData();
+                                                                                                        }
+                                                                                                    })();
                                                                                                 }}
                                                                                                 className="px-5 py-2.5 rounded-full border-none cursor-pointer inline-flex items-center gap-2"
                                                                                                 style={{ background: hasExtraSample ? 'linear-gradient(135deg, #f0a54a, #e89a3e)' : 'linear-gradient(135deg, #34c759, #2eaa57)', color: '#fff', boxShadow: hasExtraSample ? '0 2px 8px rgba(230,126,34,0.2), 0 8px 24px -8px rgba(230,126,34,0.3)' : '0 2px 8px rgba(46,170,87,0.2), 0 8px 24px -8px rgba(46,170,87,0.3)' }}
@@ -1368,8 +1504,20 @@ export function SellerDashboard() {
                                                                                                 onClick={(e) => {
                                                                                                     bounce(e.currentTarget);
                                                                                                     if (pageRef.current) ripple(pageRef.current, 1);
-                                                                                                    setOrders(prev => prev.map(o => o.id !== order.id ? o : { ...o, type: 'pickup' as ActionType, deadline: 'Tuesday, 10:00 AM', deadlineUrgent: false, timelineStep: 0, message: undefined, respondedAt: Date.now() }));
-                                                                                                    toast.success('Production complete', { description: 'We\'ll collect the order from your location shortly' });
+                                                                                                    (async () => {
+                                                                                                        try {
+                                                                                                            const res = await authedFetch(`/api/v1/orders/${order.id}/confirm-ready/`, { method: "POST" });
+                                                                                                            if (!res.ok) {
+                                                                                                                const text = await res.text().catch(() => "");
+                                                                                                                throw new Error(text || `Failed to confirm ready (${res.status})`);
+                                                                                                            }
+                                                                                                            toast.success('Production complete', { description: 'We\'ll collect the order from your location shortly' });
+                                                                                                            await fetchDashboardData();
+                                                                                                        } catch (err: any) {
+                                                                                                            toast.error("Failed", { description: (err?.message || "").toString() || undefined });
+                                                                                                            await fetchDashboardData();
+                                                                                                        }
+                                                                                                    })();
                                                                                                 }}
                                                                                                 className="px-5 py-2.5 rounded-full border-none cursor-pointer inline-flex items-center gap-2"
                                                                                                 style={{ background: 'linear-gradient(135deg, #34d058, #2eaa57)', color: '#fff', boxShadow: '0 2px 8px rgba(46,170,87,0.2), 0 8px 24px -8px rgba(46,170,87,0.3)' }}
@@ -1827,11 +1975,10 @@ export function SellerDashboard() {
                                                                             exit={{ width: 40, opacity: 0.8 }}
                                                                             transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                                                                             whileTap={{ scale: 0.975 }}
-                                                                            onClick={(e) => {
+                                                                            onClick={async (e) => {
                                                                                 bounce(e.currentTarget);
                                                                                 setDeclineConfirmId(null);
-                                                                                setOrders(prev => prev.filter(o => o.id !== order.id));
-                                                                                toast('Order declined', { description: 'Buyer will be notified.' });
+                                                                                await performOrderAction(order.id, "reject");
                                                                             }}
                                                                             onBlur={() => setDeclineConfirmId(null)}
                                                                             className="py-2.5 px-4 flex items-center justify-center gap-2 rounded-full cursor-pointer backdrop-blur-sm"
@@ -1932,10 +2079,11 @@ export function SellerDashboard() {
                                                                             <motion.button
                                                                                 whileHover={{ scale: 1.01 }}
                                                                                 whileTap={{ scale: 0.975 }}
-                                                                                onClick={(e) => {
+                                                                            onClick={async (e) => {
                                                                                     bounce(e.currentTarget);
                                                                                     if (pageRef.current) ripple(pageRef.current, 1);
-                                                                                    handleApproveAndProduce(order.id);
+                                                                                await performOrderAction(order.id, "accept");
+                                                                                handleApproveAndProduce(order.id);
                                                                                 }}
                                                                                 className="px-5 sm:px-6 py-2.5 rounded-full border-none cursor-pointer inline-flex items-center justify-center gap-2"
                                                                                 style={{ background: 'linear-gradient(135deg, #34d058, #2eaa57)', color: '#fff', boxShadow: '0 2px 8px rgba(46,170,87,0.2), 0 8px 24px -8px rgba(46,170,87,0.3)' }}
@@ -2091,10 +2239,11 @@ export function SellerDashboard() {
                                                                     <motion.button
                                                                         whileHover={{ scale: 1.01 }}
                                                                         whileTap={{ scale: 0.97 }}
-                                                                        onClick={(e) => {
+                                                                        onClick={async (e) => {
                                                                             bounce(e.currentTarget);
                                                                             if (pageRef.current) ripple(pageRef.current, 2);
                                                                             setDepositConfirmId(null);
+                                                                            await performOrderAction(order.id, "accept", { showToast: false });
                                                                             handleApproveAndProduce(order.id);
                                                                             toast.success('Deposit paid — order accepted', {
                                                                                 description: `${fmt(depAmt)} held securely · refunded on delivery`,
@@ -2442,7 +2591,14 @@ export function SellerDashboard() {
                                                     whileTap={{ scale: 0.95 }}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
-                                                        toast('Opening shipment details…');
+                                                        const tn = (activity.trackingNumber || "").trim();
+                                                        if (!tn) return;
+                                                        const match = shipments.find(s => (s.trackingNumber || "").trim() && (s.trackingNumber || "").trim() === tn);
+                                                        if (match) {
+                                                            openShipmentDetails(match.id);
+                                                            return;
+                                                        }
+                                                        toast('Shipment not found', { description: 'This tracking number is not in your current in-transit list.' });
                                                     }}
                                                     className="px-3 py-[5px] rounded-full cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-bold transition-all duration-200"
                                                     style={{
@@ -2480,6 +2636,17 @@ export function SellerDashboard() {
                                                 </motion.button>
                                             )}
                                             </div>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    if (activityDismissLoadingId === activity.id) return;
+                                                    handleDismissActivity(activity.id);
+                                                }}
+                                                className="w-[28px] h-[28px] rounded-full border-none cursor-pointer bg-black/[0.03] hover:bg-black/[0.06] transition-colors flex items-center justify-center flex-shrink-0"
+                                                title="Dismiss"
+                                            >
+                                                <X size={12} color="rgba(26,26,26,0.35)" strokeWidth={2.5} />
+                                            </button>
                                             {!isSimple && (
                                                 <motion.div
                                                     animate={{ rotate: isExpanded ? 180 : 0 }}
@@ -2839,9 +3006,7 @@ export function SellerDashboard() {
                                                                         onKeyDown={(e) => {
                                                                             if (e.key === 'Enter' && !e.shiftKey && activityReplyText.trim()) {
                                                                                 e.preventDefault();
-                                                                                toast.success('Reply sent', { description: `Your response to ${activity.orderRef ?? 'buyer'} has been delivered` });
-                                                                                setActivityReplyId(null);
-                                                                                setActivityReplyText('');
+                                                                                if (activityReplyLoadingId !== activity.id) sendActivityReply(activity);
                                                                             }
                                                                         }}
                                                                     />
@@ -2849,11 +3014,7 @@ export function SellerDashboard() {
                                                                         whileHover={{ scale: 1.05 }}
                                                                         whileTap={{ scale: 0.92 }}
                                                                         onClick={() => {
-                                                                            if (activityReplyText.trim()) {
-                                                                                toast.success('Reply sent', { description: `Your response to ${activity.orderRef ?? 'buyer'} has been delivered` });
-                                                                                setActivityReplyId(null);
-                                                                                setActivityReplyText('');
-                                                                            }
+                                                                            if (activityReplyLoadingId !== activity.id) sendActivityReply(activity);
                                                                         }}
                                                                         className="w-[28px] h-[28px] rounded-full flex items-center justify-center cursor-pointer border-none flex-shrink-0 transition-all"
                                                                         style={{
@@ -2881,9 +3042,7 @@ export function SellerDashboard() {
                                                                 onKeyDown={(e) => {
                                                                     if (e.key === 'Enter' && !e.shiftKey && activityReplyText.trim()) {
                                                                         e.preventDefault();
-                                                                        toast.success('Reply sent', { description: `Your response to ${activity.orderRef ?? 'buyer'} has been delivered` });
-                                                                        setActivityReplyId(null);
-                                                                        setActivityReplyText('');
+                                                                        if (activityReplyLoadingId !== activity.id) sendActivityReply(activity);
                                                                     }
                                                                 }}
                                                             />
@@ -2891,11 +3050,7 @@ export function SellerDashboard() {
                                                                 whileHover={{ scale: 1.05 }}
                                                                 whileTap={{ scale: 0.92 }}
                                                                 onClick={() => {
-                                                                    if (activityReplyText.trim()) {
-                                                                        toast.success('Reply sent', { description: `Your response to ${activity.orderRef ?? 'buyer'} has been delivered` });
-                                                                        setActivityReplyId(null);
-                                                                        setActivityReplyText('');
-                                                                    }
+                                                                    if (activityReplyLoadingId !== activity.id) sendActivityReply(activity);
                                                                 }}
                                                                 className="w-[28px] h-[28px] rounded-full flex items-center justify-center cursor-pointer border-none flex-shrink-0 transition-all"
                                                                 style={{
@@ -3318,7 +3473,7 @@ export function SellerDashboard() {
                             return (b.sold / 14) - (a.sold / 14);
                         });
 
-                        return sorted.map((p, pi) => {
+                            return sorted.map((p, pi) => {
                             const dailyRate = p.sold > 0 ? Math.round((p.sold / 14) * 10) / 10 : 0;
                             const daysOfStock = dailyRate > 0 ? Math.round(p.inWarehouse / dailyRate) : 999;
                             const isCritical = daysOfStock < 14 && dailyRate > 0 && p.status === 'active';
@@ -3351,7 +3506,7 @@ export function SellerDashboard() {
                                         )}
                                     </div>
 
-                                    {p.status === 'active' ? (
+                                    {p.status === 'active' || p.status === 'approved' ? (
                                         <div className="flex items-center gap-0 flex-shrink-0">
                                             {/* Sample count - showing all possibilities across 3 products */}
                                             {(() => {
@@ -3588,11 +3743,16 @@ export function SellerDashboard() {
                     </p>
                 </div>
                 <div className="rounded-[22px] bg-white/40 backdrop-blur-md border border-white/40 overflow-hidden" style={{ boxShadow: GLASS }}>
-                    {[
-                        { id: 't1', item: 'Wireless NC Headphones', image: PRODUCTS.headphones, qty: 150, unitPrice: 269, dest: 'New York, USA', daysLeft: 3, orderRef: '#8PLQ221M' },
-                        { id: 't2', item: 'Aluminum Laptop Stand', image: PRODUCTS.stand, qty: 300, unitPrice: 45, dest: 'Berlin, DE', daysLeft: 9, orderRef: '#2VNR883K' },
-                    ].map((track, i) => (
-                        <div key={track.id} className={`flex items-center gap-4 p-4 ${i !== 0 ? 'border-t border-black/[0.04]' : ''}`}>
+                    {shipments.length === 0 ? (
+                        <div className="px-4 py-6 text-[12px] font-semibold text-[#1A1A1A]/35">
+                            No shipments in transit.
+                        </div>
+                    ) : shipments.map((track, i) => (
+                        <div
+                            key={track.id}
+                            className={`flex items-center gap-4 p-4 cursor-pointer hover:bg-white/35 transition-colors ${i !== 0 ? 'border-t border-black/[0.04]' : ''}`}
+                            onClick={() => openShipmentDetails(track.id)}
+                        >
                             <div className="w-[36px] h-[36px] rounded-[10px] bg-[#f4f5f6] flex items-center justify-center flex-shrink-0 overflow-hidden">
                                 <ImageWithFallback src={track.image} alt={track.item} className="w-[80%] h-[80%] object-contain" />
                             </div>
@@ -3605,7 +3765,7 @@ export function SellerDashboard() {
                             <div className="text-right flex-shrink-0">
                                 <p className="text-[14px] font-black text-[#1A1A1A]/85 tabular-nums leading-none mb-1">{fmt(track.qty * track.unitPrice)}</p>
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold tabular-nums tracking-wider" style={{ background: 'rgba(1,113,227,0.08)', color: 'rgba(1,113,227,0.7)' }}>
-                                    {track.daysLeft}d to release
+                                    {(track.shipmentStatus || 'in_transit').replaceAll('_', ' ')}
                                 </span>
                             </div>
                         </div>
@@ -4145,14 +4305,35 @@ export function SellerDashboard() {
                                         value={togglePassword}
                                         onChange={(e) => { setTogglePassword(e.target.value); setToggleError(false); }}
                                         onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && togglePassword.length >= 4) {
-                                                setProducts(prev => prev.map(pr => pr.id === toggleProductId ? { ...pr, isOnline: !pr.isOnline } : pr));
-                                                toast.success(goingOnline ? `${targetProduct.name} is now live` : `${targetProduct.name} is now offline`, {
-                                                    description: goingOnline ? 'Product is visible to buyers' : 'Buyers can no longer see this product',
-                                                });
-                                                setToggleProductId(null);
-                                                setTogglePassword('');
-                                                setToggleError(false);
+                                            if (e.key === 'Enter' && togglePassword.length >= 4 && !productToggleSaving) {
+                                                (async () => {
+                                                    setProductToggleSaving(true);
+                                                    try {
+                                                        const nextStatus = goingOnline ? "active" : "approved";
+                                                        const res = await authedFetch(`/api/v1/products/${toggleProductId}/`, {
+                                                            method: "PATCH",
+                                                            body: JSON.stringify({ status: nextStatus }),
+                                                        });
+                                                        if (!res.ok) {
+                                                            const text = await res.text().catch(() => "");
+                                                            throw new Error(text || `Failed to update product (${res.status})`);
+                                                        }
+                                                        const data = await res.json().catch(() => null);
+                                                        const statusVal = (data?.status || nextStatus).toString();
+                                                        setProducts(prev => prev.map(pr => pr.id === toggleProductId ? { ...pr, status: statusVal, isOnline: statusVal === "active" } : pr));
+                                                        toast.success(goingOnline ? `${targetProduct.name} is now live` : `${targetProduct.name} is now offline`, {
+                                                            description: goingOnline ? 'Product is visible to buyers' : 'Buyers can no longer see this product',
+                                                        });
+                                                        setToggleProductId(null);
+                                                        setTogglePassword('');
+                                                        setToggleError(false);
+                                                        fetchProducts();
+                                                    } catch (err: any) {
+                                                        toast.error("Update failed", { description: (err?.message || "").toString() || undefined });
+                                                    } finally {
+                                                        setProductToggleSaving(false);
+                                                    }
+                                                })();
                                             } else if (e.key === 'Enter') {
                                                 setToggleError(true);
                                             }
@@ -4176,18 +4357,38 @@ export function SellerDashboard() {
                                         </button>
                                         <motion.button
                                             whileTap={{ scale: 0.97 }}
-                                            onClick={() => {
+                                            onClick={async () => {
                                                 if (togglePassword.length < 4) {
                                                     setToggleError(true);
                                                     return;
                                                 }
-                                                setProducts(prev => prev.map(pr => pr.id === toggleProductId ? { ...pr, isOnline: !pr.isOnline } : pr));
-                                                toast.success(goingOnline ? `${targetProduct.name} is now live` : `${targetProduct.name} is now offline`, {
-                                                    description: goingOnline ? 'Product is visible to buyers' : 'Buyers can no longer see this product',
-                                                });
-                                                setToggleProductId(null);
-                                                setTogglePassword('');
-                                                setToggleError(false);
+                                                if (productToggleSaving) return;
+                                                setProductToggleSaving(true);
+                                                try {
+                                                    const nextStatus = goingOnline ? "active" : "approved";
+                                                    const res = await authedFetch(`/api/v1/products/${toggleProductId}/`, {
+                                                        method: "PATCH",
+                                                        body: JSON.stringify({ status: nextStatus }),
+                                                    });
+                                                    if (!res.ok) {
+                                                        const text = await res.text().catch(() => "");
+                                                        throw new Error(text || `Failed to update product (${res.status})`);
+                                                    }
+                                                    const data = await res.json().catch(() => null);
+                                                    const statusVal = (data?.status || nextStatus).toString();
+                                                    setProducts(prev => prev.map(pr => pr.id === toggleProductId ? { ...pr, status: statusVal, isOnline: statusVal === "active" } : pr));
+                                                    toast.success(goingOnline ? `${targetProduct.name} is now live` : `${targetProduct.name} is now offline`, {
+                                                        description: goingOnline ? 'Product is visible to buyers' : 'Buyers can no longer see this product',
+                                                    });
+                                                    setToggleProductId(null);
+                                                    setTogglePassword('');
+                                                    setToggleError(false);
+                                                    fetchProducts();
+                                                } catch (err: any) {
+                                                    toast.error("Update failed", { description: (err?.message || "").toString() || undefined });
+                                                } finally {
+                                                    setProductToggleSaving(false);
+                                                }
                                             }}
                                             className="flex-1 py-2.5 rounded-full border-none cursor-pointer text-[13px] font-bold text-white"
                                             style={{
@@ -4204,6 +4405,109 @@ export function SellerDashboard() {
                         </motion.div>
                     );
                 })()}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {shipmentDetailId && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.2)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) {
+                                setShipmentDetailId(null);
+                                setShipmentDetail(null);
+                                setShipmentDetailError(null);
+                                setShipmentDetailLoading(false);
+                            }
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.96, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.97, y: 5 }}
+                            transition={{ duration: 0.3, ease: EASE }}
+                            className="w-full max-w-[90vw] sm:max-w-[520px] rounded-[22px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden mx-4"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.18), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.04] flex items-center justify-between">
+                                <div>
+                                    <p className="text-[15px] font-bold text-[#1A1A1A]/85">Shipment details</p>
+                                    <p className="text-[12px] font-medium text-[#1A1A1A]/40 mt-0.5 tabular-nums">
+                                        #{shipmentDetailId}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        setShipmentDetailId(null);
+                                        setShipmentDetail(null);
+                                        setShipmentDetailError(null);
+                                        setShipmentDetailLoading(false);
+                                    }}
+                                    className="w-[30px] h-[30px] rounded-full bg-black/[0.04] flex items-center justify-center border-none cursor-pointer hover:bg-black/[0.07] transition-colors"
+                                >
+                                    <X size={14} color="rgba(26,26,26,0.4)" />
+                                </button>
+                            </div>
+
+                            <div className="px-6 py-5 max-h-[70vh] overflow-y-auto">
+                                {shipmentDetailLoading ? (
+                                    <div className="text-[12px] font-semibold text-[#1A1A1A]/45">Loading…</div>
+                                ) : shipmentDetailError ? (
+                                    <div className="text-[12px] font-semibold text-[#FF3B30]/70">{shipmentDetailError}</div>
+                                ) : shipmentDetail ? (
+                                    <div className="space-y-4">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div className="rounded-[14px] bg-black/[0.02] border border-black/[0.06] p-3">
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-wide uppercase">Status</p>
+                                                <p className="text-[13px] font-bold text-[#1A1A1A]/75 mt-1">{String(shipmentDetail.status || '').replaceAll('_', ' ')}</p>
+                                            </div>
+                                            <div className="rounded-[14px] bg-black/[0.02] border border-black/[0.06] p-3">
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-wide uppercase">Tracking</p>
+                                                <p className="text-[13px] font-bold text-[#1A1A1A]/75 mt-1 tabular-nums">{shipmentDetail.tracking_number || "—"}</p>
+                                            </div>
+                                            <div className="rounded-[14px] bg-black/[0.02] border border-black/[0.06] p-3">
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-wide uppercase">Origin</p>
+                                                <p className="text-[12px] font-semibold text-[#1A1A1A]/60 mt-1">{shipmentDetail.origin || "—"}</p>
+                                            </div>
+                                            <div className="rounded-[14px] bg-black/[0.02] border border-black/[0.06] p-3">
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-wide uppercase">Destination</p>
+                                                <p className="text-[12px] font-semibold text-[#1A1A1A]/60 mt-1">{shipmentDetail.destination || "—"}</p>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-wide uppercase mb-2">Events</p>
+                                            <div className="rounded-[16px] bg-white/70 border border-black/[0.06] overflow-hidden">
+                                                {Array.isArray(shipmentDetail.events) && shipmentDetail.events.length > 0 ? (
+                                                    shipmentDetail.events.slice().reverse().map((ev: any, idx: number) => (
+                                                        <div key={String(ev.id ?? idx)} className={`px-4 py-3 ${idx > 0 ? 'border-t border-black/[0.04]' : ''}`}>
+                                                            <div className="flex items-center justify-between gap-3">
+                                                                <p className="text-[12px] font-bold text-[#1A1A1A]/70">{String(ev.type || '').replaceAll('_', ' ')}</p>
+                                                                <p className="text-[11px] font-semibold text-[#1A1A1A]/35 tabular-nums">
+                                                                    {ev.occurred_at ? new Date(ev.occurred_at).toLocaleString() : "—"}
+                                                                </p>
+                                                            </div>
+                                                            {ev.location && (
+                                                                <p className="text-[11px] font-medium text-[#1A1A1A]/45 mt-1">{ev.location}</p>
+                                                            )}
+                                                        </div>
+                                                    ))
+                                                ) : (
+                                                    <div className="px-4 py-4 text-[12px] font-semibold text-[#1A1A1A]/35">No events yet.</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="text-[12px] font-semibold text-[#1A1A1A]/45">No data.</div>
+                                )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
             </AnimatePresence>
         </div>
     );

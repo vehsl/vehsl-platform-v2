@@ -389,3 +389,27 @@ class Warehouse(models.Model):
 
     def __str__(self):
         return f"warehouse:{self.code or self.id}"
+
+
+class WarehouseStock(models.Model):
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name="stocks")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="warehouse_stocks")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="warehouse_stocks")
+    variation = models.ForeignKey(ProductVariation, on_delete=models.SET_NULL, null=True, blank=True, related_name="warehouse_stocks")
+    quantity_units = models.PositiveIntegerField(default=0)
+    reserved_units = models.PositiveIntegerField(default=0)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["seller", "warehouse"]),
+            models.Index(fields=["product", "warehouse"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["warehouse", "product", "variation"], name="uniq_warehouse_stock_product_variation"),
+        ]
+
+    def __str__(self):
+        return f"warehouse_stock:{self.warehouse_id}:{self.product_id}:{self.id}"

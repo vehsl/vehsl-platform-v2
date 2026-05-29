@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { Search, Package, Truck, CheckCircle2, XCircle, ChevronRight, RefreshCw, ArrowLeft } from "lucide-react";
+import { OrderApp } from "@/components/order/OrderApp";
+import { safeJsonParse } from "@/lib/utils";
 
 type OrderStatus =
   | "created"
@@ -124,7 +126,7 @@ function readUser() {
   try {
     if (typeof window === "undefined") return null;
     const raw = window.localStorage.getItem("vehsl.user");
-    return raw ? JSON.parse(raw) : null;
+    return safeJsonParse(raw, null);
   } catch {
     return null;
   }
@@ -243,7 +245,7 @@ function normalizeSpecGroups(raw: any): SpecGroup[] {
   return out;
 }
 
-export default function Page() {
+function LegacyOrdersPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
 
@@ -2464,4 +2466,8 @@ export default function Page() {
       </div>
     </div>
   );
+}
+
+export default function Page() {
+  return <OrderApp />;
 }

@@ -1,8 +1,14 @@
+import base64
+import hashlib
+import hmac
+import time
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
+from django.contrib.auth.hashers import check_password
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -10,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.admin_utils import AdminPageNumberPagination, response_list, audit
+from apps.accounts.models import UserSettings
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
 
@@ -310,6 +317,62 @@ class IsOrderParticipant(permissions.BasePermission):
         return bool(user and user.is_authenticated and (obj.buyer_id == user.id or obj.seller_id == user.id))
 
 
+def _totp_valid(base32_secret: str, code: str) -> bool:
+    secret = (base32_secret or "").strip()
+    code = (code or "").strip()
+    if not secret or not code:
+        return False
+
+    def _totp(for_counter: int, digits: int = 6) -> str:
+        key = base64.b32decode(secret.upper().encode("utf-8") + b"=" * ((8 - len(secret) % 8) % 8))
+        msg = for_counter.to_bytes(8, "big")
+        digest = hmac.new(key, msg, hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        code_int = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+        return str(code_int % (10**digits)).zfill(digits)
+
+    counter = int(time.time() // 30)
+    return any(_totp(counter + w) == code for w in (-1, 0, 1))
+
+
+def _require_order_verification(user, data: dict) -> tuple[bool, str]:
+    try:
+        settings = UserSettings.objects.filter(user=user).first()
+    except Exception:
+        settings = None
+    sec = dict(getattr(settings, "security", None) or {})
+
+    if not bool(sec.get("cancelVerifyEnabled", True)):
+        return (True, "")
+
+    totp_enabled = bool(sec.get("totp_enabled")) or bool(getattr(user, "two_factor_enabled", False))
+    payout_pin_set = bool(sec.get("payoutPinSet")) and bool(sec.get("payoutPinHash"))
+
+    password = str((data or {}).get("password") or "").strip()
+    payout_pin = str((data or {}).get("payout_pin") or (data or {}).get("payoutPin") or "").strip()
+    code = str((data or {}).get("totp_code") or (data or {}).get("code") or "").strip()
+    recovery_code = str((data or {}).get("recovery_code") or (data or {}).get("recoveryCode") or "").strip()
+
+    if totp_enabled:
+        if recovery_code:
+            hashes = sec.get("recoveryCodes") or []
+            if isinstance(hashes, list) and any(check_password(recovery_code, h) for h in hashes if isinstance(h, str) and h):
+                return (True, "")
+        secret = str(sec.get("totp_secret") or "").strip()
+        if secret and code and _totp_valid(secret, code):
+            return (True, "")
+        return (False, "OTP or recovery code required.")
+
+    if payout_pin_set:
+        if payout_pin and check_password(payout_pin, str(sec.get("payoutPinHash") or "")):
+            return (True, "")
+        return (False, "Payout PIN required.")
+
+    if password and user.check_password(password):
+        return (True, "")
+    return (False, "Password required.")
+
+
 class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -346,7 +409,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated()]
         if self.action in {"update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
-        if self.action in {"accept", "reject", "mark_shipped", "mark_delivered", "mark_completed"}:
+        if self.action in {"accept", "reject", "cancel", "extend_deadline", "sample_ready", "confirm_ready", "mark_shipped", "mark_delivered", "mark_completed"}:
             return [permissions.IsAuthenticated(), IsSeller()]
         return [permissions.IsAuthenticated(), IsOrderParticipant()]
 
@@ -373,6 +436,136 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.status = Order.Status.REJECTED
         order.save(update_fields=["status"])
         return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        order = self.get_object()
+        user = request.user
+        is_seller = bool(getattr(user, "account_type", None) == "seller" or getattr(user, "role", None) == "seller")
+        if is_seller:
+            if order.seller_id != user.id:
+                return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            if order.buyer_id != user.id:
+                return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status in {Order.Status.CANCELLED, Order.Status.COMPLETED, Order.Status.REJECTED}:
+            return Response({"detail": "Order cannot be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
+        if order.status in {Order.Status.SHIPPED, Order.Status.DELIVERED}:
+            return Response({"detail": "Order already shipped."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_seller:
+            ok, msg = _require_order_verification(user, request.data if isinstance(request.data, dict) else {})
+            if not ok:
+                return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        order.status = Order.Status.CANCELLED
+        order.save(update_fields=["status"])
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="extend-deadline")
+    def extend_deadline(self, request, pk=None):
+        order = self.get_object()
+        if order.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status in {Order.Status.CANCELLED, Order.Status.COMPLETED, Order.Status.REJECTED}:
+            return Response({"detail": "Order cannot be updated."}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_days = (request.data.get("days") if isinstance(request.data, dict) else None) or 0
+        try:
+            days = int(raw_days)
+        except Exception:
+            return Response({"detail": "days must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if days == 0:
+            return Response({"detail": "days is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if days < -30 or days > 90:
+            return Response({"detail": "days out of allowed range."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = str((request.data.get("reason") if isinstance(request.data, dict) else "") or "").strip()
+
+        DAILY_RATE_PCT = Decimal("0.19")
+        MAX_BONUS_PCT = Decimal("1.5")
+        MAX_FEE_PCT = Decimal("9.0")
+
+        base_total = Decimal(order.total_amount or 0)
+        per_day = (base_total * DAILY_RATE_PCT) / Decimal("100")
+        fee = per_day * Decimal(abs(days))
+        if days < 0:
+            max_bonus = (base_total * MAX_BONUS_PCT) / Decimal("100")
+            fee = min(fee, max_bonus) * Decimal("-1")
+        else:
+            max_fee = (base_total * MAX_FEE_PCT) / Decimal("100")
+            fee = min(fee, max_fee)
+        fee = fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        current = order.deadline_at or timezone.now()
+        order.deadline_at = current + timedelta(days=days)
+        order.extension_reason = reason
+        try:
+            order.extension_fee = fee
+        except Exception:
+            pass
+        order.save(update_fields=["deadline_at", "extension_reason", "extension_fee"])
+
+        return Response(
+            {
+                "deadline_at": order.deadline_at,
+                "extension_reason": order.extension_reason,
+                "extension_fee": order.extension_fee,
+            }
+        )
+
+    def _ensure_shipment(self, order: Order) -> Shipment:
+        existing = Shipment.objects.filter(order=order, deleted_at__isnull=True).order_by("-created_at").first()
+        if existing:
+            return existing
+        ship_addr = order.shipping_address or {}
+        city = (ship_addr.get("city") or "").strip()
+        country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+        destination = ", ".join([p for p in [city, country] if p]).strip()
+        return Shipment.objects.create(
+            order=order,
+            status=Shipment.Status.LABEL_CREATED,
+            origin="",
+            destination=destination,
+        )
+
+    @action(detail=True, methods=["post"], url_path="sample-ready")
+    def sample_ready(self, request, pk=None):
+        order = self.get_object()
+        if order.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status in {Order.Status.CANCELLED, Order.Status.COMPLETED, Order.Status.REJECTED}:
+            return Response({"detail": "Order cannot be updated."}, status=status.HTTP_400_BAD_REQUEST)
+
+        shipment = self._ensure_shipment(order)
+        if shipment.status == Shipment.Status.LABEL_CREATED:
+            Shipment.objects.filter(id=shipment.id).update(status=Shipment.Status.PICKED_UP)
+            shipment.refresh_from_db()
+
+        if order.status != Order.Status.SHIPPED:
+            order.status = Order.Status.SHIPPED
+            order.save(update_fields=["status"])
+
+        return Response({"order": OrderSerializer(order).data, "shipment": ShipmentSerializer(shipment).data})
+
+    @action(detail=True, methods=["post"], url_path="confirm-ready")
+    def confirm_ready(self, request, pk=None):
+        order = self.get_object()
+        if order.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status in {Order.Status.CANCELLED, Order.Status.COMPLETED, Order.Status.REJECTED}:
+            return Response({"detail": "Order cannot be updated."}, status=status.HTTP_400_BAD_REQUEST)
+
+        shipment = self._ensure_shipment(order)
+        if shipment.status in {Shipment.Status.LABEL_CREATED, Shipment.Status.PICKED_UP}:
+            Shipment.objects.filter(id=shipment.id).update(status=Shipment.Status.IN_TRANSIT)
+            shipment.refresh_from_db()
+
+        if order.status != Order.Status.SHIPPED:
+            order.status = Order.Status.SHIPPED
+            order.save(update_fields=["status"])
+
+        return Response({"order": OrderSerializer(order).data, "shipment": ShipmentSerializer(shipment).data})
 
     @action(detail=True, methods=["post"], url_path="mark-shipped")
     def mark_shipped(self, request, pk=None):

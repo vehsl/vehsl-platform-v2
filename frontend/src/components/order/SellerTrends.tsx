@@ -11,38 +11,11 @@ import {
 } from 'lucide-react';
 import { AreaChart, Area, ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+import { authedFetch } from '@/lib/api';
 
 const FONT = "'Urbanist', sans-serif";
 /* Chart + animation easing */
 const EASE = [0.25, 0.46, 0.45, 0.94] as [number, number, number, number];
-
-/* ═══════════════════════════════════════ */
-/*  MOCK DATA                              */
-/* ═══════════════════════════════════════ */
-
-const INDUSTRIES = [
-    { id: 'all', label: 'All Industries' },
-    { id: 'home', label: 'Home & Living' },
-    { id: 'electronics', label: 'Electronics & Gadgets' },
-    { id: 'fashion', label: 'Fashion & Accessories' },
-    { id: 'health', label: 'Health & Wellness' },
-    { id: 'outdoor', label: 'Outdoor & Sports' },
-    { id: 'office', label: 'Office & Stationery' },
-    { id: 'food', label: 'Food & Beverage' },
-];
-
-const COUNTRIES = [
-    { id: 'all', label: 'All Countries', flag: '' },
-    { id: 'us', label: 'United States', flag: 'us' },
-    { id: 'gb', label: 'United Kingdom', flag: 'gb' },
-    { id: 'ae', label: 'UAE', flag: 'ae' },
-    { id: 'de', label: 'Germany', flag: 'de' },
-    { id: 'ca', label: 'Canada', flag: 'ca' },
-    { id: 'fr', label: 'France', flag: 'fr' },
-    { id: 'jp', label: 'Japan', flag: 'jp' },
-    { id: 'kr', label: 'South Korea', flag: 'kr' },
-    { id: 'au', label: 'Australia', flag: 'au' },
-];
 
 type BadgeType = 'breakout' | 'popular' | 'new' | 'rising' | 'steady' | null;
 
@@ -65,168 +38,13 @@ interface TrendingProduct {
     weeklyData: { day: string; orders: number; views: number }[];
 }
 
-const TRENDING_PRODUCTS: TrendingProduct[] = [
-    {
-        id: 'tp1', name: 'Handmade Ceramic Vase — Matte', category: 'Home Décor',
-        industry: 'home',
-        image: 'https://images.unsplash.com/photo-1612196808214-b8e1d6145a8c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjZXJhbWljJTIwdmFzZSUyMGhhbmRtYWRlJTIwbWluaW1hbCUyMHByb2R1Y3R8ZW58MXx8fHwxNzczNDA0NTU0fDA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 94, change: +47, badge: 'breakout',
-        sparkline: [12, 18, 22, 35, 42, 55, 68, 78, 85, 90, 92, 94],
-        orders7d: 1240, avgPrice: 89, topMarkets: ['us', 'gb', 'ae'],
-        buyerInterest: 3200, competitorCount: 18,
-        relatedKeywords: ['matte ceramic', 'minimalist vase', 'japandi decor', 'handcrafted pottery'],
-        weeklyData: [
-            { day: 'Mon', orders: 145, views: 420 }, { day: 'Tue', orders: 162, views: 480 },
-            { day: 'Wed', orders: 198, views: 560 }, { day: 'Thu', orders: 210, views: 610 },
-            { day: 'Fri', orders: 185, views: 540 }, { day: 'Sat', orders: 170, views: 490 },
-            { day: 'Sun', orders: 170, views: 500 },
-        ],
-    },
-    {
-        id: 'tp2', name: 'Bamboo Kitchen Utensil Set', category: 'Kitchen & Dining',
-        industry: 'home',
-        image: 'https://images.unsplash.com/photo-1674676043851-dfb5553afa8a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxiYW1ib28lMjBraXRjaGVuJTIwdXRlbnNpbHMlMjBlY28lMjBwcm9kdWN0fGVufDF8fHx8MTc3MzQwNDU1NXww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 88, change: +31, badge: 'popular',
-        sparkline: [30, 35, 38, 45, 52, 58, 65, 72, 78, 82, 85, 88],
-        orders7d: 980, avgPrice: 34, topMarkets: ['us', 'ca', 'au'],
-        buyerInterest: 2800, competitorCount: 42,
-        relatedKeywords: ['eco utensils', 'bamboo cooking', 'sustainable kitchen', 'zero waste'],
-        weeklyData: [
-            { day: 'Mon', orders: 120, views: 380 }, { day: 'Tue', orders: 135, views: 410 },
-            { day: 'Wed', orders: 148, views: 450 }, { day: 'Thu', orders: 152, views: 470 },
-            { day: 'Fri', orders: 140, views: 430 }, { day: 'Sat', orders: 145, views: 440 },
-            { day: 'Sun', orders: 140, views: 420 },
-        ],
-    },
-    {
-        id: 'tp3', name: 'LED Desk Lamp — Dimmable', category: 'Office & Lighting',
-        industry: 'electronics',
-        image: 'https://images.unsplash.com/photo-1571406487954-dc11b0c0767d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxMRUQlMjBkZXNrJTIwbGFtcCUyMG1vZGVybiUyMG1pbmltYWwlMjBwcm9kdWN0fGVufDF8fHx8MTc3MzQwNDU1N3ww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 82, change: +18, badge: 'rising',
-        sparkline: [40, 42, 48, 50, 55, 58, 62, 68, 72, 76, 80, 82],
-        orders7d: 760, avgPrice: 65, topMarkets: ['de', 'us', 'jp'],
-        buyerInterest: 2100, competitorCount: 35,
-        relatedKeywords: ['desk lamp dimmable', 'LED office light', 'modern lamp', 'eye care lamp'],
-        weeklyData: [
-            { day: 'Mon', orders: 95, views: 290 }, { day: 'Tue', orders: 108, views: 320 },
-            { day: 'Wed', orders: 112, views: 340 }, { day: 'Thu', orders: 118, views: 360 },
-            { day: 'Fri', orders: 110, views: 330 }, { day: 'Sat', orders: 105, views: 310 },
-            { day: 'Sun', orders: 112, views: 330 },
-        ],
-    },
-    {
-        id: 'tp4', name: 'Canvas Tote Bag — Organic', category: 'Bags & Accessories',
-        industry: 'fashion',
-        image: 'https://images.unsplash.com/photo-1542957057-debadce4ce81?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxsaW5lbiUyMHRvdGUlMjBiYWclMjBtaW5pbWFsJTIwcHJvZHVjdHxlbnwxfHx8fDE3NzMzODMzMzJ8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 78, change: +12, badge: 'popular',
-        sparkline: [35, 38, 42, 44, 50, 55, 58, 62, 68, 72, 75, 78],
-        orders7d: 620, avgPrice: 28, topMarkets: ['gb', 'fr', 'us'],
-        buyerInterest: 1900, competitorCount: 58,
-        relatedKeywords: ['organic tote', 'canvas bag', 'eco bag', 'market bag'],
-        weeklyData: [
-            { day: 'Mon', orders: 78, views: 260 }, { day: 'Tue', orders: 85, views: 280 },
-            { day: 'Wed', orders: 92, views: 310 }, { day: 'Thu', orders: 96, views: 320 },
-            { day: 'Fri', orders: 90, views: 300 }, { day: 'Sat', orders: 88, views: 290 },
-            { day: 'Sun', orders: 91, views: 300 },
-        ],
-    },
-    {
-        id: 'tp5', name: 'Soy Wax Candle — Lavender', category: 'Home Fragrance',
-        industry: 'home',
-        image: 'https://images.unsplash.com/photo-1757688525739-8d1e13daf44f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxzb3klMjBjYW5kbGUlMjBtaW5pbWFsaXN0JTIwcHJvZHVjdHxlbnwxfHx8fDE3NzM0MDQ1NTZ8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 75, change: +8, badge: 'steady',
-        sparkline: [50, 52, 55, 54, 58, 60, 62, 65, 68, 70, 73, 75],
-        orders7d: 540, avgPrice: 22, topMarkets: ['us', 'ca', 'gb'],
-        buyerInterest: 1700, competitorCount: 72,
-        relatedKeywords: ['soy candle', 'lavender scent', 'natural candle', 'home fragrance'],
-        weeklyData: [
-            { day: 'Mon', orders: 68, views: 230 }, { day: 'Tue', orders: 75, views: 250 },
-            { day: 'Wed', orders: 80, views: 270 }, { day: 'Thu', orders: 82, views: 280 },
-            { day: 'Fri', orders: 78, views: 260 }, { day: 'Sat', orders: 80, views: 270 },
-            { day: 'Sun', orders: 77, views: 260 },
-        ],
-    },
-    {
-        id: 'tp6', name: 'Wireless Earbuds — Pro', category: 'Audio & Wearables',
-        industry: 'electronics',
-        image: 'https://images.unsplash.com/photo-1755182529034-189a6051faae?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHx3aXJlbGVzcyUyMGVhcmJ1ZHMlMjBjYXNlJTIwcHJvZHVjdCUyMHdoaXRlfGVufDF8fHx8MTc3MzQwNDU1Nnww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 71, change: -5, badge: null,
-        sparkline: [80, 78, 76, 74, 75, 72, 70, 72, 70, 69, 72, 71],
-        orders7d: 480, avgPrice: 149, topMarkets: ['kr', 'jp', 'us'],
-        buyerInterest: 1500, competitorCount: 28,
-        relatedKeywords: ['wireless earbuds', 'ANC earbuds', 'bluetooth audio', 'premium earphones'],
-        weeklyData: [
-            { day: 'Mon', orders: 70, views: 210 }, { day: 'Tue', orders: 68, views: 200 },
-            { day: 'Wed', orders: 72, views: 220 }, { day: 'Thu', orders: 66, views: 195 },
-            { day: 'Fri', orders: 68, views: 205 }, { day: 'Sat', orders: 72, views: 215 },
-            { day: 'Sun', orders: 64, views: 190 },
-        ],
-    },
-    {
-        id: 'tp7', name: 'Wooden Desk Organizer', category: 'Office & Stationery',
-        industry: 'office',
-        image: 'https://images.unsplash.com/photo-1633434986226-503e8fbdc6d2?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxkZXNrJTIwb3JnYW5pemVyJTIwbWluaW1hbCUyMHdvb2QlMjBwcm9kdWN0fGVufDF8fHx8MTc3MzQwNDU1N3ww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 67, change: +22, badge: 'new',
-        sparkline: [10, 15, 20, 28, 35, 42, 48, 52, 58, 62, 65, 67],
-        orders7d: 390, avgPrice: 42, topMarkets: ['de', 'us', 'gb'],
-        buyerInterest: 1200, competitorCount: 24,
-        relatedKeywords: ['desk organizer', 'wood office', 'minimal desk', 'workspace tidy'],
-        weeklyData: [
-            { day: 'Mon', orders: 45, views: 160 }, { day: 'Tue', orders: 52, views: 180 },
-            { day: 'Wed', orders: 58, views: 200 }, { day: 'Thu', orders: 62, views: 210 },
-            { day: 'Fri', orders: 55, views: 190 }, { day: 'Sat', orders: 60, views: 200 },
-            { day: 'Sun', orders: 58, views: 195 },
-        ],
-    },
-    {
-        id: 'tp8', name: 'Reusable Water Bottle — 750ml', category: 'Drinkware',
-        industry: 'health',
-        image: 'https://images.unsplash.com/photo-1583779470321-a3009b348218?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxyZXVzYWJsZSUyMHdhdGVyJTIwYm90dGxlJTIwbWluaW1hbCUyMHByb2R1Y3R8ZW58MXx8fHwxNzczNDA0NTU3fDA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 63, change: +15, badge: 'rising',
-        sparkline: [25, 28, 32, 35, 40, 44, 48, 52, 55, 58, 61, 63],
-        orders7d: 350, avgPrice: 18, topMarkets: ['au', 'us', 'ca'],
-        buyerInterest: 1100, competitorCount: 65,
-        relatedKeywords: ['water bottle', 'reusable bottle', 'eco bottle', 'gym bottle'],
-        weeklyData: [
-            { day: 'Mon', orders: 42, views: 150 }, { day: 'Tue', orders: 48, views: 165 },
-            { day: 'Wed', orders: 52, views: 180 }, { day: 'Thu', orders: 55, views: 190 },
-            { day: 'Fri', orders: 50, views: 175 }, { day: 'Sat', orders: 52, views: 180 },
-            { day: 'Sun', orders: 51, views: 175 },
-        ],
-    },
-    {
-        id: 'tp9', name: 'Leather Phone Case — Slim', category: 'Phone Accessories',
-        industry: 'electronics',
-        image: 'https://images.unsplash.com/photo-1760443728263-e77345f61eb8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwaG9uZSUyMGNhc2UlMjBsZWF0aGVyJTIwbWluaW1hbGlzdCUyMHByb2R1Y3R8ZW58MXx8fHwxNzczNDA0NTU3fDA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 58, change: +6, badge: 'steady',
-        sparkline: [40, 42, 44, 43, 46, 48, 50, 52, 54, 55, 57, 58],
-        orders7d: 290, avgPrice: 35, topMarkets: ['us', 'kr', 'jp'],
-        buyerInterest: 900, competitorCount: 48,
-        relatedKeywords: ['phone case', 'leather case', 'slim phone cover', 'premium case'],
-        weeklyData: [
-            { day: 'Mon', orders: 38, views: 130 }, { day: 'Tue', orders: 40, views: 140 },
-            { day: 'Wed', orders: 42, views: 145 }, { day: 'Thu', orders: 44, views: 150 },
-            { day: 'Fri', orders: 42, views: 142 }, { day: 'Sat', orders: 40, views: 138 },
-            { day: 'Sun', orders: 44, views: 148 },
-        ],
-    },
-    {
-        id: 'tp10', name: 'Concrete Plant Pot — Set of 3', category: 'Garden & Planters',
-        industry: 'home',
-        image: 'https://images.unsplash.com/photo-1745566589051-db20710ef1f2?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwbGFudCUyMHBvdCUyMGNvbmNyZXRlJTIwbW9kZXJuJTIwcHJvZHVjdHxlbnwxfHx8fDE3NzM0MDQ1NTh8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-        popularityScore: 52, change: +38, badge: 'breakout',
-        sparkline: [8, 12, 15, 22, 28, 32, 38, 42, 46, 48, 50, 52],
-        orders7d: 210, avgPrice: 56, topMarkets: ['gb', 'de', 'fr'],
-        buyerInterest: 800, competitorCount: 15,
-        relatedKeywords: ['concrete planter', 'modern pot', 'cement planter set', 'indoor pot'],
-        weeklyData: [
-            { day: 'Mon', orders: 22, views: 95 }, { day: 'Tue', orders: 28, views: 110 },
-            { day: 'Wed', orders: 32, views: 125 }, { day: 'Thu', orders: 35, views: 135 },
-            { day: 'Fri', orders: 30, views: 120 }, { day: 'Sat', orders: 32, views: 125 },
-            { day: 'Sun', orders: 31, views: 120 },
-        ],
-    },
-];
+function hashString(s: string) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+        h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    }
+    return Math.abs(h);
+}
 
 type TabId = 'trending' | 'breakout' | 'top' | 'keywords' | 'portfolio' | 'buyers';
 
@@ -247,13 +65,13 @@ const BADGE_STYLES: Record<string, { label: string; bg: string; color: string; g
     steady: { label: 'Steady', bg: 'rgba(142,142,147,0.07)', color: '#8e8e93' },
 };
 
-const ALL_KEYWORDS = TRENDING_PRODUCTS.flatMap(p => p.relatedKeywords.map(kw => ({
-    keyword: kw,
-    product: p.name,
-    volume: Math.round(p.buyerInterest * (0.2 + Math.random() * 0.3)),
-    change: Math.round(p.change * (0.5 + Math.random() * 1)),
-    competition: p.competitorCount > 40 ? 'High' : p.competitorCount > 20 ? 'Medium' : 'Low',
-}))).sort((a, b) => b.volume - a.volume).slice(0, 15);
+interface KeywordRow {
+    keyword: string;
+    product: string;
+    volume: number;
+    change: number;
+    competition: 'Low' | 'Medium' | 'High';
+}
 
 /* ── Seller's own product portfolio ── */
 type PortfolioStatus = 'active' | 'review' | 'draft';
@@ -301,53 +119,17 @@ interface BuyerCountry {
     repeatRate: number;
     monthlyTrend: number[];
 }
-
-const BUYER_COUNTRIES: BuyerCountry[] = [
-    { id: 'us', name: 'United States', flag: 'us', totalImports: 284000, orders7d: 3420, growth: 18, topCategories: [{ name: 'Electronics', value: 98000 }, { name: 'Home Décor', value: 72000 }, { name: 'Fashion', value: 54000 }, { name: 'Kitchen', value: 38000 }], avgOrderValue: 145, repeatRate: 34, monthlyTrend: [240, 255, 248, 270, 265, 278, 284] },
-    { id: 'gb', name: 'United Kingdom', flag: 'gb', totalImports: 186000, orders7d: 2180, growth: 22, topCategories: [{ name: 'Home Décor', value: 62000 }, { name: 'Fashion', value: 48000 }, { name: 'Office', value: 36000 }, { name: 'Health', value: 24000 }], avgOrderValue: 118, repeatRate: 38, monthlyTrend: [152, 160, 158, 172, 168, 178, 186] },
-    { id: 'ae', name: 'United Arab Emirates', flag: 'ae', totalImports: 142000, orders7d: 1650, growth: 31, topCategories: [{ name: 'Home Décor', value: 52000 }, { name: 'Electronics', value: 42000 }, { name: 'Fashion', value: 28000 }, { name: 'Health', value: 12000 }], avgOrderValue: 198, repeatRate: 28, monthlyTrend: [98, 108, 112, 125, 128, 136, 142] },
-    { id: 'de', name: 'Germany', flag: 'de', totalImports: 128000, orders7d: 1420, growth: 14, topCategories: [{ name: 'Electronics', value: 48000 }, { name: 'Office', value: 35000 }, { name: 'Home Décor', value: 28000 }, { name: 'Kitchen', value: 12000 }], avgOrderValue: 132, repeatRate: 42, monthlyTrend: [112, 118, 115, 122, 120, 125, 128] },
-    { id: 'ca', name: 'Canada', flag: 'ca', totalImports: 96000, orders7d: 1080, growth: 12, topCategories: [{ name: 'Kitchen', value: 32000 }, { name: 'Health', value: 28000 }, { name: 'Home Décor', value: 22000 }, { name: 'Outdoor', value: 10000 }], avgOrderValue: 92, repeatRate: 36, monthlyTrend: [82, 85, 88, 90, 92, 94, 96] },
-    { id: 'fr', name: 'France', flag: 'fr', totalImports: 88000, orders7d: 980, growth: 16, topCategories: [{ name: 'Fashion', value: 35000 }, { name: 'Home Décor', value: 26000 }, { name: 'Kitchen', value: 18000 }, { name: 'Health', value: 6000 }], avgOrderValue: 108, repeatRate: 32, monthlyTrend: [72, 75, 78, 82, 84, 86, 88] },
-    { id: 'jp', name: 'Japan', flag: 'jp', totalImports: 76000, orders7d: 860, growth: 8, topCategories: [{ name: 'Electronics', value: 32000 }, { name: 'Office', value: 22000 }, { name: 'Home Décor', value: 14000 }, { name: 'Kitchen', value: 6000 }], avgOrderValue: 156, repeatRate: 45, monthlyTrend: [68, 70, 72, 72, 74, 75, 76] },
-    { id: 'kr', name: 'South Korea', flag: 'kr', totalImports: 64000, orders7d: 720, growth: 24, topCategories: [{ name: 'Electronics', value: 28000 }, { name: 'Fashion', value: 18000 }, { name: 'Health', value: 12000 }, { name: 'Home Décor', value: 4000 }], avgOrderValue: 124, repeatRate: 30, monthlyTrend: [48, 52, 54, 58, 60, 62, 64] },
-    { id: 'au', name: 'Australia', flag: 'au', totalImports: 52000, orders7d: 580, growth: 20, topCategories: [{ name: 'Health', value: 18000 }, { name: 'Outdoor', value: 14000 }, { name: 'Kitchen', value: 12000 }, { name: 'Home Décor', value: 6000 }], avgOrderValue: 86, repeatRate: 33, monthlyTrend: [38, 42, 44, 46, 48, 50, 52] },
-];
-
-/* ── ISO code → country name mapping ── */
-const ISO_TO_COUNTRY: Record<string, string> = {
-    'us': 'United States', 'gb': 'United Kingdom', 'ae': 'UAE',
-    'de': 'Germany', 'ca': 'Canada', 'fr': 'France',
-    'jp': 'Japan', 'kr': 'South Korea', 'au': 'Australia',
-};
-
-/* ── Deterministic seeded market breakdowns from topMarkets ── */
-const MARKET_SPLITS: Record<string, number[]> = {
-    tp1:  [38, 27, 18, 11, 6],
-    tp2:  [35, 28, 20, 12, 5],
-    tp3:  [32, 28, 22, 12, 6],
-    tp4:  [34, 30, 20, 10, 6],
-    tp5:  [36, 25, 22, 11, 6],
-    tp6:  [33, 29, 21, 11, 6],
-    tp7:  [35, 27, 20, 12, 6],
-    tp8:  [34, 26, 22, 12, 6],
-    tp9:  [37, 28, 19, 10, 6],
-    tp10: [36, 30, 18, 10, 6],
-};
-
-/* Expand topMarkets ISO codes into 5 buying countries with value */
-function getMarketBreakdown(product: TrendingProduct) {
+function getMarketBreakdown(product: TrendingProduct, getName: (iso: string) => string) {
+    const markets = Array.from(new Set((product.topMarkets || []).map((m) => (m || '').toLowerCase()).filter(Boolean))).slice(0, 5);
+    if (markets.length === 0) return [];
     const totalValue = product.orders7d * product.avgPrice;
-    const splits = MARKET_SPLITS[product.id] || [40, 25, 18, 10, 7];
-    // Pad topMarkets to 5 with extra countries
-    const allCodes = [...product.topMarkets];
-    const extras = ['us', 'gb', 'de', 'fr', 'ca', 'au', 'jp'].filter(c => !allCodes.includes(c));
-    while (allCodes.length < 5) allCodes.push(extras.shift()!);
-    return allCodes.slice(0, 5).map((iso, i) => {
-        const pct = splits[i];
+    const per = Math.round(100 / markets.length);
+    const pcts = markets.map((_, idx) => (idx === markets.length - 1 ? (100 - per * (markets.length - 1)) : per));
+    return markets.map((iso, i) => {
+        const pct = pcts[i];
         const orders = Math.round(product.orders7d * pct / 100);
         const value = Math.round(totalValue * pct / 100);
-        return { country: ISO_TO_COUNTRY[iso] || iso, iso, orders, value, pct };
+        return { country: getName(iso), iso, orders, value, pct };
     });
 }
 
@@ -356,178 +138,6 @@ function fmtValue(n: number) {
     if (n >= 1_000) return `$${(n / 1000).toFixed(1)}K`;
     return `$${n}`;
 }
-
-/* ── Generate extended data sets (up to 100 items) ── */
-const EXTRA_PRODUCT_NAMES = [
-    'Smart LED Strip Lights', 'Organic Cotton Towel Set', 'Portable Bluetooth Speaker', 'Bamboo Cutting Board — XL',
-    'Stainless Steel Tumbler', 'Macrame Wall Hanging', 'Yoga Mat — Cork', 'Essential Oil Diffuser',
-    'Linen Throw Pillow Set', 'Glass Storage Containers', 'Silicone Baking Mat', 'Ceramic Coffee Mug — Speckled',
-    'Desk Cable Organizer', 'Plant Propagation Station', 'Natural Soy Candle Set', 'Borosilicate Glass Teapot',
-    'Wooden Phone Stand', 'Copper Measuring Cups', 'Woven Storage Basket', 'Recycled Notebook Set',
-    'Smart Plug — WiFi', 'Herb Garden Kit', 'Acacia Wood Salad Bowl', 'Microfiber Cleaning Set',
-    'Portable Garment Steamer', 'Cast Iron Skillet — 10in', 'Organic Lip Balm Set', 'Desk LED Ring Light',
-    'Cotton Market Tote', 'Ceramic Soap Dispenser', 'Stainless Steel Straws', 'Leather Journal — A5',
-    'Resistance Band Set', 'Insulated Lunch Bag', 'Marble Coaster Set', 'Mini Humidifier — USB',
-    'Wooden Coat Rack', 'Bamboo Toothbrush Set', 'Porcelain Dinner Set', 'Solar Garden Lights',
-    'Canvas Art Print', 'Silicone Spatula Set', 'Wicker Laundry Basket', 'LED Vanity Mirror',
-    'Cork Yoga Block', 'Stoneware Baking Dish', 'Floating Wall Shelf', 'Cotton Rope Basket',
-    'Electric Milk Frother', 'Glass Water Carafe', 'Terracotta Planter', 'Wooden Spice Rack',
-    'Velvet Cushion Cover', 'Rattan Serving Tray', 'Digital Kitchen Scale', 'Ceramic Oil Burner',
-    'Linen Table Runner', 'Copper Plant Mister', 'Acrylic Organizer Box', 'Wool Throw Blanket',
-    'Titanium Chopsticks', 'Enamel Camping Mug', 'Ceramic Butter Dish', 'Cork Bulletin Board',
-    'Glass Terrarium Kit', 'Bamboo Shoe Rack', 'Cotton Napkin Set', 'Wooden Puzzle Box',
-    'Brass Candle Holder', 'Jute Doormat', 'Porcelain Tea Set', 'Leather Mouse Pad',
-    'Ceramic Ring Dish', 'Woven Wall Art', 'Steel Bento Box', 'Glass Apothecary Jar',
-    'Marble Rolling Pin', 'Linen Apron', 'Copper Wire Lights', 'Wooden Picture Frame',
-    'Ceramic Plant Pot', 'Bamboo Utensil Holder', 'Cotton Shower Curtain', 'Stone Mortar & Pestle',
-    'Glass Candle Jar', 'Rattan Mirror', 'Ceramic Incense Holder', 'Wooden Bookmark Set',
-    'Brass Picture Hook', 'Linen Bread Bag',
-];
-const EXTRA_CATEGORIES = ['Home Décor', 'Kitchen & Dining', 'Office & Lighting', 'Bags & Accessories', 'Home Fragrance', 'Audio & Wearables', 'Health & Wellness', 'Garden & Planters', 'Drinkware', 'Fashion'];
-const EXTRA_INDUSTRIES = ['home', 'electronics', 'fashion', 'health', 'outdoor', 'office', 'food'];
-const EXTRA_BADGES: BadgeType[] = ['breakout', 'popular', 'new', 'rising', 'steady', null, null, null];
-const COUNTRY_ISOS = ['us', 'gb', 'ae', 'de', 'ca', 'fr', 'jp', 'kr', 'au'];
-
-function seededRandom(seed: number) {
-    let s = seed;
-    return () => { s = (s * 16807 + 0) % 2147483647; return (s - 1) / 2147483646; };
-}
-
-function generateExtendedProducts(base: TrendingProduct[], total: number): TrendingProduct[] {
-    if (base.length >= total) return base;
-    const extended = [...base];
-    for (let i = base.length; i < total; i++) {
-        const rand = seededRandom(i * 137 + 42);
-        const nameIdx = (i - base.length) % EXTRA_PRODUCT_NAMES.length;
-        const score = Math.round(30 + rand() * 65);
-        const change = Math.round(-10 + rand() * 55);
-        const orders = Math.round(80 + rand() * 1200);
-        const price = Math.round(15 + rand() * 200);
-        const spark = Array.from({ length: 12 }, () => Math.round(10 + rand() * 90));
-        const markets = [COUNTRY_ISOS[Math.floor(rand() * 9)], COUNTRY_ISOS[Math.floor(rand() * 9)], COUNTRY_ISOS[Math.floor(rand() * 9)]];
-        extended.push({
-            id: `tp${i + 1}`,
-            name: EXTRA_PRODUCT_NAMES[nameIdx],
-            image: `https://picsum.photos/seed/tp${i + 1}/200/200`,
-            category: EXTRA_CATEGORIES[Math.floor(rand() * EXTRA_CATEGORIES.length)],
-            industry: EXTRA_INDUSTRIES[Math.floor(rand() * EXTRA_INDUSTRIES.length)],
-            popularityScore: score, change,
-            badge: EXTRA_BADGES[Math.floor(rand() * EXTRA_BADGES.length)],
-            sparkline: spark, orders7d: orders, avgPrice: price,
-            topMarkets: [...new Set(markets)].slice(0, 3),
-            buyerInterest: Math.round(500 + rand() * 4000),
-            competitorCount: Math.round(5 + rand() * 60),
-            relatedKeywords: [EXTRA_PRODUCT_NAMES[nameIdx].split(' ')[0].toLowerCase(), 'trending', 'wholesale'],
-            weeklyData: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => ({
-                day, orders: Math.round(orders / 7 * (0.7 + rand() * 0.6)), views: Math.round(orders / 7 * (2 + rand() * 2)),
-            })),
-        });
-    }
-    return extended;
-}
-
-function generateExtendedPortfolio(base: SellerProduct[], total: number): SellerProduct[] {
-    if (base.length >= total) return base;
-    const extended = [...base];
-    const statuses: PortfolioStatus[] = ['active', 'active', 'active', 'active', 'review', 'draft'];
-    for (let i = base.length; i < total; i++) {
-        const rand = seededRandom(i * 251 + 73);
-        const nameIdx = (i - base.length) % EXTRA_PRODUCT_NAMES.length;
-        const status = statuses[Math.floor(rand() * statuses.length)];
-        const price = Math.round(15 + rand() * 300);
-        const sold = status === 'active' ? Math.round(5 + rand() * 200) : 0;
-        const revenue = sold * price;
-        const spark = Array.from({ length: 12 }, () => Math.round(rand() * 50));
-        extended.push({
-            id: `sp${i + 1}`, name: EXTRA_PRODUCT_NAMES[nameIdx],
-            image: `https://picsum.photos/seed/sp${i + 1}/200/200`,
-            price, status, sold, revenue,
-            views7d: Math.round(100 + rand() * 3000),
-            convRate: +(1 + rand() * 8).toFixed(1),
-            rating: status === 'active' ? +(3.5 + rand() * 1.5).toFixed(1) : 0,
-            reviews: status === 'active' ? Math.round(rand() * 120) : 0,
-            stock: Math.round(10 + rand() * 500),
-            category: EXTRA_CATEGORIES[Math.floor(rand() * EXTRA_CATEGORIES.length)],
-            sparkline: spark,
-            topBuyers: status === 'active' ? [
-                { iso: COUNTRY_ISOS[Math.floor(rand() * 9)], pct: 35 },
-                { iso: COUNTRY_ISOS[Math.floor(rand() * 9)], pct: 25 },
-                { iso: COUNTRY_ISOS[Math.floor(rand() * 9)], pct: 20 },
-            ] : [],
-        });
-    }
-    return extended;
-}
-
-const EXTRA_COUNTRY_NAMES: [string, string][] = [
-    ['in', 'India'], ['br', 'Brazil'], ['mx', 'Mexico'], ['id', 'Indonesia'], ['ng', 'Nigeria'],
-    ['za', 'South Africa'], ['th', 'Thailand'], ['vn', 'Vietnam'], ['ph', 'Philippines'], ['eg', 'Egypt'],
-    ['tr', 'Turkey'], ['sa', 'Saudi Arabia'], ['my', 'Malaysia'], ['sg', 'Singapore'], ['pk', 'Pakistan'],
-    ['cl', 'Chile'], ['ar', 'Argentina'], ['co', 'Colombia'], ['pe', 'Peru'], ['bd', 'Bangladesh'],
-    ['ke', 'Kenya'], ['gh', 'Ghana'], ['tz', 'Tanzania'], ['et', 'Ethiopia'], ['ma', 'Morocco'],
-    ['il', 'Israel'], ['no', 'Norway'], ['se', 'Sweden'], ['dk', 'Denmark'], ['fi', 'Finland'],
-    ['nl', 'Netherlands'], ['be', 'Belgium'], ['ch', 'Switzerland'], ['at', 'Austria'], ['pt', 'Portugal'],
-    ['es', 'Spain'], ['it', 'Italy'], ['pl', 'Poland'], ['cz', 'Czechia'], ['ro', 'Romania'],
-    ['hu', 'Hungary'], ['ie', 'Ireland'], ['nz', 'New Zealand'], ['tw', 'Taiwan'], ['hk', 'Hong Kong'],
-    ['kw', 'Kuwait'], ['qa', 'Qatar'], ['bh', 'Bahrain'], ['om', 'Oman'], ['jo', 'Jordan'],
-    ['lb', 'Lebanon'], ['ua', 'Ukraine'], ['rs', 'Serbia'], ['hr', 'Croatia'], ['bg_c', 'Bulgaria'],
-    ['sk', 'Slovakia'], ['lt', 'Lithuania'], ['lv', 'Latvia'], ['ee', 'Estonia'], ['si', 'Slovenia'],
-    ['is', 'Iceland'], ['lu', 'Luxembourg'], ['mt', 'Malta'], ['cy', 'Cyprus'], ['ge', 'Georgia'],
-    ['am', 'Armenia'], ['az', 'Azerbaijan'], ['kz', 'Kazakhstan'], ['uz', 'Uzbekistan'], ['mn', 'Mongolia'],
-    ['mm', 'Myanmar'], ['kh', 'Cambodia'], ['la', 'Laos'], ['np', 'Nepal'], ['lk', 'Sri Lanka'],
-    ['ug', 'Uganda'], ['cm', 'Cameroon'], ['sn', 'Senegal'], ['ci', "Côte d'Ivoire"], ['dz', 'Algeria'],
-    ['tn', 'Tunisia'], ['ly', 'Libya'], ['iq', 'Iraq'], ['af', 'Afghanistan'], ['ye', 'Yemen'],
-    ['sy', 'Syria'], ['sd', 'Sudan'], ['bo', 'Bolivia'], ['ec', 'Ecuador'], ['py', 'Paraguay'],
-    ['uy', 'Uruguay'],
-];
-
-function generateExtendedCountries(base: BuyerCountry[], total: number): BuyerCountry[] {
-    if (base.length >= total) return base;
-    const extended = [...base];
-    for (let i = base.length; i < total; i++) {
-        const rand = seededRandom(i * 311 + 59);
-        const extraIdx = (i - base.length) % EXTRA_COUNTRY_NAMES.length;
-        const [iso, name] = EXTRA_COUNTRY_NAMES[extraIdx];
-        const imports = Math.round(5000 + rand() * 80000);
-        const orders = Math.round(50 + rand() * 2000);
-        extended.push({
-            id: iso, name, flag: iso, totalImports: imports, orders7d: orders,
-            growth: Math.round(rand() * 35),
-            topCategories: [
-                { name: 'Electronics', value: Math.round(imports * (0.2 + rand() * 0.2)) },
-                { name: 'Home Décor', value: Math.round(imports * (0.1 + rand() * 0.15)) },
-                { name: 'Fashion', value: Math.round(imports * (0.05 + rand() * 0.15)) },
-            ],
-            avgOrderValue: Math.round(40 + rand() * 180),
-            repeatRate: Math.round(10 + rand() * 40),
-            monthlyTrend: Array.from({ length: 7 }, () => Math.round(imports / 12 * (0.7 + rand() * 0.6))),
-        });
-    }
-    return extended;
-}
-
-function generateExtendedKeywords(base: typeof ALL_KEYWORDS, total: number) {
-    if (base.length >= total) return base;
-    const extended = [...base];
-    const kwBases = ['wholesale', 'bulk buy', 'eco friendly', 'handmade', 'organic', 'premium', 'minimalist', 'custom', 'luxury', 'vintage', 'modern', 'industrial', 'rustic', 'boho', 'artisan'];
-    const kwSuffixes = ['decor', 'supplies', 'accessories', 'set', 'collection', 'bundle', 'kit', 'tools', 'essentials', 'gifts'];
-    for (let i = base.length; i < total; i++) {
-        const rand = seededRandom(i * 197 + 31);
-        extended.push({
-            keyword: `${kwBases[Math.floor(rand() * kwBases.length)]} ${kwSuffixes[Math.floor(rand() * kwSuffixes.length)]}`,
-            product: EXTRA_PRODUCT_NAMES[Math.floor(rand() * EXTRA_PRODUCT_NAMES.length)],
-            volume: Math.round(200 + rand() * 5000),
-            change: Math.round(-15 + rand() * 50),
-            competition: rand() < 0.33 ? 'Low' : rand() < 0.66 ? 'Medium' : 'High',
-        });
-    }
-    return extended.sort((a, b) => b.volume - a.volume);
-}
-
-const EXTENDED_PRODUCTS = generateExtendedProducts(TRENDING_PRODUCTS, 100);
-const EXTENDED_PORTFOLIO = generateExtendedPortfolio(SELLER_PORTFOLIO, 100);
-const EXTENDED_COUNTRIES = generateExtendedCountries(BUYER_COUNTRIES, 100);
-const EXTENDED_KEYWORDS = generateExtendedKeywords(ALL_KEYWORDS, 100);
 
 const INITIAL_VISIBLE = 10;
 const LOAD_MORE_INCREMENT = 10;
@@ -651,11 +261,174 @@ export function SellerTrends() {
     const [searchFocused, setSearchFocused] = useState(false);
     const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
     const [savedProducts, setSavedProducts] = useState<Set<string>>(new Set());
+    const [trendingProducts, setTrendingProducts] = useState<TrendingProduct[]>([]);
+    const [portfolioProducts, setPortfolioProducts] = useState<SellerProduct[]>([]);
+    const [buyerCountries, setBuyerCountries] = useState<BuyerCountry[]>([]);
+    const [keywordRows, setKeywordRows] = useState<KeywordRow[]>([]);
     const [visibleCounts, setVisibleCounts] = useState<Record<TabId, number>>({
         portfolio: INITIAL_VISIBLE, buyers: INITIAL_VISIBLE, trending: INITIAL_VISIBLE,
         breakout: INITIAL_VISIBLE, top: INITIAL_VISIBLE, keywords: INITIAL_VISIBLE,
     });
     const searchRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const t = window.setTimeout(() => {
+            (async () => {
+                try {
+                    const params = new URLSearchParams();
+                    params.set("range", timeRange);
+                    params.set("limit", "100");
+                    if (industry !== "all") params.set("industry", industry);
+                    if (searchQuery.trim()) params.set("search", searchQuery.trim());
+                    const res = await authedFetch(`/api/v1/seller/dashboard/trends/?${params.toString()}`);
+                    if (!res.ok) {
+                        if (!cancelled) setTrendingProducts([]);
+                        return;
+                    }
+                    const data = await res.json().catch(() => null);
+                    if (cancelled) return;
+                    setTrendingProducts(Array.isArray(data) ? (data as TrendingProduct[]) : []);
+                } catch (e) {
+                    if (!cancelled) setTrendingProducts([]);
+                }
+            })();
+        }, 250);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(t);
+        };
+    }, [timeRange, industry, searchQuery]);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const params = new URLSearchParams();
+                params.set("range", timeRange);
+                params.set("limit", "100");
+                if (industry !== "all") params.set("industry", industry);
+                const res = await authedFetch(`/api/v1/seller/dashboard/insights/portfolio/?${params.toString()}`);
+                if (!res.ok) {
+                    if (!cancelled) setPortfolioProducts([]);
+                    return;
+                }
+                const data = await res.json().catch(() => null);
+                if (cancelled) return;
+                setPortfolioProducts(Array.isArray(data) ? (data as SellerProduct[]) : []);
+            } catch (e) {
+                if (!cancelled) setPortfolioProducts([]);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [timeRange, industry]);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const params = new URLSearchParams();
+                params.set("range", timeRange);
+                const res = await authedFetch(`/api/v1/seller/dashboard/insights/buyers/?${params.toString()}`);
+                if (!res.ok) {
+                    if (!cancelled) setBuyerCountries([]);
+                    return;
+                }
+                const data = await res.json().catch(() => null);
+                if (cancelled) return;
+                setBuyerCountries(Array.isArray(data) ? (data as BuyerCountry[]) : []);
+            } catch (e) {
+                if (!cancelled) setBuyerCountries([]);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [timeRange]);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const params = new URLSearchParams();
+                params.set("range", timeRange);
+                params.set("limit", "100");
+                if (industry !== "all") params.set("industry", industry);
+                const res = await authedFetch(`/api/v1/seller/dashboard/insights/keywords/?${params.toString()}`);
+                if (!res.ok) {
+                    if (!cancelled) setKeywordRows([]);
+                    return;
+                }
+                const data = await res.json().catch(() => null);
+                if (cancelled) return;
+                setKeywordRows(Array.isArray(data) ? (data as KeywordRow[]) : []);
+            } catch (e) {
+                if (!cancelled) setKeywordRows([]);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [timeRange, industry]);
+
+    const countryNameByIso = useMemo<Record<string, string>>(() => {
+        const map: Record<string, string> = {};
+        for (const c of buyerCountries) {
+            const id = (c?.id || '').toLowerCase();
+            if (!id) continue;
+            map[id] = c.name || id.toUpperCase();
+        }
+        return map;
+    }, [buyerCountries]);
+
+    const industryOptions = useMemo(() => {
+        const set = new Set<string>();
+        for (const p of trendingProducts) {
+            const slug = (p?.industry || '').trim();
+            if (slug) set.add(slug);
+        }
+        const ids = Array.from(set).sort((a, b) => a.localeCompare(b));
+        return [{ id: 'all', label: 'All Industries' }, ...ids.map((id) => ({ id, label: id }))];
+    }, [trendingProducts]);
+
+    const countryOptions = useMemo(() => {
+        const set = new Set<string>();
+        for (const p of trendingProducts) {
+            for (const iso of (p?.topMarkets || [])) {
+                const v = (iso || '').toLowerCase().trim();
+                if (v) set.add(v);
+            }
+        }
+        for (const c of buyerCountries) {
+            const v = (c?.id || '').toLowerCase().trim();
+            if (v) set.add(v);
+        }
+        const ids = Array.from(set).sort((a, b) => a.localeCompare(b));
+        return [{ id: 'all', label: 'All Countries', flag: '' }, ...ids.map((id) => ({ id, label: countryNameByIso[id] || id.toUpperCase(), flag: id }))];
+    }, [buyerCountries, countryNameByIso, trendingProducts]);
+
+    const allKeywords = useMemo<KeywordRow[]>(() => {
+        const rows = trendingProducts.flatMap(p =>
+            p.relatedKeywords.map(kw => {
+                const seed = hashString(`${p.id}:${kw}`);
+                const mult = 0.2 + (seed % 30) / 100;
+                const drift = 0.5 + (seed % 100) / 100;
+                return {
+                    keyword: kw,
+                    product: p.name,
+                    volume: Math.round(p.buyerInterest * mult),
+                    change: Math.round(p.change * drift),
+                    competition: (p.competitorCount > 40 ? 'High' : p.competitorCount > 20 ? 'Medium' : 'Low') as KeywordRow['competition'],
+                };
+            })
+        );
+        return rows.sort((a, b) => b.volume - a.volume).slice(0, 15);
+    }, [trendingProducts]);
+
+    const extendedProducts = useMemo(() => trendingProducts, [trendingProducts]);
+    const extendedKeywords = useMemo<KeywordRow[]>(() => (keywordRows.length ? keywordRows : allKeywords), [keywordRows, allKeywords]);
 
     const loadMore = (tab: TabId) => {
         setVisibleCounts(prev => ({
@@ -666,8 +439,9 @@ export function SellerTrends() {
 
     /* ── Filtered products ── */
     const filteredProducts = useMemo(() => {
-        let filtered = EXTENDED_PRODUCTS as TrendingProduct[];
+        let filtered = extendedProducts as TrendingProduct[];
         if (industry !== 'all') filtered = filtered.filter(p => p.industry === industry);
+        if (country !== 'all') filtered = filtered.filter(p => (p.topMarkets || []).includes(country));
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
             filtered = filtered.filter(p =>
@@ -677,21 +451,21 @@ export function SellerTrends() {
             );
         }
         return filtered;
-    }, [industry, searchQuery]);
+    }, [extendedProducts, industry, country, searchQuery]);
 
     const breakoutProducts = useMemo(() =>
-        EXTENDED_PRODUCTS.filter(p => p.badge === 'breakout' || (p.change >= 25)).sort((a, b) => b.change - a.change),
-    []);
+        extendedProducts.filter(p => p.badge === 'breakout' || (p.change >= 25)).sort((a, b) => b.change - a.change),
+    [extendedProducts]);
 
     const topProducts = useMemo(() =>
-        [...EXTENDED_PRODUCTS].sort((a, b) => b.orders7d - a.orders7d),
-    []);
+        [...extendedProducts].sort((a, b) => b.orders7d - a.orders7d),
+    [extendedProducts]);
 
-    const filteredKeywords = useMemo(() => {
-        if (!searchQuery.trim()) return EXTENDED_KEYWORDS;
+    const filteredKeywords = useMemo<KeywordRow[]>(() => {
+        if (!searchQuery.trim()) return extendedKeywords;
         const q = searchQuery.toLowerCase();
-        return EXTENDED_KEYWORDS.filter(k => k.keyword.toLowerCase().includes(q) || k.product.toLowerCase().includes(q));
-    }, [searchQuery]);
+        return extendedKeywords.filter(k => k.keyword.toLowerCase().includes(q) || k.product.toLowerCase().includes(q));
+    }, [extendedKeywords, searchQuery]);
 
     const toggleSave = (id: string) => {
         setSavedProducts(prev => {
@@ -702,8 +476,8 @@ export function SellerTrends() {
     };
 
     /* ── Collapsed summary stats ── */
-    const topItem = EXTENDED_PRODUCTS[0];
-    const totalOrders7d = EXTENDED_PRODUCTS.reduce((s, p) => s + p.orders7d, 0);
+    const topItem = extendedProducts[0] || trendingProducts[0] || null;
+    const totalOrders7d = extendedProducts.reduce((s, p) => s + p.orders7d, 0);
 
     return (
         <motion.div
@@ -745,35 +519,45 @@ export function SellerTrends() {
                     whileTap={{ scale: 0.995 }}
                 >
                     <div className="px-5 py-4">
-                        {/* Top row: headline metric */}
-                        <div className="flex items-center gap-4 mb-3">
-                            <div className="flex-shrink-0 w-[36px] h-[36px] rounded-[10px] overflow-hidden">
-                                <ImageWithFallback src={topItem.image} alt="" className="w-full h-full object-cover" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <p className="text-[10px] font-semibold text-[#1A1A1A]/25 uppercase tracking-wider mb-0.5">Top trending</p>
-                                <p className="text-[13px] font-bold text-[#1A1A1A]/70 truncate">{topItem.name}</p>
-                            </div>
-                            <div className="flex items-center gap-1">
-                                <Flame size={11} color="#e74444" strokeWidth={2.5} />
-                                <span className="text-[12px] font-black text-[#e74444] tabular-nums">+{topItem.change}%</span>
-                            </div>
-                            <ArrowUpRight size={14} color="rgba(26,26,26,0.15)" strokeWidth={2} className="flex-shrink-0" />
-                        </div>
-
-                        {/* Bottom row: 3 mini product thumbnails + stats */}
-                        <div className="flex items-center gap-3">
-                            <div className="flex -space-x-2">
-                                {TRENDING_PRODUCTS.slice(1, 5).map(p => (
-                                    <div key={p.id} className="w-[24px] h-[24px] rounded-[6px] overflow-hidden border-2 border-white flex-shrink-0">
-                                        <ImageWithFallback src={p.image} alt="" className="w-full h-full object-cover" />
+                        {topItem ? (
+                            <>
+                                <div className="flex items-center gap-4 mb-3">
+                                    <div className="flex-shrink-0 w-[36px] h-[36px] rounded-[10px] overflow-hidden">
+                                        <ImageWithFallback src={topItem.image} alt="" className="w-full h-full object-cover" />
                                     </div>
-                                ))}
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-[10px] font-semibold text-[#1A1A1A]/25 uppercase tracking-wider mb-0.5">Top trending</p>
+                                        <p className="text-[13px] font-bold text-[#1A1A1A]/70 truncate">{topItem.name}</p>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <Flame size={11} color="#e74444" strokeWidth={2.5} />
+                                        <span className="text-[12px] font-black text-[#e74444] tabular-nums">+{topItem.change}%</span>
+                                    </div>
+                                    <ArrowUpRight size={14} color="rgba(26,26,26,0.15)" strokeWidth={2} className="flex-shrink-0" />
+                                </div>
+
+                                <div className="flex items-center gap-3">
+                                    <div className="flex -space-x-2">
+                                        {trendingProducts.slice(1, 5).map(p => (
+                                            <div key={p.id} className="w-[24px] h-[24px] rounded-[6px] overflow-hidden border-2 border-white flex-shrink-0">
+                                                <ImageWithFallback src={p.image} alt="" className="w-full h-full object-cover" />
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <span className="text-[10px] font-semibold text-[#1A1A1A]/25">
+                                        {totalOrders7d.toLocaleString()} orders this week across {trendingProducts.length} trending products
+                                    </span>
+                                </div>
+                            </>
+                        ) : (
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                    <p className="text-[11px] font-bold text-[#1A1A1A]/60">No trends yet</p>
+                                    <p className="text-[10px] font-medium text-[#1A1A1A]/30">Once products/orders exist, trends will appear here.</p>
+                                </div>
+                                <ArrowUpRight size={14} color="rgba(26,26,26,0.15)" strokeWidth={2} className="flex-shrink-0" />
                             </div>
-                            <span className="text-[10px] font-semibold text-[#1A1A1A]/25">
-                                {totalOrders7d.toLocaleString()} orders this week across {TRENDING_PRODUCTS.length} trending products
-                            </span>
-                        </div>
+                        )}
                     </div>
                 </motion.div>
             )}
@@ -823,13 +607,13 @@ export function SellerTrends() {
                                 {/* Filters row */}
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <DropdownSelect
-                                        options={INDUSTRIES}
+                                        options={industryOptions}
                                         value={industry}
                                         onChange={setIndustry}
                                         icon={<SlidersHorizontal size={11} strokeWidth={2} className="text-[#1A1A1A]/30" />}
                                     />
                                     <DropdownSelect
-                                        options={COUNTRIES}
+                                        options={countryOptions}
                                         value={country}
                                         onChange={setCountry}
                                         icon={<Globe2 size={11} strokeWidth={2} className="text-[#1A1A1A]/30" />}
@@ -884,12 +668,12 @@ export function SellerTrends() {
                                             {/* Headline metric as natural text */}
                                             <div className="py-3">
                                                 <p className="text-[13px] font-medium text-[#1A1A1A]/40 leading-relaxed">
-                                                    You've earned <span className="font-black text-[#0171E3]/70">{fmtValue(EXTENDED_PORTFOLIO.reduce((s, p) => s + p.revenue, 0))}</span> across <span className="font-bold text-[#1A1A1A]/55">{EXTENDED_PORTFOLIO.filter(p => p.status === 'active').length} active</span> products — <span className="font-bold text-[#1A1A1A]/55">{EXTENDED_PORTFOLIO.reduce((s, p) => s + p.sold, 0)} units</span> sold, rated <span className="font-bold text-[#e67e22]/60">{(EXTENDED_PORTFOLIO.filter(p => p.rating > 0).reduce((s, p) => s + p.rating, 0) / EXTENDED_PORTFOLIO.filter(p => p.rating > 0).length).toFixed(1)}</span> avg.
+                                                    You've earned <span className="font-black text-[#0171E3]/70">{fmtValue(portfolioProducts.reduce((s, p) => s + p.revenue, 0))}</span> across <span className="font-bold text-[#1A1A1A]/55">{portfolioProducts.filter(p => p.status === 'active').length} active</span> products — <span className="font-bold text-[#1A1A1A]/55">{portfolioProducts.reduce((s, p) => s + p.sold, 0)} units</span> sold, rated <span className="font-bold text-[#e67e22]/60">{(portfolioProducts.filter(p => p.rating > 0).length ? (portfolioProducts.filter(p => p.rating > 0).reduce((s, p) => s + p.rating, 0) / portfolioProducts.filter(p => p.rating > 0).length).toFixed(1) : '0.0')}</span> avg.
                                                 </p>
                                             </div>
 
                                             {/* Products sorted by revenue — hero first, rest tight */}
-                                            {[...EXTENDED_PORTFOLIO].sort((a, b) => b.revenue - a.revenue).slice(0, visibleCounts.portfolio).map((product, i) => {
+                                            {[...portfolioProducts].sort((a, b) => b.revenue - a.revenue).slice(0, visibleCounts.portfolio).map((product, i) => {
                                                 const isPortfolioExpanded = selectedProduct === `portfolio-${product.id}`;
                                                 return (
                                                 <motion.div
@@ -1058,10 +842,12 @@ export function SellerTrends() {
                                                                             <p className="text-[9px] font-bold text-[#1A1A1A]/20 uppercase tracking-wider mb-1.5">Top buying countries</p>
                                                                             {product.topBuyers.map((buyer, bi) => {
                                                                                 const buyerRevenue = Math.round(product.revenue * buyer.pct / 100);
+                                                                                const buyerIso = (buyer.iso || '').toLowerCase();
+                                                                                const buyerName = (countryNameByIso[buyerIso] || buyerIso.toUpperCase() || buyer.iso);
                                                                                 return (
                                                                                     <div key={buyer.iso} className="flex items-center gap-2 py-[4px]">
-                                                                                        <img src={`https://flagcdn.com/w40/${buyer.iso}.png`} alt={ISO_TO_COUNTRY[buyer.iso] || buyer.iso} className="w-[18px] h-[12px] rounded-[2px] object-cover flex-shrink-0" style={{ boxShadow: '0 0 0 0.5px rgba(0,0,0,0.08)' }} />
-                                                                                        <span className="text-[10px] font-medium text-[#1A1A1A]/40 w-[70px] sm:w-[90px] truncate">{ISO_TO_COUNTRY[buyer.iso] || buyer.iso}</span>
+                                                                                        <img src={`https://flagcdn.com/w40/${buyerIso || buyer.iso}.png`} alt={buyerName} className="w-[18px] h-[12px] rounded-[2px] object-cover flex-shrink-0" style={{ boxShadow: '0 0 0 0.5px rgba(0,0,0,0.08)' }} />
+                                                                                        <span className="text-[10px] font-medium text-[#1A1A1A]/40 w-[70px] sm:w-[90px] truncate">{buyerName}</span>
                                                                                         <div className="flex-1 h-[3px] rounded-full bg-black/[0.04] overflow-hidden">
                                                                                             <motion.div
                                                                                                 className="h-full rounded-full"
@@ -1086,7 +872,7 @@ export function SellerTrends() {
                                             })}
 
                                             {/* Load more */}
-                                            {visibleCounts.portfolio < EXTENDED_PORTFOLIO.length && (
+                                            {visibleCounts.portfolio < portfolioProducts.length && (
                                                 <div className="flex justify-center mt-3">
                                                     <motion.button
                                                         whileHover={{ scale: 1.04 }}
@@ -1107,7 +893,7 @@ export function SellerTrends() {
                                                             Load more
                                                         </span>
                                                         <span className="text-[10px] font-medium text-[#1A1A1A]/25">
-                                                            {visibleCounts.portfolio} / {EXTENDED_PORTFOLIO.length}
+                                                            {visibleCounts.portfolio} / {portfolioProducts.length}
                                                         </span>
                                                         <ChevronDown size={11} color="rgba(26,26,26,0.35)" strokeWidth={2.5} />
                                                     </motion.button>
@@ -1127,11 +913,11 @@ export function SellerTrends() {
                                             {/* Headline as natural text */}
                                             <div className="py-3">
                                                 <p className="text-[13px] font-medium text-[#1A1A1A]/40 leading-relaxed">
-                                                    <span className="font-black text-[#0171E3]/70">{fmtValue(EXTENDED_COUNTRIES.reduce((s, c) => s + c.totalImports, 0))}</span> in imports across <span className="font-bold text-[#1A1A1A]/55">{EXTENDED_COUNTRIES.length} countries</span> — <span className="font-bold text-[#1A1A1A]/55">{EXTENDED_COUNTRIES.reduce((s, c) => s + c.orders7d, 0).toLocaleString()}</span> orders this week.
+                                                    <span className="font-black text-[#0171E3]/70">{fmtValue(buyerCountries.reduce((s: number, c: BuyerCountry) => s + c.totalImports, 0))}</span> in imports across <span className="font-bold text-[#1A1A1A]/55">{buyerCountries.length} countries</span> — <span className="font-bold text-[#1A1A1A]/55">{buyerCountries.reduce((s: number, c: BuyerCountry) => s + c.orders7d, 0).toLocaleString()}</span> orders this week.
                                                 </p>
                                             </div>
 
-                                            {EXTENDED_COUNTRIES.slice(0, visibleCounts.buyers).map((country, ci) => {
+                                            {buyerCountries.slice(0, visibleCounts.buyers).map((country, ci) => {
                                                 const isCountryExpanded = selectedProduct === `buyer-${country.id}`;
                                                 return (
                                                 <motion.div
@@ -1236,7 +1022,7 @@ export function SellerTrends() {
                                             })}
 
                                             {/* Load more */}
-                                            {visibleCounts.buyers < EXTENDED_COUNTRIES.length && (
+                                            {visibleCounts.buyers < buyerCountries.length && (
                                                 <div className="flex justify-center mt-3">
                                                     <motion.button
                                                         whileHover={{ scale: 1.04 }}
@@ -1257,7 +1043,7 @@ export function SellerTrends() {
                                                             Load more
                                                         </span>
                                                         <span className="text-[10px] font-medium text-[#1A1A1A]/25">
-                                                            {visibleCounts.buyers} / {EXTENDED_COUNTRIES.length}
+                                                            {visibleCounts.buyers} / {buyerCountries.length}
                                                         </span>
                                                         <ChevronDown size={11} color="rgba(26,26,26,0.35)" strokeWidth={2.5} />
                                                     </motion.button>
@@ -1298,7 +1084,7 @@ export function SellerTrends() {
                                             {filteredProducts.slice(0, visibleCounts.trending).map((product, i) => {
                                                 const tradeValue = product.orders7d * product.avgPrice;
                                                 const isExpanded = selectedProduct === product.id;
-                                                const breakdown = isExpanded ? getMarketBreakdown(product) : [];
+                                                const breakdown = isExpanded ? getMarketBreakdown(product, (iso) => countryNameByIso[(iso || '').toLowerCase()] || (iso || '').toUpperCase() || iso) : [];
                                                 return (
                                                 <motion.div
                                                     key={product.id}

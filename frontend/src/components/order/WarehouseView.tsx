@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { authedFetch } from '@/lib/api';
 import { toast } from 'sonner';
@@ -13,8 +13,7 @@ import {
     Lock, ShieldCheck, Layers
 } from 'lucide-react';
 import {
-    Warehouse, InventoryItem, ReleaseRequest, ReleaseRecord,
-    mockWarehouses, mockInventory, mockReleaseRequests, mockReleaseRecords
+    Warehouse, InventoryItem, ReleaseRequest, ReleaseRecord
 } from '@/components/order/data/mockWarehouse';
 import svgPaths from './imports/svg-v5nteu4twa';
 import { useRole } from '@/components/order/RoleContext';
@@ -94,6 +93,8 @@ function mapReleaseRequest(raw: any): ReleaseRequest | null {
     if (!id) return null;
     return {
         id,
+        orderId: asString(raw?.orderId ?? raw?.order_id) || undefined,
+        warehouseId: asString(raw?.warehouseId ?? raw?.warehouse_id) || undefined,
         inventoryItemId: asString(raw?.inventoryItemId ?? raw?.inventory_item_id),
         requesterName: asString(raw?.requesterName ?? raw?.requester_name),
         idCardNumber: asString(raw?.idCardNumber ?? raw?.id_card_number),
@@ -112,6 +113,8 @@ function mapReleaseRecord(raw: any): ReleaseRecord | null {
     const status: ReleaseRecord['status'] = statusRaw === 'pending' ? 'pending' : 'completed';
     return {
         id,
+        orderId: asString(raw?.orderId ?? raw?.order_id) || undefined,
+        warehouseId: asString(raw?.warehouseId ?? raw?.warehouse_id) || undefined,
         inventoryItemId: asString(raw?.inventoryItemId ?? raw?.inventory_item_id),
         recipientName: asString(raw?.recipientName ?? raw?.recipient_name),
         idCardNumber: asString(raw?.idCardNumber ?? raw?.id_card_number),
@@ -156,13 +159,13 @@ function formatTime(t: string) {
     return m === 0 ? `${h12} ${ampm}` : `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
 }
 
-function getHoursLabel(hours: Warehouse['hours']): string {
+function getHoursLabel(hours: Warehouse['hours'] | undefined): string {
     if (!hours) return '';
     if (hours === '24/7') return '24/7';
     return `${formatTime(hours.open)}–${formatTime(hours.close)}`;
 }
 
-function isCurrentlyOpen(hours: Warehouse['hours']): boolean {
+function isCurrentlyOpen(hours: Warehouse['hours'] | undefined): boolean {
     if (!hours) return true;
     if (hours === '24/7') return true;
     const nowHour = 14;
@@ -1661,32 +1664,38 @@ export function WarehouseView() {
     useEffect(() => { setMounted(true); }, []);
 
     const { isSeller } = useRole();
-    const [view, setView] = useState<ViewState>('inventory');
-    const [warehouses, setWarehouses] = useState<Warehouse[]>(mockWarehouses);
-    const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse>(mockWarehouses[1]);
+    const [view, setView] = useState<ViewState>('select');
+    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+    const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
-    const [inventory, setInventory] = useState<InventoryItem[]>(mockInventory);
-    const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>(mockReleaseRequests);
-    const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>(mockReleaseRecords);
+    const [inventory, setInventory] = useState<InventoryItem[]>([]);
+    const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]);
+    const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [inventoryPage, setInventoryPage] = useState(1);
     const [inventorySearch, setInventorySearch] = useState('');
+    const [autoOrderSettings, setAutoOrderSettings] = useState<Record<string, { minThreshold: number; maxCapacity: number; enabled: boolean }>>({});
 
     const fetchWarehouseData = useCallback(async () => {
         try {
             setLoading(true);
-            const [wRes, rRes, recRes] = await Promise.all([
+            const [wRes, rRes, recRes, autoRes] = await Promise.all([
                 authedFetch('/api/v1/warehouse/dashboard/list_warehouses/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_requests/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_records/'),
+                authedFetch('/api/v1/warehouse/dashboard/auto_order_settings/'),
             ]);
 
             if (wRes.ok) {
                 const raw = await wRes.json();
                 const mapped = Array.isArray(raw) ? raw.map(mapWarehouse).filter((x): x is Warehouse => !!x) : [];
+                setWarehouses(mapped);
                 if (mapped.length > 0) {
-                    setWarehouses(mapped);
-                    setSelectedWarehouse((prev) => mapped.find((w) => w.id === prev.id) || mapped[1] || mapped[0]);
+                    setSelectedWarehouse((prev) => mapped.find((w) => w.id === (prev?.id || '')) || mapped[0]);
+                    setView('inventory');
+                } else {
+                    setSelectedWarehouse(null);
+                    setView('select');
                 }
             }
 
@@ -1700,6 +1709,22 @@ export function WarehouseView() {
                 const raw = await recRes.json();
                 const mapped = Array.isArray(raw) ? raw.map(mapReleaseRecord).filter((x): x is ReleaseRecord => !!x) : [];
                 setReleaseRecords(mapped);
+            }
+
+            if (autoRes.ok) {
+                const raw = await autoRes.json().catch(() => ({}));
+                if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+                    const mapped: Record<string, { minThreshold: number; maxCapacity: number; enabled: boolean }> = {};
+                    for (const [k, v] of Object.entries(raw as any)) {
+                        const obj = v as any;
+                        mapped[k] = {
+                            minThreshold: asNumber(obj?.minThreshold ?? obj?.min_threshold, 50),
+                            maxCapacity: asNumber(obj?.maxCapacity ?? obj?.max_capacity, 500),
+                            enabled: obj?.enabled === undefined ? true : !!obj.enabled,
+                        };
+                    }
+                    setAutoOrderSettings(mapped);
+                }
             }
         } catch (err) {
             console.error('Warehouse fetch error:', err);
@@ -1743,19 +1768,22 @@ export function WarehouseView() {
 
     const [releasingItem, setReleasingItem] = useState<InventoryItem | null>(null);
     const [prefillData, setPrefillData] = useState<{ name: string; idCard: string; vehicle: string; boxes: number } | undefined>();
+    const [approvingRequest, setApprovingRequest] = useState<ReleaseRequest | null>(null);
     const [showAllFacilities, setShowAllFacilities] = useState(false);
     const [detailRecord, setDetailRecord] = useState<ReleaseRecord | null>(null);
+    const autoOrderSaveTimers = useRef<Record<string, any>>({});
     
-    // Auto-order settings for sellers (indexed by item ID)
-    const [autoOrderSettings, setAutoOrderSettings] = useState<Record<string, { minThreshold: number; maxCapacity: number; enabled: boolean }>>({});
-
-    // Warehouses that have user's stock
+    // Warehouses that have user's stock (fallback to all warehouses if inventory is empty)
     const warehouseIdsWithStock = new Set(inventory.map(i => i.warehouseId));
-    const warehousesWithStock = warehouses.filter(w => warehouseIdsWithStock.has(w.id));
+    const warehousesWithStock = warehouseIdsWithStock.size > 0 ? warehouses.filter(w => warehouseIdsWithStock.has(w.id)) : warehouses;
 
-    const filteredWarehouses = warehousesWithStock.filter(w =>
-        w.name.toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    const qWare = searchQuery.trim().toLowerCase();
+    const filteredWarehouses = warehousesWithStock.filter(w => {
+        if (!qWare) return true;
+        const name = (w.name || '').toLowerCase();
+        const addr = (w.address || '').toLowerCase();
+        return name.includes(qWare) || addr.includes(qWare);
+    });
 
     // Per-warehouse stock stats (for selection view)
     const warehouseStockStats = (wId: string) => {
@@ -1776,7 +1804,23 @@ export function WarehouseView() {
 
     const PAGE_SIZE = 10;
 
-    const warehouseInventoryAll = inventory.filter(i => i.warehouseId === selectedWarehouse.id);
+    const hasActiveWarehouse = Boolean(selectedWarehouse?.id);
+    const effectiveView: ViewState = hasActiveWarehouse ? view : 'select';
+    const activeWarehouse: Warehouse = selectedWarehouse ?? {
+        id: '',
+        name: '',
+        address: '',
+        distance: '',
+        pricePerWeek: 0,
+        rating: '',
+        features: [],
+        storedSince: undefined,
+        hours: undefined,
+        managerName: '',
+        managerPhone: '',
+    };
+
+    const warehouseInventoryAll = hasActiveWarehouse ? inventory.filter(i => i.warehouseId === activeWarehouse.id) : [];
     const invSearch = inventorySearch.trim().toLowerCase();
     const warehouseInventory = invSearch
         ? warehouseInventoryAll.filter((it) => {
@@ -1795,7 +1839,7 @@ export function WarehouseView() {
     const inventoryRangeEnd = inventoryTotal ? Math.min(inventoryTotal, inventoryStart + warehouseInventoryPage.length) : 0;
     const totalBoxes = warehouseInventory.reduce((sum, i) => sum + (i.totalBoxes - i.releasedBoxes), 0);
     const totalPallets = warehouseInventory.reduce((sum, i) => sum + i.palletsCount, 0);
-    const weeklyCharge = selectedWarehouse.pricePerWeek;
+    const weeklyCharge = activeWarehouse.pricePerWeek;
     const stockValue = warehouseInventory.reduce((sum, i) => sum + (i.totalBoxes - i.releasedBoxes) * i.unitPrice, 0);
 
     // ─── Product color map: inventoryItemId → color from gradient ───
@@ -1808,10 +1852,8 @@ export function WarehouseView() {
         return map;
     }, [warehouseInventory]);
 
-    if (!mounted) return null;
-
     // ─── Rent ───
-    const storedSince = selectedWarehouse.storedSince;
+    const storedSince = activeWarehouse.storedSince;
     const today = new Date('2026-02-10');
     const startDate = storedSince ? new Date(storedSince) : null;
     const daysDiff = startDate ? Math.max(0, Math.floor((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))) : 0;
@@ -1820,8 +1862,8 @@ export function WarehouseView() {
     const startLabel = startDate ? startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
 
     // ─── Hours ───
-    const activeHoursLabel = getHoursLabel(selectedWarehouse.hours);
-    const activeIsOpen = isCurrentlyOpen(selectedWarehouse.hours);
+    const activeHoursLabel = getHoursLabel(activeWarehouse.hours);
+    const activeIsOpen = isCurrentlyOpen(activeWarehouse.hours);
 
     const handleConfirmWarehouse = (w: Warehouse) => {
         setSelectedWarehouse(w);
@@ -1830,33 +1872,81 @@ export function WarehouseView() {
         toast.success(`Switched to ${w.name}`);
     };
 
-    const handleRelease = (data: { name: string; idCard: string; vehicle: string; boxes: number; amount: number }) => {
+    const orderIdFromRequest = useCallback((req: ReleaseRequest) => {
+        const direct = (req.orderId || '').toString().trim();
+        if (direct) return direct;
+        const m = /^req-(\d+)$/.exec(req.id || '');
+        return m ? m[1] : '';
+    }, []);
+
+    const persistAutoOrder = useCallback((inventoryItemId: string, next: { minThreshold: number; maxCapacity: number; enabled: boolean }) => {
+        if (!inventoryItemId) return;
+        if (autoOrderSaveTimers.current[inventoryItemId]) {
+            clearTimeout(autoOrderSaveTimers.current[inventoryItemId]);
+        }
+        autoOrderSaveTimers.current[inventoryItemId] = setTimeout(async () => {
+            try {
+                await authedFetch('/api/v1/warehouse/dashboard/update_auto_order_settings/', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        inventory_item_id: inventoryItemId,
+                        enabled: next.enabled,
+                        min_threshold: next.minThreshold,
+                        max_capacity: next.maxCapacity,
+                    }),
+                });
+            } catch {
+            }
+        }, 450);
+    }, [authedFetch]);
+
+    const handleRelease = useCallback(async (data: { name: string; idCard: string; vehicle: string; boxes: number; amount: number }) => {
         if (!releasingItem) return;
-        const newRecord: ReleaseRecord = {
-            id: `rel${Date.now()}`,
-            inventoryItemId: releasingItem.id,
-            recipientName: data.name,
-            idCardNumber: data.idCard,
-            vehicleNumber: data.vehicle,
-            boxesReleased: data.boxes,
-            paymentAmount: data.amount,
-            date: '2026-02-10',
-            status: 'completed',
-        };
-        setReleaseRecords(prev => [newRecord, ...prev]);
-        setInventory(prev => prev.map(i =>
-            i.id === releasingItem.id ? { ...i, releasedBoxes: i.releasedBoxes + data.boxes } : i
-        ));
-        setReleasingItem(null);
-        setPrefillData(undefined);
-        toast.success(`${data.boxes} boxes released to ${data.name}`, {
-            description: `$${data.amount.toFixed(0)} payment authorized`,
-        });
-    };
+        if (approvingRequest) {
+            const oid = orderIdFromRequest(approvingRequest);
+            if (!oid) {
+                toast.error('Missing order id for this request.');
+                return;
+            }
+            try {
+                const wId = selectedWarehouse?.id || '';
+                const res = await authedFetch(`/api/v1/warehouse/dashboard/release_requests/${oid}/approve/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        warehouse_id: wId,
+                        recipient_name: data.name,
+                        id_card_number: data.idCard,
+                        vehicle_number: data.vehicle,
+                        boxes_released: data.boxes,
+                    }),
+                });
+                const payload = await res.json().catch(() => null);
+                if (!res.ok) {
+                    toast.error('Approve failed', { description: asString(payload?.detail, 'Could not approve release.') });
+                    return;
+                }
+                toast.success(`${data.boxes} boxes released to ${data.name}`, {
+                    description: `$${data.amount.toFixed(0)} payment authorized`,
+                });
+                setApprovingRequest(null);
+                setReleasingItem(null);
+                setPrefillData(undefined);
+                await Promise.all([fetchWarehouseData(), wId ? fetchInventory(wId) : Promise.resolve()]);
+            } catch {
+                toast.error('Approve failed', { description: 'Could not approve release.' });
+            }
+            return;
+        }
+
+        toast.error('Manual release is not enabled for this mode.');
+    }, [approvingRequest, authedFetch, fetchInventory, fetchWarehouseData, orderIdFromRequest, releasingItem, selectedWarehouse?.id]);
 
     const handleApproveRequest = (req: ReleaseRequest) => {
         const product = inventory.find(i => i.id === req.inventoryItemId);
         if (!product) return;
+        setApprovingRequest(req);
         setReleasingItem(product);
         setPrefillData({
             name: req.requesterName,
@@ -1864,15 +1954,33 @@ export function WarehouseView() {
             vehicle: req.vehicleNumber,
             boxes: req.boxesRequested,
         });
-        setReleaseRequests(prev => prev.filter(r => r.id !== req.id));
     };
 
-    const handleDeclineRequest = (req: ReleaseRequest) => {
-        setReleaseRequests(prev => prev.filter(r => r.id !== req.id));
-        toast('Request declined', {
-            description: `${req.requesterName}'s request for ${req.boxesRequested} boxes`,
-        });
-    };
+    const handleDeclineRequest = useCallback(async (req: ReleaseRequest) => {
+        const oid = orderIdFromRequest(req);
+        if (!oid) {
+            toast.error('Missing order id for this request.');
+            return;
+        }
+        try {
+            const res = await authedFetch(`/api/v1/warehouse/dashboard/release_requests/${oid}/decline/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: '' }),
+            });
+            if (!res.ok) {
+                const payload = await res.json().catch(() => null);
+                toast.error('Decline failed', { description: asString(payload?.detail, 'Could not decline release.') });
+                return;
+            }
+            setReleaseRequests(prev => prev.filter(r => r.id !== req.id));
+            toast('Request declined', { description: `${req.requesterName}'s request for ${req.boxesRequested} boxes` });
+        } catch {
+            toast.error('Decline failed', { description: 'Could not decline release.' });
+        }
+    }, [authedFetch, orderIdFromRequest]);
+
+    if (!mounted) return null;
 
     return (
         <motion.div
@@ -1885,8 +1993,8 @@ export function WarehouseView() {
                 {releasingItem && (
                     <ReleaseSheet
                         item={releasingItem}
-                        onClose={() => { setReleasingItem(null); setPrefillData(undefined); }}
-                        onSubmit={handleRelease}
+                        onClose={() => { setApprovingRequest(null); setReleasingItem(null); setPrefillData(undefined); }}
+                        onSubmit={(d) => { void handleRelease(d); }}
                         prefill={prefillData}
                         productColor={productColorMap[releasingItem.id]}
                     />
@@ -1904,7 +2012,7 @@ export function WarehouseView() {
                 )}
             </AnimatePresence>
 
-            {view === 'select' ? (
+            {effectiveView === 'select' ? (
                 /* ═══ WAREHOUSE SELECTION ═══ */
                 <motion.div
                     initial={{ opacity: 0, y: 16 }}
@@ -1963,7 +2071,7 @@ export function WarehouseView() {
                                 <motion.div key={w.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04, duration: 0.35 }}>
                                     <WarehouseRow
                                         warehouse={w}
-                                        isActive={w.id === selectedWarehouse.id}
+                                        isActive={w.id === activeWarehouse.id}
                                         onSelect={() => handleConfirmWarehouse(w)}
                                         stockBoxes={stats.boxes}
                                         stockValue={stats.value}
@@ -1988,7 +2096,7 @@ export function WarehouseView() {
                     >
                         <div className="flex items-center gap-2 mb-1.5">
                             <h1 className="text-[22px] lg:text-[26px] font-black text-[#1A1A1A] tracking-tight leading-[1.1]">
-                                {selectedWarehouse.name}
+                                {activeWarehouse.name}
                             </h1>
                             <button
                                 onClick={() => setView('select')}
@@ -2000,11 +2108,11 @@ export function WarehouseView() {
                         </div>
                         <div className="flex items-center text-[11px] font-medium text-[#1A1A1A]/30 gap-1.5 justify-center">
                             <MapPin size={10} strokeWidth={2} className="opacity-40 flex-shrink-0" />
-                            <span>{selectedWarehouse.address}</span>
+                            <span>{activeWarehouse.address}</span>
                             <button
                                 onClick={() => {
-                                    const hoursText = activeHoursLabel ? `Hours: ${activeHoursLabel}${selectedWarehouse.hours !== '24/7' && typeof selectedWarehouse.hours === 'object' ? ` (${selectedWarehouse.hours.days})` : ''}` : '';
-                                    const text = `${selectedWarehouse.name}\n${selectedWarehouse.address}\n${hoursText}\nManager: ${selectedWarehouse.managerName} · ${selectedWarehouse.managerPhone}`;
+                                    const hoursText = activeHoursLabel ? `Hours: ${activeHoursLabel}${activeWarehouse.hours !== '24/7' && typeof activeWarehouse.hours === 'object' ? ` (${activeWarehouse.hours.days})` : ''}` : '';
+                                    const text = `${activeWarehouse.name}\n${activeWarehouse.address}\n${hoursText}\nManager: ${activeWarehouse.managerName} · ${activeWarehouse.managerPhone}`;
                                     try {
                                         const ta = document.createElement('textarea');
                                         ta.value = text;
@@ -2232,10 +2340,11 @@ export function WarehouseView() {
                                                                     <input
                                                                         type="number"
                                                                         value={minThreshold}
-                                                                        onChange={(e) => setAutoOrderSettings(prev => ({
-                                                                            ...prev,
-                                                                            [item.id]: { ...settings, minThreshold: Number(e.target.value) }
-                                                                        }))}
+                                                                        onChange={(e) => {
+                                                                            const next = { ...settings, minThreshold: Number(e.target.value) };
+                                                                            setAutoOrderSettings(prev => ({ ...prev, [item.id]: next }));
+                                                                            persistAutoOrder(item.id, next);
+                                                                        }}
                                                                         className="w-[52px] px-2 py-1.5 rounded-[18px] bg-white/70 backdrop-blur-sm border border-[#1A1A1A]/[0.06] text-[11px] font-bold text-[#1A1A1A]/70 text-center tabular-nums outline-none shadow-[inset_0_0.5px_1px_rgba(0,0,0,0.02),0_1px_2px_-0.5px_rgba(0,0,0,0.03)] focus:border-[#0171E3]/25 focus:bg-white/90 focus:shadow-[inset_0_0.5px_1px_rgba(0,0,0,0.02),0_0_0_2.5px_rgba(1,113,227,0.08),0_2px_6px_-1px_rgba(1,113,227,0.12)] transition-all duration-300"
                                                                     />
                                                                     <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[7px] font-bold text-[#1A1A1A]/18 tracking-[0.5px] uppercase whitespace-nowrap">Min</span>
@@ -2246,10 +2355,11 @@ export function WarehouseView() {
                                                                     <input
                                                                         type="number"
                                                                         value={maxCapacity}
-                                                                        onChange={(e) => setAutoOrderSettings(prev => ({
-                                                                            ...prev,
-                                                                            [item.id]: { ...settings, maxCapacity: Number(e.target.value) }
-                                                                        }))}
+                                                                        onChange={(e) => {
+                                                                            const next = { ...settings, maxCapacity: Number(e.target.value) };
+                                                                            setAutoOrderSettings(prev => ({ ...prev, [item.id]: next }));
+                                                                            persistAutoOrder(item.id, next);
+                                                                        }}
                                                                         className="w-[52px] px-2 py-1.5 rounded-[18px] bg-white/70 backdrop-blur-sm border border-[#1A1A1A]/[0.06] text-[11px] font-bold text-[#1A1A1A]/70 text-center tabular-nums outline-none shadow-[inset_0_0.5px_1px_rgba(0,0,0,0.02),0_1px_2px_-0.5px_rgba(0,0,0,0.03)] focus:border-[#0171E3]/25 focus:bg-white/90 focus:shadow-[inset_0_0.5px_1px_rgba(0,0,0,0.02),0_0_0_2.5px_rgba(1,113,227,0.08),0_2px_6px_-1px_rgba(1,113,227,0.12)] transition-all duration-300"
                                                                     />
                                                                     <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[7px] font-bold text-[#1A1A1A]/18 tracking-[0.5px] uppercase whitespace-nowrap">Max</span>
@@ -2258,10 +2368,11 @@ export function WarehouseView() {
 
                                                             {/* Column 4: Auto-Order Toggle */}
                                                             <button
-                                                                onClick={() => setAutoOrderSettings(prev => ({
-                                                                    ...prev,
-                                                                    [item.id]: { ...settings, enabled: !autoOrderEnabled }
-                                                                }))}
+                                                                onClick={() => {
+                                                                    const next = { ...settings, enabled: !autoOrderEnabled };
+                                                                    setAutoOrderSettings(prev => ({ ...prev, [item.id]: next }));
+                                                                    persistAutoOrder(item.id, next);
+                                                                }}
                                                                 className={`relative w-[46px] h-[26px] rounded-full transition-all duration-400 shadow-[inset_0_1px_2px_rgba(0,0,0,0.08),0_1px_2px_-0.5px_rgba(0,0,0,0.04)] ${autoOrderEnabled ? 'bg-[#0171E3] shadow-[inset_0_1px_2px_rgba(0,0,0,0.15),0_0_0_0px_rgba(1,113,227,0.2),0_2px_8px_-2px_rgba(1,113,227,0.4)]' : 'bg-[#1A1A1A]/[0.06]'}`}
                                                             >
                                                                 <motion.div 
@@ -2591,13 +2702,13 @@ export function WarehouseView() {
                                             <Star size={11} strokeWidth={2} className="text-[#1A1A1A]/25" />
                                             <span className="text-[11px] font-medium text-[#1A1A1A]/35">Rating</span>
                                         </div>
-                                        <RatingBadge rating={selectedWarehouse.rating} active />
+                                        <RatingBadge rating={activeWarehouse.rating} active />
                                     </div>
 
                                     {/* Facilities */}
                                     {(() => {
                                         const MAX_VISIBLE = 2;
-                                        const features = selectedWarehouse.features;
+                                        const features = activeWarehouse.features;
                                         const visible = features.slice(0, MAX_VISIBLE);
                                         const overflow = features.length - MAX_VISIBLE;
                                         return (
@@ -2628,7 +2739,7 @@ export function WarehouseView() {
 
                                     {/* Expanded facilities list */}
                                     <AnimatePresence>
-                                        {showAllFacilities && selectedWarehouse.features.length > 2 && (
+                                        {showAllFacilities && activeWarehouse.features.length > 2 && (
                                             <motion.div
                                                 initial={{ height: 0, opacity: 0 }}
                                                 animate={{ height: 'auto', opacity: 1 }}
@@ -2637,7 +2748,7 @@ export function WarehouseView() {
                                                 className="overflow-hidden"
                                             >
                                                 <div className="flex flex-wrap gap-1.5 pt-1 pl-[19px]">
-                                                    {selectedWarehouse.features.slice(2).map((f) => (
+                                                    {activeWarehouse.features.slice(2).map((f) => (
                                                         <div key={f} className="flex items-center gap-1 rounded-full bg-[#1A1A1A]/[0.03] px-2 py-0.5">
                                                             <div className="text-[#1A1A1A]/25">{featureIcon[f]}</div>
                                                             <span className="text-[9px] font-bold text-[#1A1A1A]/30">{featureLabel[f]}</span>
@@ -2659,8 +2770,8 @@ export function WarehouseView() {
                                     </div>
                                     <button
                                         onClick={() => {
-                                            const hoursText = activeHoursLabel ? `Hours: ${activeHoursLabel}${selectedWarehouse.hours !== '24/7' && typeof selectedWarehouse.hours === 'object' ? ` (${selectedWarehouse.hours.days})` : ''}` : '';
-                                            const text = `${selectedWarehouse.name}\n${selectedWarehouse.address}\n${hoursText}\nManager: ${selectedWarehouse.managerName} · ${selectedWarehouse.managerPhone}`;
+                                            const hoursText = activeHoursLabel ? `Hours: ${activeHoursLabel}${activeWarehouse.hours !== '24/7' && typeof activeWarehouse.hours === 'object' ? ` (${activeWarehouse.hours.days})` : ''}` : '';
+                                            const text = `${activeWarehouse.name}\n${activeWarehouse.address}\n${hoursText}\nManager: ${activeWarehouse.managerName} · ${activeWarehouse.managerPhone}`;
                                             try {
                                                 const ta = document.createElement('textarea');
                                                 ta.value = text;
@@ -2689,7 +2800,7 @@ export function WarehouseView() {
                                             <MapPin size={11} strokeWidth={2} className="text-[#1A1A1A]/25" />
                                             <span className="text-[11px] font-medium text-[#1A1A1A]/35">Location</span>
                                         </div>
-                                        <span className="text-[11px] font-bold text-[#1A1A1A]/40 text-right max-w-[150px] truncate" title={selectedWarehouse.address}>{selectedWarehouse.address}</span>
+                                        <span className="text-[11px] font-bold text-[#1A1A1A]/40 text-right max-w-[150px] truncate" title={activeWarehouse.address}>{activeWarehouse.address}</span>
                                     </div>
 
                                     {/* Hours — with Open/Closed dot */}
@@ -2706,8 +2817,8 @@ export function WarehouseView() {
                                             </div>
                                             <span className="text-[11px] font-bold text-[#1A1A1A]/45 tabular-nums">
                                                 {activeHoursLabel}
-                                                {selectedWarehouse.hours !== '24/7' && typeof selectedWarehouse.hours === 'object' && (
-                                                    <span className="text-[#1A1A1A]/20 font-medium ml-1">{selectedWarehouse.hours.days}</span>
+                                                {activeWarehouse.hours !== '24/7' && typeof activeWarehouse.hours === 'object' && (
+                                                    <span className="text-[#1A1A1A]/20 font-medium ml-1">{activeWarehouse.hours.days}</span>
                                                 )}
                                             </span>
                                         </div>
@@ -2717,11 +2828,11 @@ export function WarehouseView() {
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <User size={11} strokeWidth={2} className="text-[#1A1A1A]/25" />
-                                            <span className="text-[11px] font-medium text-[#1A1A1A]/35">{selectedWarehouse.managerName}</span>
+                                            <span className="text-[11px] font-medium text-[#1A1A1A]/35">{activeWarehouse.managerName}</span>
                                         </div>
                                         <div className="flex items-center gap-1">
                                             <Phone size={9} strokeWidth={2} className="text-[#1A1A1A]/22" />
-                                            <span className="text-[11px] font-bold text-[#1A1A1A]/40 tabular-nums">{selectedWarehouse.managerPhone}</span>
+                                            <span className="text-[11px] font-bold text-[#1A1A1A]/40 tabular-nums">{activeWarehouse.managerPhone}</span>
                                         </div>
                                     </div>
                                 </div>

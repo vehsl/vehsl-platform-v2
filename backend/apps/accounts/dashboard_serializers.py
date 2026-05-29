@@ -35,10 +35,35 @@ class SellerActivitySerializer(serializers.ModelSerializer):
     moment = serializers.SerializerMethodField()
     tint = serializers.SerializerMethodField()
     icon = serializers.SerializerMethodField()
+    subtitle = serializers.SerializerMethodField()
+    detail = serializers.SerializerMethodField()
+    action_kind = serializers.SerializerMethodField()
+    action_label = serializers.SerializerMethodField()
+    order_id = serializers.SerializerMethodField()
+    order_ref = serializers.SerializerMethodField()
+    product_name = serializers.SerializerMethodField()
+    client_comment = serializers.SerializerMethodField()
+    tracking_number = serializers.SerializerMethodField()
 
     class Meta:
         model = Notification
-        fields = ['id', 'kind', 'sentence', 'moment', 'tint', 'icon']
+        fields = [
+            "id",
+            "kind",
+            "sentence",
+            "moment",
+            "tint",
+            "icon",
+            "subtitle",
+            "detail",
+            "action_kind",
+            "action_label",
+            "order_id",
+            "order_ref",
+            "product_name",
+            "client_comment",
+            "tracking_number",
+        ]
 
     def get_kind(self, obj):
         return obj.payload.get('kind', 'deal')
@@ -62,6 +87,43 @@ class SellerActivitySerializer(serializers.ModelSerializer):
 
     def get_icon(self, obj):
         return obj.payload.get('icon', '📦')
+
+    def get_subtitle(self, obj):
+        return obj.payload.get("subtitle") or ""
+
+    def get_detail(self, obj):
+        return obj.payload.get("detail") or ""
+
+    def get_action_kind(self, obj):
+        return obj.payload.get("action_kind") or obj.payload.get("actionKind") or "none"
+
+    def get_action_label(self, obj):
+        return obj.payload.get("action_label") or obj.payload.get("actionLabel") or ""
+
+    def get_order_id(self, obj):
+        oid = obj.payload.get("order_id") or obj.payload.get("orderId") or ""
+        try:
+            return int(oid)
+        except Exception:
+            return None
+
+    def get_order_ref(self, obj):
+        ref = (obj.payload.get("order_ref") or obj.payload.get("orderRef") or "").strip()
+        if ref:
+            return ref
+        oid = self.get_order_id(obj)
+        if oid:
+            return f"#VH-{oid}"
+        return ""
+
+    def get_product_name(self, obj):
+        return obj.payload.get("product_name") or obj.payload.get("productName") or ""
+
+    def get_client_comment(self, obj):
+        return obj.payload.get("client_comment") or obj.payload.get("clientComment") or ""
+
+    def get_tracking_number(self, obj):
+        return obj.payload.get("tracking_number") or obj.payload.get("trackingNumber") or ""
 
 class SellerProductSerializer(serializers.ModelSerializer):
     image = serializers.SerializerMethodField()

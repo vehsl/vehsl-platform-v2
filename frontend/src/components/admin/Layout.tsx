@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import { useBounce } from "./BounceContext";
+import { safeJsonParse } from "@/lib/utils";
 import {
   LayoutDashboard, Settings, Users, Truck, Shield, ClipboardCheck,
   Package, Bell, Search, ChevronRight, LogOut, Menu, X,
@@ -129,7 +130,7 @@ export function Layout() {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem("vehsl.user");
-      setUser(raw ? JSON.parse(raw) : null);
+      setUser(safeJsonParse(raw, null));
     } catch {
       setUser(null);
     }
