@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.catalog.models import Product, ProductMedia, ProductVariation
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
 
 from .models import (
     Cart,
@@ -135,10 +135,58 @@ class WishlistItemSerializer(serializers.ModelSerializer):
 class OrderItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
     variation_attributes = serializers.JSONField(source="variation.attributes", read_only=True)
+    image_url = serializers.SerializerMethodField()
+    specs = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "variation", "product_name", "variation_attributes", "quantity", "unit_price", "line_total"]
+        fields = [
+            "id",
+            "product",
+            "variation",
+            "product_name",
+            "variation_attributes",
+            "specs",
+            "image_url",
+            "quantity",
+            "unit_price",
+            "line_total",
+        ]
+
+    def get_image_url(self, obj: OrderItem):
+        product = getattr(obj, "product", None)
+        if not product:
+            return ""
+        req = self.context.get("request")
+        try:
+            from apps.catalog.models import ProductMedia
+        except Exception:
+            ProductMedia = None
+        if not ProductMedia:
+            return ""
+        media = (
+            ProductMedia.objects.filter(product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
+            .order_by("position", "id")
+            .first()
+        )
+        if not media:
+            return ""
+        url = getattr(media, "url", "") or ""
+        if req and isinstance(url, str) and url.startswith("/"):
+            return req.build_absolute_uri(url)
+        return url
+
+    def get_specs(self, obj: OrderItem):
+        attrs = getattr(getattr(obj, "variation", None), "attributes", None) or {}
+        if not isinstance(attrs, dict) or not attrs:
+            return ""
+        parts = []
+        for k in sorted(list(attrs.keys())):
+            v = attrs.get(k)
+            if v is None or v == "":
+                continue
+            parts.append(f"{k}: {v}")
+        return " · ".join(parts)
 
 
 class OrderCreateItemInputSerializer(serializers.Serializer):
@@ -236,8 +284,13 @@ class OrderCreateSerializer(serializers.Serializer):
             var = variation_map.get(var_id) if var_id else None
             if var and var.product_id != p.id:
                 raise serializers.ValidationError("Variation does not belong to the product.")
-            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=p.price)
-            total += p.price * qty
+            unit_price, resolved_currency = resolve_unit_price(p, var, qty)
+            if unit_price is None:
+                raise serializers.ValidationError("Could not resolve unit price.")
+            if resolved_currency and resolved_currency != currency:
+                raise serializers.ValidationError("Pricing tier currency mismatch.")
+            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=unit_price)
+            total += unit_price * qty
 
         order.total_amount = total
         order.save(update_fields=["total_amount"])
@@ -266,6 +319,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "payment_status",
             "shipping_address",
             "deadline_at",
+            "extension_reason",
+            "extension_fee",
             "created_at",
             "updated_at",
             "item_count",

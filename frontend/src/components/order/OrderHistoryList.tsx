@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useMemo } from 'react';
-import { Order } from '@/components/order/data/mockOrders';
-import { ChevronRight, Package, Search, X, Ship, Plane, Truck, Box } from 'lucide-react';
+import type { ApiOrder } from './order-types';
+import { ChevronRight, Package, Search, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
 
@@ -17,43 +17,26 @@ function Glass({ children, className = '' }: { children: React.ReactNode; classN
 type StatusFilter = 'all' | 'active' | 'delivered' | 'cancelled';
 
 interface OrderHistoryListProps {
-    orders: Order[];
-    currentOrderId: string;
-    onSelectOrder: (id: string) => void;
+    orders: ApiOrder[];
+    currentOrderId: number | null;
+    onSelectOrder: (id: number) => void;
 }
 
-const statusConfig = (status: Order['status']) => {
-    switch (status) {
-        case 'Arriving':
-        case 'Processing':
-            return { color: 'text-blue-600/85', dot: 'bg-blue-500', bg: 'bg-blue-500/[0.06]', label: status };
-        case 'In Transit':
-            return { color: 'text-cyan-600/85', dot: 'bg-cyan-500', bg: 'bg-cyan-500/[0.06]', label: 'In Transit' };
-        case 'Customs':
-            return { color: 'text-amber-600/85', dot: 'bg-amber-500', bg: 'bg-amber-500/[0.06]', label: 'Customs' };
-        case 'At Warehouse':
-            return { color: 'text-violet-600/85', dot: 'bg-violet-500', bg: 'bg-violet-500/[0.06]', label: 'At Warehouse' };
-        case 'Delivered':
-            return { color: 'text-emerald-600/85', dot: 'bg-emerald-500', bg: 'bg-emerald-500/[0.06]', label: 'Delivered' };
-        case 'Cancelled':
-            return { color: 'text-[#1A1A1A]/35', dot: 'bg-[#1A1A1A]/25', bg: 'bg-[#1A1A1A]/[0.03]', label: 'Cancelled' };
-        default:
-            return { color: 'text-[#1A1A1A]/35', dot: 'bg-[#1A1A1A]/25', bg: 'bg-[#1A1A1A]/[0.03]', label: status };
-    }
+const statusConfig = (raw: string) => {
+    const status = (raw || '').toLowerCase();
+    if (status === 'created') return { color: 'text-blue-600/85', dot: 'bg-blue-500', bg: 'bg-blue-500/[0.06]', label: 'Created' };
+    if (status === 'accepted') return { color: 'text-blue-600/85', dot: 'bg-blue-500', bg: 'bg-blue-500/[0.06]', label: 'Accepted' };
+    if (status === 'shipped') return { color: 'text-cyan-600/85', dot: 'bg-cyan-500', bg: 'bg-cyan-500/[0.06]', label: 'Shipped' };
+    if (status === 'customs') return { color: 'text-amber-600/85', dot: 'bg-amber-500', bg: 'bg-amber-500/[0.06]', label: 'Customs' };
+    if (status === 'delivered' || status === 'completed') return { color: 'text-emerald-600/85', dot: 'bg-emerald-500', bg: 'bg-emerald-500/[0.06]', label: 'Delivered' };
+    if (status === 'cancelled') return { color: 'text-[#1A1A1A]/35', dot: 'bg-[#1A1A1A]/25', bg: 'bg-[#1A1A1A]/[0.03]', label: 'Cancelled' };
+    if (status === 'rejected') return { color: 'text-[#1A1A1A]/35', dot: 'bg-[#1A1A1A]/25', bg: 'bg-[#1A1A1A]/[0.03]', label: 'Rejected' };
+    return { color: 'text-[#1A1A1A]/35', dot: 'bg-[#1A1A1A]/25', bg: 'bg-[#1A1A1A]/[0.03]', label: raw || '—' };
 };
 
-const shipmentIcon = (type?: string) => {
-    switch (type) {
-        case 'FCL': return <Ship size={10} strokeWidth={2} className="text-[#1A1A1A]/20" />;
-        case 'LCL': return <Box size={10} strokeWidth={2} className="text-[#1A1A1A]/20" />;
-        case 'Air': return <Plane size={10} strokeWidth={2} className="text-[#1A1A1A]/20" />;
-        case 'Express': return <Truck size={10} strokeWidth={2} className="text-[#1A1A1A]/20" />;
-        default: return <Package size={10} strokeWidth={2} className="text-[#1A1A1A]/20" />;
-    }
-};
-
-function isActiveStatus(status: Order['status']): boolean {
-    return ['Arriving', 'Processing', 'In Transit', 'Customs', 'At Warehouse'].includes(status);
+function isActiveStatus(raw: string): boolean {
+    const status = (raw || '').toLowerCase();
+    return ['created', 'accepted', 'shipped', 'disputed'].includes(status);
 }
 
 export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: OrderHistoryListProps) {
@@ -61,7 +44,7 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
     const [showAll, setShowAll] = useState(false);
 
-    const otherOrders = orders.filter(o => o.id !== currentOrderId);
+    const otherOrders = currentOrderId ? orders.filter(o => o.id !== currentOrderId) : orders;
 
     const filteredOrders = useMemo(() => {
         let result = otherOrders;
@@ -70,21 +53,22 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
         if (statusFilter === 'active') {
             result = result.filter(o => isActiveStatus(o.status));
         } else if (statusFilter === 'delivered') {
-            result = result.filter(o => o.status === 'Delivered');
+            result = result.filter(o => ['delivered', 'completed'].includes((o.status || '').toLowerCase()));
         } else if (statusFilter === 'cancelled') {
-            result = result.filter(o => o.status === 'Cancelled');
+            result = result.filter(o => (o.status || '').toLowerCase() === 'cancelled');
         }
 
         // Search
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
-            result = result.filter(o =>
-                o.orderNumber.toLowerCase().includes(q) ||
-                o.items.some(i => i.name.toLowerCase().includes(q)) ||
-                (o.buyerCompany && o.buyerCompany.toLowerCase().includes(q)) ||
-                (o.poNumber && o.poNumber.toLowerCase().includes(q)) ||
-                o.seller.name.toLowerCase().includes(q)
-            );
+            result = result.filter(o => {
+                const ref = `ord-${o.id}`.toLowerCase();
+                const itemsHit = (o.items || []).some(i => (i.product_name || '').toLowerCase().includes(q));
+                const ship = o.shipping_address || {};
+                const city = String(ship.city || '').toLowerCase();
+                const country = String(ship.country || ship.country_name || '').toLowerCase();
+                return ref.includes(q) || itemsHit || city.includes(q) || country.includes(q);
+            });
         }
 
         return result;
@@ -95,8 +79,8 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
 
     // Counts for filter tabs
     const activeCt = otherOrders.filter(o => isActiveStatus(o.status)).length;
-    const deliveredCt = otherOrders.filter(o => o.status === 'Delivered').length;
-    const cancelledCt = otherOrders.filter(o => o.status === 'Cancelled').length;
+    const deliveredCt = otherOrders.filter(o => ['delivered', 'completed'].includes((o.status || '').toLowerCase())).length;
+    const cancelledCt = otherOrders.filter(o => (o.status || '').toLowerCase() === 'cancelled').length;
 
     if (otherOrders.length === 0) return null;
 
@@ -207,9 +191,9 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
                                             <div className="flex items-center gap-4 flex-1 min-w-0">
                                                 {/* Product thumbnail */}
                                                 <div className="w-12 h-12 rounded-[12px] bg-white/50 flex items-center justify-center overflow-hidden flex-shrink-0 p-1.5">
-                                                    {order.items[0]?.image ? (
+                                                    {order.items[0]?.image_url ? (
                                                         <ImageWithFallback
-                                                            src={order.items[0].image}
+                                                            src={order.items[0].image_url}
                                                             alt=""
                                                             className="w-full h-full object-contain mix-blend-multiply opacity-80 group-hover:opacity-100 transition-opacity duration-300"
                                                         />
@@ -223,43 +207,23 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
                                                     <div className="flex items-center gap-2 mb-0.5">
                                                         <h4 className="text-[13px] font-bold text-[#1A1A1A]/85 leading-tight truncate group-hover:text-blue-600 transition-colors duration-300">
                                                             {order.items.length > 1
-                                                                ? `${order.items[0].name} +${order.items.length - 1}`
-                                                                : order.items[0].name}
+                                                                ? `${order.items[0].product_name} +${order.items.length - 1}`
+                                                                : order.items[0].product_name}
                                                         </h4>
                                                     </div>
                                                     {/* Meta row 1: order # + date + company */}
                                                     <div className="flex items-center gap-2 text-[10px] font-medium text-[#1A1A1A]/30 flex-wrap">
-                                                        <span className="tabular-nums">#{order.orderNumber}</span>
+                                                        <span className="tabular-nums">ORD-{order.id}</span>
                                                         <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/15" />
-                                                        <span>{new Date(order.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                                                        {order.buyerCompany && (
-                                                            <>
-                                                                <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/15" />
-                                                                <span className="truncate">{order.buyerCompany}</span>
-                                                            </>
-                                                        )}
+                                                        <span>{new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                                                     </div>
-                                                    {/* Meta row 2: shipment details */}
+                                                    {/* Meta row 2: units */}
                                                     <div className="flex items-center gap-2 mt-1">
                                                         {/* Mobile-only status badge */}
                                                         <div className={`sm:hidden inline-flex items-center gap-1 px-1.5 py-px rounded-full ${cfg.bg}`}>
                                                             <div className={`w-[3px] h-[3px] rounded-full ${cfg.dot}`} />
                                                             <span className={`text-[8px] font-bold ${cfg.color}`}>{cfg.label}</span>
                                                         </div>
-                                                        {order.shipmentType && (
-                                                            <div className="flex items-center gap-1 text-[9px] font-bold text-[#1A1A1A]/22">
-                                                                {shipmentIcon(order.shipmentType)}
-                                                                <span>{order.shipmentType}</span>
-                                                            </div>
-                                                        )}
-                                                        {(order.containerCount ?? 0) > 0 && (
-                                                            <>
-                                                                <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/10" />
-                                                                <span className="text-[9px] font-bold text-[#1A1A1A]/22 tabular-nums">
-                                                                    {order.containerCount} container{order.containerCount !== 1 ? 's' : ''}
-                                                                </span>
-                                                            </>
-                                                        )}
                                                         <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/10" />
                                                         <span className="text-[9px] font-bold text-[#1A1A1A]/22 tabular-nums">{totalItems} units</span>
                                                     </div>
@@ -270,7 +234,7 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
                                                 {/* Price + Status */}
                                                 <div className="text-right hidden sm:block">
                                                     <p className="text-[14px] font-black text-[#1A1A1A]/75 mb-1 tabular-nums tracking-tight">
-                                                        ${order.total.toLocaleString()}
+                                                        {order.currency} {Number(order.total_amount || 0).toLocaleString()}
                                                     </p>
                                                     <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full ${cfg.bg}`}>
                                                         <div className={`w-[4px] h-[4px] rounded-full ${cfg.dot}`} />

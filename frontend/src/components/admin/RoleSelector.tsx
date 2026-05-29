@@ -15,6 +15,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { authedFetch } from "@/lib/api";
+import { safeJsonParse } from "@/lib/utils";
 
 /*
  * PLATONIC RoleSelector
@@ -93,7 +94,7 @@ export function RoleSelector() {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem("vehsl.user");
-      setUser(raw ? JSON.parse(raw) : null);
+      setUser(safeJsonParse(raw, null));
     } catch {
       setUser(null);
     }

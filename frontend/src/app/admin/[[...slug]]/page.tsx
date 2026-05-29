@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { safeJsonParse } from "@/lib/utils";
 
 type StoredUser = {
   role?: string;
@@ -26,7 +27,7 @@ export default function Page() {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem("vehsl.user");
-      setUser(raw ? (JSON.parse(raw) as StoredUser) : null);
+      setUser(safeJsonParse<StoredUser | null>(raw, null));
     } catch {
       setUser(null);
     }

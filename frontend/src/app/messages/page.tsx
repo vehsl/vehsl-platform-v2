@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { ArrowLeft, Search, Plus, Send, Paperclip, MoreHorizontal, X, Check } from "lucide-react";
 import { authedFetch, fetchJsonAuthed } from "@/lib/api";
+import { safeJsonParse } from "@/lib/utils";
 
 type ThreadUser = {
   id: number;
@@ -42,7 +43,7 @@ type UserSearchResult = ThreadUser;
 function readUser() {
   try {
     const raw = window.localStorage.getItem("vehsl.user");
-    return raw ? (JSON.parse(raw) as { id?: number; account_type?: string; role?: string } | null) : null;
+    return safeJsonParse<{ id?: number; account_type?: string; role?: string } | null>(raw, null);
   } catch {
     return null;
   }

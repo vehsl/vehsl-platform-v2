@@ -1,6 +1,17 @@
 export function getApiBase() {
     const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
+    const fromServerEnv = (process.env.NEXT_SERVER_API_URL || '').trim();
     const normalize = (u: string) => u.replace(/\/$/, '');
+
+    if (typeof window === 'undefined') {
+        if (fromServerEnv && /^https?:\/\//.test(fromServerEnv)) {
+            return normalize(fromServerEnv);
+        }
+        if (fromEnv && /^https?:\/\//.test(fromEnv)) {
+            return normalize(fromEnv);
+        }
+        return 'http://localhost:8000';
+    }
     
     // If NEXT_PUBLIC_API_URL is set and not pointing to internal docker network
     if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {

@@ -1,16 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { mockOrders } from "./data/mockOrders";
 import { OrderDetailsView } from "./OrderDetailsView";
 import { OrderHistoryList } from "./OrderHistoryList";
 import { WarehouseView } from "./WarehouseView";
-import { Toaster, toast } from "sonner";
+import { toast } from "sonner";
 import { Package, Warehouse } from "lucide-react";
 import { SettingsPopover } from "./SettingsPopover";
 import { OrdersMetrics } from "./OrdersMetrics";
 import { RoleProvider, useRole } from "./RoleContext";
 import { SellerDashboard } from "./SellerDashboard";
+import { authedFetch, fetchJsonAuthed } from "@/lib/api";
+import type { ApiOrder } from "./order-types";
 
 type Tab = "orders" | "warehouse";
 
@@ -19,8 +20,9 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
   useEffect(() => { setMounted(true); }, []);
 
   const { isSeller } = useRole();
-  const [orders, setOrders] = useState(mockOrders);
-  const [selectedOrderId, setSelectedOrderId] = useState(initialOrderId || mockOrders[0].id);
+  const [hasAccessToken, setHasAccessToken] = useState(false);
+  const [orders, setOrders] = useState<ApiOrder[]>([]);
+  const [selectedOrderId, setSelectedOrderId] = useState<number | null>(initialOrderId ? Number(initialOrderId) : null);
   const [activeTab, setActiveTab] = useState<Tab>("orders");
 
   useEffect(() => {
@@ -42,29 +44,102 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
     } catch {}
   }, [activeTab, mounted]);
 
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      setHasAccessToken(Boolean(window.localStorage.getItem("vehsl.access")));
+    } catch {
+      setHasAccessToken(false);
+    }
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (isSeller) return;
+    if (!hasAccessToken) {
+      setOrders([]);
+      setSelectedOrderId(null);
+      return;
+    }
+    (async () => {
+      try {
+        const data = await fetchJsonAuthed("/api/v1/orders/?page_size=50");
+        const rows: ApiOrder[] = Array.isArray((data as any)?.results)
+          ? (data as any).results
+          : Array.isArray(data)
+            ? (data as any)
+            : [];
+        setOrders(rows);
+        if (!selectedOrderId && rows.length) setSelectedOrderId(rows[0].id);
+        if (selectedOrderId && rows.length && !rows.some((o) => o.id === selectedOrderId)) {
+          setSelectedOrderId(rows[0].id);
+        }
+      } catch {
+        setOrders([]);
+        setSelectedOrderId(null);
+      }
+    })();
+  }, [mounted, isSeller, hasAccessToken]);
+
   if (!mounted) return null;
 
-  const selectedOrder = orders.find((o) => o.id === selectedOrderId) || orders[0];
+  const selectedOrder = selectedOrderId ? orders.find((o) => o.id === selectedOrderId) || null : null;
 
-  const handleCancelOrder = (id: string) => {
-    toast.promise(new Promise((resolve) => setTimeout(resolve, 800)), {
-      loading: "Processing cancellation...",
-      success: "Order has been cancelled",
-      error: "Could not cancel order",
-    });
-    setOrders((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, status: "Cancelled" as const } : o)),
+  const handleCancelOrder = async (id: number) => {
+    toast.promise(
+      (async () => {
+        const res = await authedFetch(`/api/v1/orders/${id}/cancel/`, { method: "POST" });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const msg = (data && (data.detail || data.error)) || `Could not cancel order (${res.status})`;
+          throw new Error(typeof msg === "string" ? msg : "Could not cancel order");
+        }
+        const next = await fetchJsonAuthed("/api/v1/orders/?page_size=50");
+        const rows: ApiOrder[] = Array.isArray((next as any)?.results)
+          ? (next as any).results
+          : Array.isArray(next)
+            ? (next as any)
+            : [];
+        setOrders(rows);
+        if (selectedOrderId && !rows.some((o) => o.id === selectedOrderId)) setSelectedOrderId(rows[0]?.id ?? null);
+      })(),
+      {
+        loading: "Processing cancellation...",
+        success: "Order has been cancelled",
+        error: (e) => (e instanceof Error ? e.message : "Could not cancel order"),
+      },
     );
   };
 
-  const handleRequestSample = (_id: string) => {
-    toast.success("Sample requested", {
-      description: "The seller will be notified of your request.",
-    });
+  const handleRequestSample = async (orderId: number) => {
+    const order = orders.find((o) => o.id === orderId);
+    const productId = order?.items?.[0]?.product;
+    if (!productId) {
+      toast.error("No product found for sample request.");
+      return;
+    }
+    toast.promise(
+      (async () => {
+        const res = await authedFetch("/api/v1/sample-requests/", {
+          method: "POST",
+          body: JSON.stringify({ product: productId }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const msg = (data && (data.detail || data.error)) || `Sample request failed (${res.status})`;
+          throw new Error(typeof msg === "string" ? msg : "Sample request failed");
+        }
+      })(),
+      {
+        loading: "Requesting sample...",
+        success: "Sample requested",
+        error: (e) => (e instanceof Error ? e.message : "Sample request failed"),
+      },
+    );
   };
 
-  const handleSelectOrder = (id: string) => {
-    setSelectedOrderId(id);
+  const handleSelectOrder = (id: number) => {
+    setSelectedOrderId(id || null);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -75,20 +150,6 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
       <div className="fixed inset-0 -z-10 bg-gradient-to-br from-[#F2EDE7] via-[#EAECF2] to-[#E3E8F0]" />
       <div className="fixed top-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-blue-200/20 blur-[120px] -z-10" />
       <div className="fixed bottom-[-10%] left-[-10%] w-[500px] h-[500px] rounded-full bg-orange-200/15 blur-[100px] -z-10" />
-
-      <Toaster
-        position="top-center"
-        richColors
-        theme="light"
-        toastOptions={{
-          style: {
-            fontFamily: "Urbanist, sans-serif",
-            borderRadius: "16px",
-            backdropFilter: "blur(20px)",
-            background: "rgba(255,255,255,0.7)",
-          },
-        }}
-      />
 
       <nav className="sticky top-0 z-50 bg-white/50 backdrop-blur-2xl border-b border-white/50">
         <div className="max-w-[1120px] mx-auto flex items-center justify-between px-4 py-3.5 sm:px-6">
@@ -146,17 +207,29 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
               {activeTab === "orders" ? (
                 <>
                   <OrdersMetrics orders={orders} />
-                  <OrderDetailsView
-                    key={selectedOrderId}
-                    order={selectedOrder}
-                    onCancelOrder={handleCancelOrder}
-                    onRequestSample={handleRequestSample}
-                  />
-                  <OrderHistoryList
-                    orders={orders}
-                    currentOrderId={selectedOrderId}
-                    onSelectOrder={handleSelectOrder}
-                  />
+                  {selectedOrder ? (
+                    <>
+                      <OrderDetailsView
+                        key={selectedOrderId || undefined}
+                        order={selectedOrder}
+                        onCancelOrder={handleCancelOrder}
+                        onRequestSample={handleRequestSample}
+                      />
+                      <OrderHistoryList
+                        orders={orders}
+                        currentOrderId={selectedOrderId}
+                        onSelectOrder={handleSelectOrder}
+                      />
+                    </>
+                  ) : (
+                    <div className="max-w-[1120px] mx-auto pb-10">
+                      <div className="rounded-[22px] border border-white/50 bg-white/45 backdrop-blur-2xl shadow-soft px-6 py-10 text-center">
+                        <p className="text-[13px] font-medium text-[#1A1A1A]/45">
+                          {hasAccessToken ? "No orders found." : "Sign in to view your orders."}
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <WarehouseView />

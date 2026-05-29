@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { fetchJsonAuthed } from "@/lib/api";
+import { safeJsonParse } from "@/lib/utils";
 
 export type AppLanguage = "en" | "zh";
 
@@ -92,7 +93,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     const fromLocalUser = () => {
       try {
         const raw = window.localStorage.getItem("vehsl.user");
-        const u = raw ? JSON.parse(raw) : null;
+        const u = safeJsonParse<any | null>(raw, null);
         const profLang = (u?.profile?.language_preference || "").toString();
         const buyerLang = (u?.buyer_profile?.language_preference || "").toString();
         const candidate = (profLang || buyerLang).toLowerCase();
