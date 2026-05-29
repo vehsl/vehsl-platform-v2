@@ -3,8 +3,6 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        NODE_IMAGE: ${NODE_IMAGE:-vehsl-platform-v2-frontend:latest}
     container_name: vehsl-frontend
     restart: unless-stopped
     environment:
@@ -21,8 +19,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-      args:
-        PYTHON_IMAGE: ${PYTHON_IMAGE:-vehsl-platform-v2-backend:latest}
     container_name: vehsl-backend
     restart: unless-stopped
     command:
