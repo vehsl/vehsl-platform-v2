@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.catalog.models import Product, ProductMedia, ProductVariation
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
 
 from .models import (
     Cart,
@@ -21,11 +21,56 @@ from .models import (
 
 
 class CartItemSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
     product_name = serializers.CharField(source="product.name", read_only=True)
+    product_title = serializers.CharField(source="product.title", read_only=True)
+    seller_id = serializers.IntegerField(source="product.seller_id", read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = CartItem
-        fields = ["id", "product", "variation", "product_name", "quantity", "unit_price_snapshot", "currency"]
+        fields = [
+            "id",
+            "product_id",
+            "product",
+            "variation",
+            "product_name",
+            "product_title",
+            "seller_id",
+            "seller_name",
+            "image_url",
+            "quantity",
+            "unit_price_snapshot",
+            "currency",
+        ]
+
+    def get_seller_name(self, obj: CartItem):
+        seller = getattr(getattr(obj, "product", None), "seller", None)
+        if not seller:
+            return ""
+        full = f"{(seller.first_name or '').strip()} {(seller.last_name or '').strip()}".strip()
+        return full or seller.email or seller.phone or ""
+
+    def get_image_url(self, obj: CartItem):
+        product = getattr(obj, "product", None)
+        if not product:
+            return ""
+        try:
+            media = (
+                ProductMedia.objects.filter(product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
+                .order_by("position", "id")
+                .first()
+            )
+            if media and media.url:
+                url = media.url
+                req = self.context.get("request")
+                if req and isinstance(url, str) and url.startswith("/"):
+                    return req.build_absolute_uri(url)
+                return url
+        except Exception:
+            pass
+        return ""
 
 
 class CartSerializer(serializers.ModelSerializer):
@@ -90,10 +135,58 @@ class WishlistItemSerializer(serializers.ModelSerializer):
 class OrderItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
     variation_attributes = serializers.JSONField(source="variation.attributes", read_only=True)
+    image_url = serializers.SerializerMethodField()
+    specs = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "variation", "product_name", "variation_attributes", "quantity", "unit_price", "line_total"]
+        fields = [
+            "id",
+            "product",
+            "variation",
+            "product_name",
+            "variation_attributes",
+            "specs",
+            "image_url",
+            "quantity",
+            "unit_price",
+            "line_total",
+        ]
+
+    def get_image_url(self, obj: OrderItem):
+        product = getattr(obj, "product", None)
+        if not product:
+            return ""
+        req = self.context.get("request")
+        try:
+            from apps.catalog.models import ProductMedia
+        except Exception:
+            ProductMedia = None
+        if not ProductMedia:
+            return ""
+        media = (
+            ProductMedia.objects.filter(product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
+            .order_by("position", "id")
+            .first()
+        )
+        if not media:
+            return ""
+        url = getattr(media, "url", "") or ""
+        if req and isinstance(url, str) and url.startswith("/"):
+            return req.build_absolute_uri(url)
+        return url
+
+    def get_specs(self, obj: OrderItem):
+        attrs = getattr(getattr(obj, "variation", None), "attributes", None) or {}
+        if not isinstance(attrs, dict) or not attrs:
+            return ""
+        parts = []
+        for k in sorted(list(attrs.keys())):
+            v = attrs.get(k)
+            if v is None or v == "":
+                continue
+            parts.append(f"{k}: {v}")
+        return " · ".join(parts)
 
 
 class OrderCreateItemInputSerializer(serializers.Serializer):
@@ -104,6 +197,8 @@ class OrderCreateItemInputSerializer(serializers.Serializer):
 
 class OrderCreateSerializer(serializers.Serializer):
     items = serializers.ListField(child=OrderCreateItemInputSerializer(), allow_empty=False)
+    payment_method = serializers.ChoiceField(choices=Order.PaymentMethod.choices, required=False)
+    address_id = serializers.IntegerField(required=False)
 
     def validate_items(self, items):
         seen = set()
@@ -117,6 +212,34 @@ class OrderCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         buyer = self.context["request"].user
         items_data = validated_data["items"]
+        payment_method = validated_data.get("payment_method") or Order.PaymentMethod.CARD
+        raw_address_id = validated_data.get("address_id")
+        if raw_address_id is None:
+            raise serializers.ValidationError({"address_id": "address_id is required."})
+        try:
+            address_id = int(raw_address_id)
+        except Exception:
+            raise serializers.ValidationError({"address_id": "Invalid address_id."})
+        if address_id <= 0:
+            raise serializers.ValidationError({"address_id": "Invalid address_id."})
+
+        from apps.accounts.models import BuyerAddress
+
+        addr = BuyerAddress.objects.filter(id=address_id, user=buyer).first()
+        if not addr:
+            raise serializers.ValidationError({"address_id": "Address not found."})
+        shipping_address = {
+            "kind": getattr(addr, "kind", "") or "",
+            "contact_name": getattr(addr, "contact_name", "") or "",
+            "phone": getattr(addr, "phone", "") or "",
+            "country": getattr(addr, "country", "") or "",
+            "region": getattr(addr, "region", "") or "",
+            "city": getattr(addr, "city", "") or "",
+            "street1": getattr(addr, "street1", "") or "",
+            "street2": getattr(addr, "street2", "") or "",
+            "postal_code": getattr(addr, "postal_code", "") or "",
+        }
+        payment_status = Order.PaymentStatus.COD_PENDING if payment_method == Order.PaymentMethod.COD else Order.PaymentStatus.UNPAID
 
         products = Product.objects.filter(
             id__in=[i["product_id"] for i in items_data],
@@ -143,7 +266,15 @@ class OrderCreateSerializer(serializers.Serializer):
             if len(variation_map) != len(set(variation_ids)):
                 raise serializers.ValidationError("One or more variations are invalid.")
 
-        order = Order.objects.create(buyer=buyer, seller_id=seller_id, currency=currency, status=Order.Status.CREATED)
+        order = Order.objects.create(
+            buyer=buyer,
+            seller_id=seller_id,
+            currency=currency,
+            status=Order.Status.CREATED,
+            payment_method=payment_method,
+            payment_status=payment_status,
+            shipping_address=shipping_address,
+        )
 
         total = Decimal("0")
         for item in items_data:
@@ -153,8 +284,13 @@ class OrderCreateSerializer(serializers.Serializer):
             var = variation_map.get(var_id) if var_id else None
             if var and var.product_id != p.id:
                 raise serializers.ValidationError("Variation does not belong to the product.")
-            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=p.price)
-            total += p.price * qty
+            unit_price, resolved_currency = resolve_unit_price(p, var, qty)
+            if unit_price is None:
+                raise serializers.ValidationError("Could not resolve unit price.")
+            if resolved_currency and resolved_currency != currency:
+                raise serializers.ValidationError("Pricing tier currency mismatch.")
+            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=unit_price)
+            total += unit_price * qty
 
         order.total_amount = total
         order.save(update_fields=["total_amount"])
@@ -179,7 +315,12 @@ class OrderSerializer(serializers.ModelSerializer):
             "status",
             "currency",
             "total_amount",
+            "payment_method",
+            "payment_status",
+            "shipping_address",
             "deadline_at",
+            "extension_reason",
+            "extension_fee",
             "created_at",
             "updated_at",
             "item_count",

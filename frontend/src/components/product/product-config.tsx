@@ -10,7 +10,6 @@ import { LocationSection } from "./location-section";
 import { QuantityTiers, tiers, getTierForQuantity, type Tier } from "./quantity-tiers";
 import { useProductSelection } from "./product-selection-context";
 import { ReviewsPopover } from "./reviews-popover";
-import { useCart, getImageForColor } from "./cart-context";
 import { useRouter } from "next/navigation";
 
 /* ───── Data ────────────────────────────────────────── */
@@ -105,7 +104,6 @@ export function ProductConfig() {
 
   const inputRef = useRef<HTMLInputElement>(null);
   const { cartCount, setCartCount, triggerBounce } = useBounce();
-  const { addItem, openCart, setCheckoutItemIds } = useCart();
   const router = useRouter();
   const navigate = (path: string) => router.push(path);
 
@@ -757,25 +755,6 @@ export function ProductConfig() {
             onClick={() => {
               if (allReady) {
                 triggerBounce("continue");
-                // Add configured item to cart
-                const color = colors[selectedColor!];
-                const size = sizes[selectedSize!];
-                const speed = speeds[selectedSpeed!];
-                const newId = addItem({
-                  productName: "USB-C to USB-C Cable",
-                  colorIndex: selectedColor!,
-                  colorName: color.name,
-                  colorHex: color.hex,
-                  sizeLabel: size.label,
-                  speedLabel: speed.label,
-                  quantity: cartCount,
-                  pricePerUnit: currentPrice,
-                  deliveryMethod: selectedDelivery?.label ?? null,
-                  deliverySurcharge: deliverySurcharge,
-                  imageUrl: getImageForColor(color.name),
-                });
-                // Set this item for checkout and navigate
-                setCheckoutItemIds([newId]);
                 setTimeout(() => {
                   navigate("/checkout");
                 }, 300);

@@ -6,9 +6,8 @@ import {
   Search,
   User,
 } from "lucide-react";
-import { useBounce } from "./bounce-context";
 import { useCart } from "./cart-context";
-import { Bouncy } from "./bouncy";
+import Link from "next/link";
 import {
   CarIcon,
   FactoryIcon,
@@ -38,9 +37,7 @@ const categories = [
 ];
 
 export function NavBar() {
-  const { triggerBounce } = useBounce();
-  const { items, toggleCart } = useCart();
-  const cartCount = items.length;
+  const { totalQuantity } = useCart();
 
   return (
     <motion.nav
@@ -85,31 +82,27 @@ export function NavBar() {
               <Search size={18} />
             </motion.button>
 
-            <Bouncy target="cart">
-              <div className="relative">
-                <motion.button
-                  className="w-10 h-10 rounded-full flex items-center justify-center cursor-pointer text-[#86868b] hover:text-[#1d1d1f] hover:bg-[#f5f5f7] transition-[color]"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.92 }}
-                  onClick={() => {
-                    toggleCart();
-                    triggerBounce("cart");
-                  }}
+            <Link href="/checkout" className="relative">
+              <motion.div
+                className="w-10 h-10 rounded-full flex items-center justify-center cursor-pointer text-[#86868b] hover:text-[#1d1d1f] hover:bg-[#f5f5f7] transition-[color]"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.92 }}
+              >
+                <ShoppingCart size={18} />
+              </motion.div>
+              {totalQuantity > 0 ? (
+                <motion.div
+                  key={totalQuantity}
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  className="absolute -top-0.5 -right-0.5 w-4.5 h-4.5 min-w-[18px] rounded-full bg-[#0071e3] flex items-center justify-center"
                 >
-                  <ShoppingCart size={18} />
-                </motion.button>
-                {cartCount > 0 && (
-                  <motion.div
-                    key={cartCount}
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    className="absolute -top-0.5 -right-0.5 w-4.5 h-4.5 min-w-[18px] rounded-full bg-[#0071e3] flex items-center justify-center"
-                  >
-                    <span style={{ fontSize: 10, fontWeight: 600, color: "white" }}>{cartCount}</span>
-                  </motion.div>
-                )}
-              </div>
-            </Bouncy>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "white" }}>
+                    {totalQuantity > 99 ? "99+" : totalQuantity}
+                  </span>
+                </motion.div>
+              ) : null}
+            </Link>
 
             <motion.button
               className="w-9 h-9 rounded-full bg-gradient-to-br from-[#0071e3] to-[#5856d6] flex items-center justify-center cursor-pointer"

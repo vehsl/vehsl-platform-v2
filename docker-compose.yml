@@ -3,11 +3,14 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     container_name: vehsl-frontend
     restart: unless-stopped
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_SERVER_API_URL=${NEXT_SERVER_API_URL:-http://backend:8000}
     ports:
       - "3000:3000"
     depends_on:
@@ -19,6 +22,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-public.ecr.aws/docker/library/python:3.12-slim}
     container_name: vehsl-backend
     restart: unless-stopped
     command:
@@ -60,7 +65,6 @@ services:
           PY
 
           python manage.py collectstatic --noinput
-
           python manage.py migrate --noinput
 
           python manage.py shell -c "import os; from django.contrib.auth import get_user_model; User=get_user_model(); email=os.environ.get('DJANGO_SUPERUSER_EMAIL','admin@vehsl.local'); pw=os.environ.get('DJANGO_SUPERUSER_PASSWORD','admin'); u, _ = User.objects.get_or_create(email=email, defaults={'is_staff': True, 'is_superuser': True, 'is_active': True, 'role': 'admin', 'account_type': 'buyer'}); u.is_staff=True; u.is_superuser=True; u.is_active=True; u.role='admin'; u.account_type=u.account_type or 'buyer'; u.set_password(pw); u.save(); print('dev superuser ready:', email)"
@@ -71,7 +75,9 @@ services:
           if [ "$${GUNICORN_RELOAD:-0}" = "1" ]; then
             RELOAD_FLAG="--reload"
           fi
+
           exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 60 --access-logfile - --error-logfile - --capture-output --log-level info $$RELOAD_FLAG
+
     environment:
       - DJANGO_DEBUG=${DJANGO_DEBUG:-0}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
@@ -97,7 +103,7 @@ services:
       - vehsl
 
   db:
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    image: ${POSTGRES_IMAGE:-public.ecr.aws/docker/library/postgres:16-alpine}
     container_name: vehsl-db
     restart: unless-stopped
     environment:

@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { motion } from 'motion/react';
-import { Order } from '@/components/order/data/mockOrders';
-import { Package, Ship, DollarSign, CheckCircle2 } from 'lucide-react';
+import type { ApiOrder } from './order-types';
+import { Package, Truck, DollarSign, CheckCircle2 } from 'lucide-react';
 
 const EASE = [0.25, 0.46, 0.45, 0.94] as const;
 
@@ -54,28 +54,28 @@ function MetricCard({ icon, label, value, subValue, accent = 'rgba(0,113,227,0.1
 }
 
 interface OrdersMetricsProps {
-    orders: Order[];
+    orders: ApiOrder[];
 }
 
 export function OrdersMetrics({ orders }: OrdersMetricsProps) {
-    const activeStatuses = ['Arriving', 'Processing', 'In Transit', 'Customs', 'At Warehouse'];
-    const activeOrders = orders.filter(o => activeStatuses.includes(o.status));
-    const deliveredOrders = orders.filter(o => o.status === 'Delivered');
-    const totalContainersInTransit = activeOrders.reduce((s, o) => s + (o.containerCount || 0), 0);
+    const status = (s: string) => (s || '').toLowerCase();
+    const activeOrders = orders.filter(o => ['created', 'accepted', 'shipped', 'disputed'].includes(status(o.status)));
+    const shippedOrders = orders.filter(o => status(o.status) === 'shipped');
+    const deliveredOrders = orders.filter(o => ['delivered', 'completed'].includes(status(o.status)));
 
     // Total spend this month
     const now = new Date();
     const thisMonthOrders = orders.filter(o => {
-        const d = new Date(o.date);
+        const d = new Date(o.created_at);
         return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
     });
-    const monthlySpend = thisMonthOrders.reduce((s, o) => s + o.total, 0);
+    const monthlySpend = thisMonthOrders.reduce((s, o) => s + Number(o.total_amount || 0), 0);
     const fmtSpend = monthlySpend >= 10000
         ? `$${(monthlySpend / 1000).toFixed(0)}k`
         : `$${monthlySpend.toLocaleString()}`;
 
     // Delivery rate
-    const completable = orders.filter(o => o.status !== 'Cancelled');
+    const completable = orders.filter(o => status(o.status) !== 'cancelled');
     const rate = completable.length > 0
         ? Math.round((deliveredOrders.length / completable.length) * 100)
         : 0;
@@ -98,10 +98,10 @@ export function OrdersMetrics({ orders }: OrdersMetricsProps) {
                         delay={0.05}
                     />
                     <MetricCard
-                        icon={<Ship size={15} strokeWidth={2} className="text-cyan-600/70" />}
-                        label="Containers"
-                        value={String(totalContainersInTransit)}
-                        subValue="in transit"
+                        icon={<Truck size={15} strokeWidth={2} className="text-cyan-600/70" />}
+                        label="In transit"
+                        value={String(shippedOrders.length)}
+                        subValue="shipments"
                         accent="rgba(6,182,212,0.08)"
                         delay={0.1}
                     />

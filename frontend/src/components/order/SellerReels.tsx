@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
+import { authedFetch } from '@/lib/api';
 import {
     Plus, Play, Eye, Heart, MessageCircle, Share2, MoreHorizontal,
     Video, Upload, X, Edit3, Trash2, CheckCircle2, Clock, AlertTriangle,
@@ -37,6 +38,11 @@ interface Reel {
     hashtags: string[];
     music?: string;
     visibility: 'public' | 'followers' | 'private';
+}
+
+interface SellerProductOption {
+    id: string;
+    name: string;
 }
 
 const INITIAL_REELS: Reel[] = [
@@ -216,10 +222,46 @@ export function SellerReels() {
 
     // Upload form state
     const [uploadCaption, setUploadCaption] = useState('');
-    const [uploadProduct, setUploadProduct] = useState('');
+    const [uploadProductId, setUploadProductId] = useState('');
     const [uploadHashtags, setUploadHashtags] = useState('');
     const [uploadVisibility, setUploadVisibility] = useState<'public' | 'followers' | 'private'>('public');
-    const [uploadFile, setUploadFile] = useState(false);
+    const [uploadFile, setUploadFile] = useState<File | null>(null);
+
+    const [sellerProducts, setSellerProducts] = useState<SellerProductOption[]>([]);
+    const [editReplaceFile, setEditReplaceFile] = useState<File | null>(null);
+
+    const uploadInputRef = useRef<HTMLInputElement>(null);
+    const editInputRef = useRef<HTMLInputElement>(null);
+
+    const fetchReels = useCallback(async () => {
+        try {
+            const res = await authedFetch('/api/v1/seller/dashboard/reels/');
+            if (!res.ok) return;
+            const data = await res.json().catch(() => null);
+            if (Array.isArray(data)) setReels(data as Reel[]);
+        } catch {
+        }
+    }, []);
+
+    const fetchProducts = useCallback(async () => {
+        try {
+            const res = await authedFetch('/api/v1/products/?ordering=-created_at');
+            if (!res.ok) return;
+            const data = await res.json().catch(() => null);
+            const results = Array.isArray(data?.results) ? data.results : (Array.isArray(data) ? data : []);
+            const mapped: SellerProductOption[] = results
+                .map((p: any) => ({ id: String(p?.id || ''), name: String(p?.name || p?.title || '').trim() }))
+                .filter((p: any) => p.id && p.name);
+            setSellerProducts(mapped);
+        } catch {
+        }
+    }, []);
+
+    useEffect(() => {
+        void (async () => {
+            await Promise.all([fetchReels(), fetchProducts()]);
+        })();
+    }, [fetchReels, fetchProducts]);
 
     const filtered = filter === 'all' ? reels : reels.filter(r => r.status === filter);
     const publishedCount = reels.filter(r => r.status === 'published').length;
@@ -258,30 +300,78 @@ export function SellerReels() {
         setEditCaption(reel.caption);
         setEditHashtags(reel.hashtags.join(', '));
         setEditVisibility(reel.visibility);
+        setEditReplaceFile(null);
         setMenuOpen(null);
     }, []);
 
-    const saveEdit = useCallback(() => {
+    const mediaIdFromReelId = useCallback((rid: string) => {
+        const raw = (rid || '').toString();
+        if (raw.startsWith('r')) {
+            const n = raw.slice(1);
+            if (/^\d+$/.test(n)) return n;
+        }
+        return raw;
+    }, []);
+
+    const saveEdit = useCallback(async () => {
         if (!editingReel) return;
-        setReels(prev => prev.map(r =>
-            r.id === editingReel.id
-                ? {
-                    ...r,
-                    caption: editCaption,
-                    hashtags: editHashtags.split(',').map(h => h.trim().replace('#', '')).filter(Boolean),
-                    visibility: editVisibility,
+        const mediaId = mediaIdFromReelId(editingReel.id);
+        try {
+            if (editReplaceFile) {
+                const fd = new FormData();
+                fd.append('title', editCaption);
+                fd.append('file', editReplaceFile);
+                const res = await authedFetch(`/api/v1/product-media/${mediaId}/`, { method: 'PATCH', body: fd });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error((err?.detail || '').toString() || 'Failed to update reel.');
                 }
-                : r
-        ));
-        toast.success('Post updated', { description: 'Changes saved' });
-        setEditingReel(null);
-    }, [editingReel, editCaption, editHashtags, editVisibility]);
+            } else {
+                const res = await authedFetch(`/api/v1/product-media/${mediaId}/`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: editCaption }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error((err?.detail || '').toString() || 'Failed to update reel.');
+                }
+            }
+            toast.success('Post updated', { description: 'Changes saved' });
+            setEditingReel(null);
+            setEditReplaceFile(null);
+            setReels(prev => prev.map(r =>
+                r.id === editingReel.id
+                    ? {
+                        ...r,
+                        caption: editCaption,
+                        hashtags: editHashtags.split(',').map(h => h.trim().replace('#', '')).filter(Boolean),
+                        visibility: editVisibility,
+                    }
+                    : r
+            ));
+            await fetchReels();
+        } catch (e: any) {
+            toast.error('Update failed', { description: (e?.message || '').toString() || 'Could not update reel.' });
+        }
+    }, [editingReel, editCaption, editHashtags, editVisibility, editReplaceFile, fetchReels, mediaIdFromReelId]);
 
-    const deleteReel = useCallback((id: string) => {
-        setReels(prev => prev.filter(r => r.id !== id));
-        setMenuOpen(null);
-        toast('Post deleted', { description: 'The reel has been removed' });
-    }, []);
+    const deleteReel = useCallback(async (id: string) => {
+        const mediaId = mediaIdFromReelId(id);
+        try {
+            const res = await authedFetch(`/api/v1/product-media/${mediaId}/`, { method: 'DELETE' });
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                throw new Error((err?.detail || '').toString() || 'Failed to delete reel.');
+            }
+            setReels(prev => prev.filter(r => r.id !== id));
+            setMenuOpen(null);
+            toast('Post deleted', { description: 'The reel has been removed' });
+            await fetchReels();
+        } catch (e: any) {
+            toast.error('Delete failed', { description: (e?.message || '').toString() || 'Could not delete reel.' });
+        }
+    }, [fetchReels, mediaIdFromReelId]);
 
     const publishDraft = useCallback((id: string) => {
         setReels(prev => prev.map(r => r.id === id ? { ...r, status: 'pending' as ReelStatus, postedAt: 'Pending review' } : r));
@@ -289,33 +379,63 @@ export function SellerReels() {
         toast.success('Submitted for review', { description: 'Your reel will be reviewed within 24 hours' });
     }, []);
 
-    const handleUpload = useCallback(() => {
+    const handleSaveDraft = useCallback(() => {
         const newReel: Reel = {
             id: `r${Date.now()}`,
             thumbnail: 'https://images.unsplash.com/photo-1766499670904-edab815e8fe3?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwb3R0ZXJ5JTIwd29ya3Nob3AlMjBjcmFmdGluZyUyMGhhbmRzfGVufDF8fHx8MTc3MzQwNjQ4MXww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
             caption: uploadCaption || 'New product reel',
-            product: uploadProduct || 'General',
-            productId: '',
-            status: uploadFile ? 'pending' : 'draft',
+            product: (sellerProducts.find(p => p.id === uploadProductId)?.name || 'General'),
+            productId: uploadProductId || '',
+            status: 'draft',
             views: 0,
             likes: 0,
             comments: 0,
             shares: 0,
             duration: '0:00',
-            postedAt: uploadFile ? 'Pending review' : 'Draft',
+            postedAt: 'Draft',
             hashtags: uploadHashtags.split(',').map(h => h.trim().replace('#', '')).filter(Boolean),
             visibility: uploadVisibility,
         };
         setReels(prev => [newReel, ...prev]);
         setShowUpload(false);
         setUploadCaption('');
-        setUploadProduct('');
+        setUploadProductId('');
         setUploadHashtags('');
-        setUploadFile(false);
-        toast.success(uploadFile ? 'Reel submitted for review' : 'Draft saved', {
-            description: uploadFile ? 'We\'ll review your video within 24 hours' : 'You can publish it later',
-        });
-    }, [uploadCaption, uploadProduct, uploadHashtags, uploadVisibility, uploadFile]);
+        setUploadFile(null);
+        toast.success('Draft saved', { description: 'Upload a video to submit it for review.' });
+    }, [sellerProducts, uploadCaption, uploadHashtags, uploadProductId, uploadVisibility]);
+
+    const handleSubmitUpload = useCallback(async () => {
+        if (!uploadFile) {
+            toast.error('Select a video file to submit.');
+            return;
+        }
+        if (!uploadProductId) {
+            toast.error('Select a product for this reel.');
+            return;
+        }
+        try {
+            const fd = new FormData();
+            fd.append('product', uploadProductId);
+            fd.append('media_type', 'video');
+            fd.append('title', uploadCaption);
+            fd.append('file', uploadFile);
+            const res = await authedFetch('/api/v1/product-media/upload/', { method: 'POST', body: fd });
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                throw new Error((data?.detail || '').toString() || 'Failed to upload.');
+            }
+            setShowUpload(false);
+            setUploadCaption('');
+            setUploadProductId('');
+            setUploadHashtags('');
+            setUploadFile(null);
+            toast.success('Reel uploaded', { description: 'Your video is now attached to your product.' });
+            await fetchReels();
+        } catch (e: any) {
+            toast.error('Upload failed', { description: (e?.message || '').toString() || 'Could not upload reel.' });
+        }
+    }, [fetchReels, uploadCaption, uploadFile, uploadProductId]);
 
     return (
         <motion.div
@@ -879,8 +999,19 @@ export function SellerReels() {
                                 </div>
 
                                 {/* Video upload zone */}
+                                <input
+                                    ref={uploadInputRef}
+                                    type="file"
+                                    accept="video/*"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                        const f = e.target.files?.[0] || null;
+                                        setUploadFile(f);
+                                        if (f) toast('Video selected', { description: `${f.name}` });
+                                    }}
+                                />
                                 <div
-                                    onClick={() => { setUploadFile(true); toast('Video selected', { description: 'sample_reel.mp4 — 0:28' }); }}
+                                    onClick={() => uploadInputRef.current?.click()}
                                     className={`rounded-[16px] border-2 border-dashed p-6 mb-4 cursor-pointer transition-all duration-200 flex flex-col items-center gap-2 ${
                                         uploadFile
                                             ? 'border-[#2eaa57]/30 bg-[#2eaa57]/[0.03]'
@@ -893,7 +1024,7 @@ export function SellerReels() {
                                                 <CheckCircle2 size={20} color="#2eaa57" strokeWidth={2} />
                                             </div>
                                             <p className="text-[12px] font-semibold text-[#2eaa57]/70">Video selected</p>
-                                            <p className="text-[10px] font-medium text-[#1A1A1A]/25">sample_reel.mp4 · 0:28 · 1080x1920</p>
+                                            <p className="text-[10px] font-medium text-[#1A1A1A]/25">{uploadFile.name} · {(uploadFile.size / (1024 * 1024)).toFixed(1)} MB</p>
                                         </>
                                     ) : (
                                         <>
@@ -929,15 +1060,14 @@ export function SellerReels() {
                                         <div className="relative">
                                             <Tag size={12} color="rgba(26,26,26,0.25)" strokeWidth={2} className="absolute left-3 top-1/2 -translate-y-1/2" />
                                             <select
-                                                value={uploadProduct}
-                                                onChange={e => setUploadProduct(e.target.value)}
+                                                value={uploadProductId}
+                                                onChange={e => setUploadProductId(e.target.value)}
                                                 className="w-full pl-8 pr-3 py-2.5 rounded-[12px] border border-black/[0.06] bg-white/80 text-[12px] font-medium text-[#1A1A1A]/65 outline-none focus:border-[#0071e3]/30 transition-colors appearance-none cursor-pointer"
                                             >
                                                 <option value="">Select product</option>
-                                                <option value="Wireless NC Headphones">Wireless NC Headphones</option>
-                                                <option value="USB C Wire">USB C Wire — Green 2m</option>
-                                                <option value="Aluminum Laptop Stand">Aluminum Laptop Stand</option>
-                                                <option value="Handmade Ceramic Vase">Handmade Ceramic Vase</option>
+                                                {sellerProducts.map(p => (
+                                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                                ))}
                                             </select>
                                             <ChevronDown size={10} color="rgba(26,26,26,0.25)" strokeWidth={2.5} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                                         </div>
@@ -996,8 +1126,7 @@ export function SellerReels() {
                                 <div className="flex items-center gap-2">
                                     <button
                                         onClick={() => {
-                                            setUploadFile(false);
-                                            handleUpload();
+                                            handleSaveDraft();
                                         }}
                                         className="flex-1 py-3 rounded-full cursor-pointer text-[12px] font-semibold text-[#1A1A1A]/50 bg-transparent border border-black/[0.08] hover:bg-black/[0.02] transition-colors"
                                     >
@@ -1005,7 +1134,7 @@ export function SellerReels() {
                                     </button>
                                     <motion.button
                                         whileTap={{ scale: 0.97 }}
-                                        onClick={handleUpload}
+                                        onClick={handleSubmitUpload}
                                         className="flex-1 py-3 rounded-full border-none cursor-pointer flex items-center justify-center gap-2"
                                         style={{
                                             background: uploadFile ? '#1A1A1A' : 'rgba(26,26,26,0.15)',
@@ -1150,8 +1279,19 @@ export function SellerReels() {
                                 </div>
 
                                 {/* Replace video option */}
+                                <input
+                                    ref={editInputRef}
+                                    type="file"
+                                    accept="video/*"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                        const f = e.target.files?.[0] || null;
+                                        setEditReplaceFile(f);
+                                        if (f) toast('Video selected', { description: `${f.name}` });
+                                    }}
+                                />
                                 <div
-                                    onClick={() => toast('Choose a new video file', { description: 'The old video will be replaced' })}
+                                    onClick={() => editInputRef.current?.click()}
                                     className="flex items-center gap-3 px-4 py-3 rounded-[14px] border border-black/[0.04] mb-4 cursor-pointer hover:bg-black/[0.01] transition-colors"
                                 >
                                     <div className="w-[28px] h-[28px] rounded-full bg-black/[0.03] flex items-center justify-center flex-shrink-0">
@@ -1159,7 +1299,7 @@ export function SellerReels() {
                                     </div>
                                     <div>
                                         <p className="text-[12px] font-semibold text-[#1A1A1A]/45">Replace video</p>
-                                        <p className="text-[10px] font-medium text-[#1A1A1A]/20">Upload a new video for this post</p>
+                                        <p className="text-[10px] font-medium text-[#1A1A1A]/20">{editReplaceFile ? editReplaceFile.name : 'Upload a new video for this post'}</p>
                                     </div>
                                 </div>
 

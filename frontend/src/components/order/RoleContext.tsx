@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { safeJsonParse } from "@/lib/utils";
 
 interface RoleContextValue {
   isSeller: boolean;
@@ -21,7 +22,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     try {
       const raw = window.localStorage.getItem("vehsl.user");
       if (raw) {
-        const user = JSON.parse(raw) as { account_type?: string } | null;
+        const user = safeJsonParse<{ account_type?: string } | null>(raw, null);
         if (user?.account_type) setIsSeller(user.account_type === "seller");
       }
     } catch (e) {

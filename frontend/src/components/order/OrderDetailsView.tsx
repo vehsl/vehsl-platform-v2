@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from 'react';
-import { Order, OrderItem } from '@/components/order/data/mockOrders';
-import { Play, Copy, CheckCircle2, MapPin, CreditCard, Phone, ChevronRight, FileText, MessageCircle, Ship, Box, Plane, Truck, Package as PackageIcon } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import type { ApiOrder, ApiOrderItem } from './order-types';
+import { Copy, CheckCircle2, MapPin, CreditCard, Phone, Package as PackageIcon, Ban, FlaskConical } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
 import { toast } from 'sonner';
@@ -30,14 +30,6 @@ function PrintIcon() {
     );
 }
 
-function ChatIcon() {
-    return (
-        <svg className="size-[15px]" fill="none" viewBox="0 0 15 15">
-            <path d={svgPaths.p3d4426f2} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.25" />
-        </svg>
-    );
-}
-
 function HelpIcon() {
     return (
         <svg className="size-4" fill="none" viewBox="0 0 16 16">
@@ -60,30 +52,6 @@ function ActionButton({ icon, label, onClick }: { icon: React.ReactNode; label: 
     );
 }
 
-// --- Quality Report Types ---
-
-interface QualityReport {
-    id: string;
-    title: string;
-    date: string;
-    summary: string;
-    type: 'video' | 'image' | 'doc';
-    mediaUrl?: string;
-    reportDocUrl?: string;
-    matchScore: number;
-}
-
-const latestUpdate: QualityReport = {
-    id: 'r2',
-    title: 'Material Analysis Complete',
-    date: 'Today, 9:41 AM',
-    summary: 'Spectroscopic analysis confirms 98.5% molecular match with the golden sample. Polymer density is optimal.',
-    type: 'video',
-    mediaUrl: 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=2070',
-    reportDocUrl: '#',
-    matchScore: 98,
-};
-
 // --- Glass surface wrapper ---
 function Glass({ children, className = '', blur = 'backdrop-blur-2xl' }: { children: React.ReactNode; className?: string; blur?: string }) {
     return (
@@ -93,84 +61,39 @@ function Glass({ children, className = '', blur = 'backdrop-blur-2xl' }: { child
     );
 }
 
-// --- Quality Update (lives inside the hero, not a separate box) ---
-function QualityUpdate({ update }: { update: QualityReport }) {
-    const dotColor = update.matchScore >= 95 ? 'bg-emerald-500' : update.matchScore >= 80 ? 'bg-amber-500' : 'bg-rose-500';
-    const scoreColor = update.matchScore >= 95 ? 'text-emerald-600/40' : update.matchScore >= 80 ? 'text-amber-600/40' : 'text-rose-600/40';
-
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.35, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
-            className="mt-6 pt-5 border-t border-white/50"
-        >
-            {/* Label line */}
-            <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                    <div className={`w-[6px] h-[6px] rounded-full ${dotColor}`} />
-                    <span className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-[1.2px] uppercase">Quality</span>
-                    <span className={`text-[10px] font-bold ${scoreColor} tabular-nums`}>{update.matchScore}%</span>
-                </div>
-                <span className="text-[10px] font-medium text-[#1A1A1A]/25">{update.date}</span>
-            </div>
-
-            <h3 className="text-[14px] font-bold text-[#1A1A1A]/85 leading-snug mb-1">{update.title}</h3>
-            <p className="text-[12px] font-medium text-[#1A1A1A]/35 leading-relaxed line-clamp-2 mb-5">{update.summary}</p>
-
-            {/* Inline actions — no containers, just text */}
-            <div className="flex items-center gap-5">
-                <button
-                    onClick={() => toast('Playing inspection video...')}
-                    className="flex items-center gap-1.5 text-[#1A1A1A]/35 hover:text-[#1A1A1A]/70 transition-colors duration-200 active:scale-[0.97]"
-                >
-                    <Play size={10} fill="currentColor" className="ml-px" />
-                    <span className="text-[11px] font-bold">Watch</span>
-                </button>
-                <button
-                    onClick={() => toast('Downloading report...')}
-                    className="flex items-center gap-1.5 text-[#1A1A1A]/35 hover:text-[#1A1A1A]/70 transition-colors duration-200 active:scale-[0.97]"
-                >
-                    <FileText size={10} strokeWidth={2.5} />
-                    <span className="text-[11px] font-bold">Report</span>
-                </button>
-                <button
-                    onClick={() => toast('Opening chat with manufacturer...')}
-                    className="flex items-center gap-1.5 text-[#1A1A1A]/35 hover:text-[#1A1A1A]/70 transition-colors duration-200 active:scale-[0.97]"
-                >
-                    <MessageCircle size={10} strokeWidth={2.5} />
-                    <span className="text-[11px] font-bold">Message</span>
-                </button>
-            </div>
-        </motion.div>
-    );
-}
-
 // --- Item Row (not a card — just a row inside a glass container) ---
-function ItemRow({ item, isLast }: { item: OrderItem; isLast: boolean }) {
+function ItemRow({ item, isLast, currency }: { item: ApiOrderItem; isLast: boolean; currency: string }) {
+    const unit = Number(item.unit_price || 0);
+    const total = Number(item.line_total || 0) || unit * Number(item.quantity || 0);
     return (
         <div className={`flex items-center gap-4 py-3.5 px-1 ${!isLast ? 'border-b border-white/30' : ''} group`}>
             <div className="w-[56px] h-[56px] rounded-[14px] bg-white/45 flex items-center justify-center p-1.5 flex-shrink-0 overflow-hidden">
-                <ImageWithFallback
-                    src={item.image}
-                    alt={item.name}
-                    className="max-w-full max-h-full object-contain mix-blend-multiply opacity-85 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                />
+                {item.image_url ? (
+                    <ImageWithFallback
+                        src={item.image_url}
+                        alt={item.product_name}
+                        className="max-w-full max-h-full object-contain mix-blend-multiply opacity-85 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                    />
+                ) : (
+                    <PackageIcon className="text-[#1A1A1A]/25" size={18} />
+                )}
             </div>
             <div className="flex-1 min-w-0">
-                <h4 className="text-[13px] font-bold text-[#1A1A1A]/85 leading-tight mb-0.5">{item.name}</h4>
-                <p className="text-[11px] font-medium text-[#1A1A1A]/40">{item.specs}</p>
+                <h4 className="text-[13px] font-bold text-[#1A1A1A]/85 leading-tight mb-0.5">{item.product_name}</h4>
+                <p className="text-[11px] font-medium text-[#1A1A1A]/40">{item.specs || ''}</p>
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                <span className="text-[14px] font-bold text-[#1A1A1A]/80 tabular-nums">${(item.price * item.quantity).toLocaleString()}</span>
-                <span className="text-[10px] font-bold text-[#1A1A1A]/35 bg-white/45 rounded-full px-2 py-0.5 tabular-nums">×{item.quantity} @ ${item.price}</span>
+                <span className="text-[14px] font-bold text-[#1A1A1A]/80 tabular-nums">{currency} {total.toLocaleString()}</span>
+                <span className="text-[10px] font-bold text-[#1A1A1A]/35 bg-white/45 rounded-full px-2 py-0.5 tabular-nums">×{item.quantity} @ {currency} {unit.toLocaleString()}</span>
             </div>
         </div>
     );
 }
 
 // --- Tracking Timeline ---
-function TrackingTimeline({ steps }: { steps: Order['trackingSteps'] }) {
+type TrackingStep = { label: string; date?: string; completed: boolean; current?: boolean };
+
+function TrackingTimeline({ steps }: { steps: TrackingStep[] }) {
     if (!steps || steps.length === 0) return null;
 
     return (
@@ -232,116 +155,84 @@ function TrackingTimeline({ steps }: { steps: Order['trackingSteps'] }) {
     );
 }
 
-// --- Container Card ---
-function ContainerCard({ container, index }: { container: NonNullable<Order['containers']>[0]; index: number }) {
-    const statusColors: Record<string, { dot: string; bg: string; text: string }> = {
-        'loaded': { dot: 'bg-blue-500', bg: 'bg-blue-500/[0.06]', text: 'text-blue-600/70' },
-        'in-transit': { dot: 'bg-cyan-500', bg: 'bg-cyan-500/[0.06]', text: 'text-cyan-600/70' },
-        'at-port': { dot: 'bg-amber-500', bg: 'bg-amber-500/[0.06]', text: 'text-amber-600/70' },
-        'customs': { dot: 'bg-violet-500', bg: 'bg-violet-500/[0.06]', text: 'text-violet-600/70' },
-        'delivered': { dot: 'bg-emerald-500', bg: 'bg-emerald-500/[0.06]', text: 'text-emerald-600/70' },
-    };
-    const sc = statusColors[container.status] || statusColors['loaded'];
-    const statusLabel = container.status.replace('-', ' ').replace(/^\w/, c => c.toUpperCase());
-
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.15 + index * 0.06, duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
-            className="flex items-center gap-3 py-2.5 px-1"
-        >
-            <div className="w-[32px] h-[32px] rounded-[8px] bg-[#1A1A1A]/[0.03] flex items-center justify-center flex-shrink-0">
-                <Ship size={13} strokeWidth={1.8} className="text-[#1A1A1A]/25" />
-            </div>
-            <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                    <span className="text-[11px] font-bold text-[#1A1A1A]/65 tabular-nums truncate">{container.containerId}</span>
-                    <span className="text-[9px] font-bold text-[#1A1A1A]/25 bg-[#1A1A1A]/[0.03] rounded-full px-1.5 py-px flex-shrink-0">{container.type}</span>
-                </div>
-                <div className="flex items-center gap-2 text-[9px] font-medium text-[#1A1A1A]/25">
-                    <span className="tabular-nums">{container.weight}</span>
-                    <span className="w-[2px] h-[2px] rounded-full bg-[#1A1A1A]/10" />
-                    <span className="tabular-nums">Seal: {container.sealNumber}</span>
-                </div>
-            </div>
-            <div className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${sc.bg} flex-shrink-0`}>
-                <div className={`w-[4px] h-[4px] rounded-full ${sc.dot}`} />
-                <span className={`text-[9px] font-bold ${sc.text}`}>{statusLabel}</span>
-            </div>
-        </motion.div>
-    );
-}
-
-// --- Shipment type badge ---
-function ShipmentBadge({ type }: { type?: string }) {
-    if (!type) return null;
-    const icons: Record<string, React.ReactNode> = {
-        'FCL': <Ship size={10} strokeWidth={2} />,
-        'LCL': <Box size={10} strokeWidth={2} />,
-        'Air': <Plane size={10} strokeWidth={2} />,
-        'Express': <Truck size={10} strokeWidth={2} />,
-    };
-    const labels: Record<string, string> = {
-        'FCL': 'Full Container Load',
-        'LCL': 'Less-than-Container',
-        'Air': 'Air Freight',
-        'Express': 'Express Delivery',
-    };
-    return (
-        <div className="flex items-center gap-1.5 text-[#1A1A1A]/30">
-            {icons[type] || <PackageIcon size={10} strokeWidth={2} />}
-            <span className="text-[10px] font-bold">{labels[type] || type}</span>
-        </div>
-    );
-}
-
 // --- Main View ---
 
 interface OrderDetailsViewProps {
-    order: Order;
-    onCancelOrder: (id: string) => void;
-    onRequestSample: (id: string) => void;
+    order: ApiOrder;
+    onCancelOrder: (id: number) => void;
+    onRequestSample: (id: number) => void;
 }
 
-export function OrderDetailsView({ order }: OrderDetailsViewProps) {
-    const completedSteps = order.trackingSteps?.filter(s => s.completed).length || 0;
-    const totalSteps = order.trackingSteps?.length || 1;
-    const progressPercent = Math.round((completedSteps / totalSteps) * 100);
+function fmtMoney(currency: string, amount: string | number) {
+    const n = Number(amount || 0);
+    if (!Number.isFinite(n)) return `${currency} ${amount}`;
+    try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'USD' }).format(n);
+    } catch {
+        return `${currency} ${n.toLocaleString()}`;
+    }
+}
+
+export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: OrderDetailsViewProps) {
     const [copied, setCopied] = useState(false);
+    const status = (order.status || '').toLowerCase();
+    const steps = useMemo<TrackingStep[]>(() => {
+        const createdAt = order.created_at ? new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+        const updatedAt = order.updated_at ? new Date(order.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+        const shipped = status === 'shipped' || status === 'delivered' || status === 'completed';
+        const delivered = status === 'delivered' || status === 'completed';
+        const cancelled = status === 'cancelled';
+        const accepted = status === 'accepted' || shipped || delivered;
+        const out: TrackingStep[] = [
+            { label: 'Order placed', date: createdAt, completed: true },
+            { label: 'Accepted', date: accepted ? updatedAt : '', completed: accepted, current: status === 'accepted' },
+            { label: 'Shipped', date: shipped ? updatedAt : '', completed: shipped, current: status === 'shipped' },
+            { label: 'Delivered', date: delivered ? updatedAt : '', completed: delivered, current: delivered },
+        ];
+        if (cancelled) {
+            return [
+                { label: 'Order placed', date: createdAt, completed: true },
+                { label: 'Cancelled', date: updatedAt, completed: true, current: true },
+            ];
+        }
+        return out;
+    }, [order.created_at, order.updated_at, status]);
+    const completedSteps = steps.filter(s => s.completed).length || 0;
+    const totalSteps = steps.length || 1;
+    const progressPercent = Math.round((completedSteps / totalSteps) * 100);
 
     // Status config
     const statusBadge = (() => {
-        switch (order.status) {
-            case 'Arriving': return { bg: 'bg-blue-500/8', dot: 'bg-blue-500', text: 'text-blue-600/85', label: 'In production' };
-            case 'Processing': return { bg: 'bg-blue-500/8', dot: 'bg-blue-500', text: 'text-blue-600/85', label: 'Processing' };
-            case 'In Transit': return { bg: 'bg-cyan-500/8', dot: 'bg-cyan-500', text: 'text-cyan-600/85', label: 'In transit' };
-            case 'Customs': return { bg: 'bg-amber-500/8', dot: 'bg-amber-500', text: 'text-amber-600/85', label: 'At customs' };
-            case 'At Warehouse': return { bg: 'bg-violet-500/8', dot: 'bg-violet-500', text: 'text-violet-600/85', label: 'At warehouse' };
-            case 'Delivered': return { bg: 'bg-emerald-500/8', dot: 'bg-emerald-500', text: 'text-emerald-600/85', label: 'Delivered' };
-            case 'Cancelled': return { bg: 'bg-[#1A1A1A]/5', dot: 'bg-[#1A1A1A]/30', text: 'text-[#1A1A1A]/40', label: 'Cancelled' };
-            default: return { bg: 'bg-[#1A1A1A]/5', dot: 'bg-[#1A1A1A]/30', text: 'text-[#1A1A1A]/40', label: order.status };
-        }
-    })();
-
-    // Format arrival date
-    const arrivalFormatted = (() => {
-        try {
-            const d = new Date(order.arrivalDate + 'T00:00:00');
-            return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-        } catch {
-            return order.arrivalDate;
-        }
+        if (status === 'created') return { bg: 'bg-blue-500/8', dot: 'bg-blue-500', text: 'text-blue-600/85', label: 'Created' };
+        if (status === 'accepted') return { bg: 'bg-blue-500/8', dot: 'bg-blue-500', text: 'text-blue-600/85', label: 'Accepted' };
+        if (status === 'shipped') return { bg: 'bg-cyan-500/8', dot: 'bg-cyan-500', text: 'text-cyan-600/85', label: 'Shipped' };
+        if (status === 'delivered' || status === 'completed') return { bg: 'bg-emerald-500/8', dot: 'bg-emerald-500', text: 'text-emerald-600/85', label: 'Delivered' };
+        if (status === 'cancelled') return { bg: 'bg-[#1A1A1A]/5', dot: 'bg-[#1A1A1A]/30', text: 'text-[#1A1A1A]/40', label: 'Cancelled' };
+        if (status === 'rejected') return { bg: 'bg-[#1A1A1A]/5', dot: 'bg-[#1A1A1A]/30', text: 'text-[#1A1A1A]/40', label: 'Rejected' };
+        return { bg: 'bg-[#1A1A1A]/5', dot: 'bg-[#1A1A1A]/30', text: 'text-[#1A1A1A]/40', label: order.status || '—' };
     })();
 
     const handleCopyOrder = () => {
-        navigator.clipboard?.writeText(order.orderNumber).catch(() => {});
+        navigator.clipboard?.writeText(`ORD-${order.id}`).catch(() => {});
         setCopied(true);
         toast('Order number copied');
         setTimeout(() => setCopied(false), 2000);
     };
 
     const totalItems = order.items.reduce((s, i) => s + i.quantity, 0);
+    const subtotal = useMemo(() => {
+        const sum = (order.items || []).reduce((acc, it) => acc + Number(it.line_total || 0), 0);
+        return Number.isFinite(sum) ? sum : 0;
+    }, [order.items]);
+    const ship = order.shipping_address || {};
+    const shipName = String(ship.contact_name || ship.name || '').trim();
+    const shipPhone = String(ship.phone || '').trim();
+    const shipCountry = String(ship.country || ship.country_name || '').trim();
+    const shipRegion = String(ship.region || ship.state || '').trim();
+    const shipCity = String(ship.city || '').trim();
+    const shipStreet1 = String(ship.street1 || ship.street || '').trim();
+    const shipStreet2 = String(ship.street2 || '').trim();
+    const shipPostal = String(ship.postal_code || ship.zip || '').trim();
 
     return (
         <motion.div
@@ -375,7 +266,7 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
 
                             {/* Date — hero */}
                             <h1 className="text-[30px] lg:text-[34px] font-black text-[#1A1A1A] tracking-tight leading-[1.1] mb-1.5">
-                                {arrivalFormatted}
+                                {status === 'delivered' || status === 'completed' ? 'Delivered' : 'Order status'}
                             </h1>
 
                             {/* Order # + PO # */}
@@ -384,36 +275,30 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                                     onClick={handleCopyOrder}
                                     className="flex items-center gap-1.5 text-[#1A1A1A]/35 hover:text-[#1A1A1A]/55 transition-colors group"
                                 >
-                                    <span className="text-[11px] font-medium">#{order.orderNumber}</span>
+                                    <span className="text-[11px] font-medium">ORD-{order.id}</span>
                                     {copied ? (
                                         <CheckCircle2 size={10} strokeWidth={2.5} className="text-emerald-500" />
                                     ) : (
                                         <Copy size={10} strokeWidth={2} className="group-hover:scale-110 transition-transform" />
                                     )}
                                 </button>
-                                {order.poNumber && (
-                                    <>
-                                        <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/15" />
-                                        <span className="text-[11px] font-medium text-[#1A1A1A]/25">{order.poNumber}</span>
-                                    </>
-                                )}
                             </div>
 
                             {/* Shipment info strip */}
                             <div className="flex items-center gap-4 mb-4">
-                                <ShipmentBadge type={order.shipmentType} />
-                                {order.totalWeight && (
+                                {order.latest_shipment?.tracking_number ? (
+                                    <>
+                                        <span className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums">
+                                            {order.latest_shipment.tracking_number}
+                                        </span>
+                                    </>
+                                ) : null}
+                                {order.latest_shipment?.status ? (
                                     <>
                                         <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/10" />
-                                        <span className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums">{order.totalWeight}</span>
+                                        <span className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums">{order.latest_shipment.status}</span>
                                     </>
-                                )}
-                                {(order.containerCount ?? 0) > 0 && (
-                                    <>
-                                        <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/10" />
-                                        <span className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums">{order.containerCount} container{order.containerCount !== 1 ? 's' : ''}</span>
-                                    </>
-                                )}
+                                ) : null}
                                 <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/10" />
                                 <span className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums">{totalItems} units</span>
                             </div>
@@ -430,39 +315,11 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                                 </div>
                                 <span className="text-[10px] font-bold text-[#1A1A1A]/35 tabular-nums">{progressPercent}%</span>
                             </div>
-
-                            {/* Quality Update — flows inside, separated by a glass divider */}
-                            {order.status !== 'Cancelled' && order.status !== 'Delivered' && (
-                                <QualityUpdate update={latestUpdate} />
-                            )}
                         </Glass>
                     </motion.div>
 
-                    {/* Containers — if applicable */}
-                    {order.containers && order.containers.length > 0 && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 16 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.08, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
-                        >
-                            <div className="flex items-center justify-between mb-3 px-1">
-                                <span className="text-[10px] font-bold text-[#1A1A1A]/35 tracking-[1.5px] uppercase">Containers</span>
-                                <span className="text-[10px] font-bold text-[#1A1A1A]/20 tabular-nums">{order.containers.length}</span>
-                            </div>
-                            <Glass className="bg-white/50 rounded-[20px] px-4 py-1">
-                                {order.containers.map((c, i) => (
-                                    <div key={c.containerId} className={`${i < order.containers!.length - 1 ? 'border-b border-white/30' : ''}`}>
-                                        <ContainerCard container={c} index={i} />
-                                    </div>
-                                ))}
-                            </Glass>
-                        </motion.div>
-                    )}
-
                     {/* Tracking Timeline */}
-                    {order.trackingSteps && order.trackingSteps.length > 0 && (
-                        <TrackingTimeline steps={order.trackingSteps} />
-                    )}
+                    <TrackingTimeline steps={steps} />
 
                     {/* Items — single glass surface, rows inside */}
                     <motion.div
@@ -476,7 +333,7 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                         </div>
                         <Glass className="bg-white/50 rounded-[20px] px-4 py-1">
                             {order.items.map((item, i) => (
-                                <ItemRow key={item.id} item={item} isLast={i === order.items.length - 1} />
+                                <ItemRow key={item.id} item={item} currency={order.currency} isLast={i === order.items.length - 1} />
                             ))}
                         </Glass>
                     </motion.div>
@@ -504,11 +361,6 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                                 onClick={() => toast('Preparing print view...')}
                             />
                             <ActionButton
-                                icon={<ChatIcon />}
-                                label="Message seller"
-                                onClick={() => toast('Opening chat with seller...')}
-                            />
-                            <ActionButton
                                 icon={<HelpIcon />}
                                 label="Get help"
                                 onClick={() => toast('Opening help center...')}
@@ -518,44 +370,25 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                         {/* Glass divider */}
                         <div className="h-px bg-[#1A1A1A]/6" />
 
-                        {/* Buyer */}
-                        {order.buyerCompany && (
-                            <>
-                                <div>
-                                    <span className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-[1.5px] uppercase block mb-3">Buyer</span>
-                                    <div className="flex gap-3 items-center">
-                                        <div className="w-[28px] h-[28px] rounded-full bg-blue-500/[0.06] flex items-center justify-center flex-shrink-0">
-                                            <span className="text-[10px] font-black text-blue-600/50">
-                                                {order.buyerCompany.charAt(0)}
-                                            </span>
-                                        </div>
-                                        <div>
-                                            <p className="text-[13px] font-bold text-[#1A1A1A]/85">{order.buyerCompany}</p>
-                                            <p className="text-[10px] font-medium text-[#1A1A1A]/30">{order.shippingAddress.name}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="h-px bg-[#1A1A1A]/6" />
-                            </>
-                        )}
-
                         {/* Delivery */}
                         <div>
                             <span className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-[1.5px] uppercase block mb-3">Delivery</span>
                             <div className="flex gap-3 items-start">
                                 <MapPin size={13} strokeWidth={2} className="text-[#1A1A1A]/28 mt-0.5 flex-shrink-0" />
                                 <div>
-                                    <p className="text-[13px] font-bold text-[#1A1A1A]/85 mb-0.5">{order.shippingAddress.name}</p>
+                                    <p className="text-[13px] font-bold text-[#1A1A1A]/85 mb-0.5">{shipName || '—'}</p>
                                     <p className="text-[11px] font-medium text-[#1A1A1A]/40 leading-relaxed">
-                                        {order.shippingAddress.street}<br />
-                                        {order.shippingAddress.city}, {order.shippingAddress.state} {order.shippingAddress.zip}
+                                        {[shipStreet1, shipStreet2].filter(Boolean).join(' ')}<br />
+                                        {[shipCity, shipRegion, shipPostal].filter(Boolean).join(', ')} {shipCountry}
                                     </p>
                                 </div>
                             </div>
-                            <div className="flex gap-3 items-center mt-2 ml-[1px]">
-                                <Phone size={12} strokeWidth={2} className="text-[#1A1A1A]/28 flex-shrink-0" />
-                                <p className="text-[11px] font-medium text-[#1A1A1A]/40">{order.shippingAddress.phone}</p>
-                            </div>
+                            {shipPhone ? (
+                                <div className="flex gap-3 items-center mt-2 ml-[1px]">
+                                    <Phone size={12} strokeWidth={2} className="text-[#1A1A1A]/28 flex-shrink-0" />
+                                    <p className="text-[11px] font-medium text-[#1A1A1A]/40">{shipPhone}</p>
+                                </div>
+                            ) : null}
                         </div>
 
                         {/* Glass divider */}
@@ -567,7 +400,7 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                             <div className="flex gap-3 items-center">
                                 <CreditCard size={13} strokeWidth={2} className="text-[#1A1A1A]/28 flex-shrink-0" />
                                 <p className="text-[12px] font-medium text-[#1A1A1A]/55">
-                                    {order.paymentMethod.type} ending in {order.paymentMethod.last4}
+                                    {order.payment_method} · {order.payment_status}
                                 </p>
                             </div>
                         </div>
@@ -579,40 +412,32 @@ export function OrderDetailsView({ order }: OrderDetailsViewProps) {
                         <div className="space-y-2">
                             <div className="flex justify-between text-[12px]">
                                 <span className="font-medium text-[#1A1A1A]/40">Subtotal</span>
-                                <span className="font-medium text-[#1A1A1A]/55 tabular-nums">${order.subtotal.toLocaleString()}</span>
-                            </div>
-                            <div className="flex justify-between text-[12px]">
-                                <span className="font-medium text-[#1A1A1A]/40">Shipping</span>
-                                <span className="font-medium text-[#1A1A1A]/55 tabular-nums">${order.shipping.toLocaleString()}</span>
-                            </div>
-                            <div className="flex justify-between text-[12px]">
-                                <span className="font-medium text-[#1A1A1A]/40">Tax</span>
-                                <span className="font-medium text-[#1A1A1A]/55 tabular-nums">${order.tax.toLocaleString()}</span>
+                                <span className="font-medium text-[#1A1A1A]/55 tabular-nums">{fmtMoney(order.currency, subtotal)}</span>
                             </div>
                             <div className="h-px bg-[#1A1A1A]/6 !mt-3.5 !mb-1.5" />
                             <div className="flex justify-between items-baseline">
                                 <span className="text-[12px] font-bold text-[#1A1A1A]/65">Total</span>
-                                <span className="text-[22px] font-black text-[#1A1A1A] tracking-tight tabular-nums">${order.total.toLocaleString()}</span>
+                                <span className="text-[22px] font-black text-[#1A1A1A] tracking-tight tabular-nums">{fmtMoney(order.currency, order.total_amount)}</span>
                             </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-2">
+                            <button
+                                onClick={() => onRequestSample(order.id)}
+                                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                            >
+                                <FlaskConical size={12} strokeWidth={2.5} />
+                                Request sample
+                            </button>
+                            <button
+                                onClick={() => onCancelOrder(order.id)}
+                                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                            >
+                                <Ban size={12} strokeWidth={2.5} />
+                                Cancel
+                            </button>
                         </div>
                     </Glass>
-
-                    {/* Manufacturer — subtle glass row */}
-                    <button
-                        onClick={() => toast('Opening manufacturer profile...')}
-                        className="w-full flex items-center justify-between py-3 px-4 bg-white/30 backdrop-blur-xl border border-white/30 rounded-[16px] hover:bg-white/50 transition-all duration-300 group"
-                    >
-                        <div className="flex items-center gap-3">
-                            <div className="w-7 h-7 rounded-full bg-white/55 flex items-center justify-center text-[10px] font-black text-[#1A1A1A]/50">
-                                {order.seller.name.charAt(0)}
-                            </div>
-                            <div className="text-left">
-                                <p className="text-[11px] font-bold text-[#1A1A1A]/65">{order.seller.name}</p>
-                                <p className="text-[9px] font-medium text-[#1A1A1A]/35">{order.seller.location}</p>
-                            </div>
-                        </div>
-                        <ChevronRight size={13} className="text-[#1A1A1A]/25 group-hover:text-[#1A1A1A]/45 group-hover:translate-x-0.5 transition-all" />
-                    </button>
                 </motion.div>
             </div>
         </motion.div>

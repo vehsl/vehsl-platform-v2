@@ -1,6 +1,8 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { fetchJsonAuthed } from "@/lib/api";
+import { safeJsonParse } from "@/lib/utils";
 
 export type AppLanguage = "en" | "zh";
 
@@ -58,22 +60,98 @@ type LanguageContextValue = {
 const LanguageContext = createContext<LanguageContextValue | null>(null);
 
 const STORAGE_KEY = "vehsl.language";
+const GUEST_STORAGE_KEY = "vehsl.language.guest";
+
+function hasAccessToken() {
+  try {
+    return Boolean(window.localStorage.getItem("vehsl.access") || "");
+  } catch {
+    return false;
+  }
+}
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguageState] = useState<AppLanguage>("en");
 
   useEffect(() => {
+    const tokenExists = hasAccessToken();
+    if (tokenExists) {
+      try {
+        const stored = window.localStorage.getItem(STORAGE_KEY) as AppLanguage | null;
+        if (stored === "en" || stored === "zh") setLanguageState(stored);
+      } catch {}
+      return;
+    }
+
     try {
-      const stored = window.localStorage.getItem(STORAGE_KEY) as AppLanguage | null;
+      const stored = window.sessionStorage.getItem(GUEST_STORAGE_KEY) as AppLanguage | null;
       if (stored === "en" || stored === "zh") setLanguageState(stored);
     } catch {}
   }, []);
 
+  useEffect(() => {
+    const fromLocalUser = () => {
+      try {
+        const raw = window.localStorage.getItem("vehsl.user");
+        const u = safeJsonParse<any | null>(raw, null);
+        const profLang = (u?.profile?.language_preference || "").toString();
+        const buyerLang = (u?.buyer_profile?.language_preference || "").toString();
+        const candidate = (profLang || buyerLang).toLowerCase();
+        if (candidate === "en" || candidate === "zh") return candidate as AppLanguage;
+      } catch {}
+      return null;
+    };
+
+    const fromServer = async () => {
+      try {
+        const access = window.localStorage.getItem("vehsl.access") || "";
+        if (!access) return;
+        const me = (await fetchJsonAuthed("/api/v1/auth/me")) as any;
+        const profLang = (me?.profile?.language_preference || "").toString();
+        const buyerLang = (me?.buyer_profile?.language_preference || "").toString();
+        const candidate = (profLang || buyerLang).toLowerCase();
+        if (candidate === "en" || candidate === "zh") {
+          setLanguageState(candidate as AppLanguage);
+          try {
+            window.localStorage.setItem(STORAGE_KEY, candidate);
+            window.localStorage.setItem("vehsl.user", JSON.stringify(me));
+          } catch {}
+        }
+      } catch {}
+    };
+
+    if (!hasAccessToken()) return;
+    const localUserLang = fromLocalUser();
+    if (localUserLang) setLanguageState(localUserLang);
+    void fromServer();
+  }, []);
+
   const setLanguage = useCallback((lang: AppLanguage) => {
     setLanguageState(lang);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, lang);
-    } catch {}
+    const tokenExists = hasAccessToken();
+    if (tokenExists) {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, lang);
+      } catch {}
+    } else {
+      try {
+        window.sessionStorage.setItem(GUEST_STORAGE_KEY, lang);
+      } catch {}
+    }
+
+    void (async () => {
+      try {
+        if (!hasAccessToken()) return;
+        const updated = (await fetchJsonAuthed("/api/v1/auth/me", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language_preference: lang }),
+        })) as any;
+        try {
+          window.localStorage.setItem("vehsl.user", JSON.stringify(updated));
+        } catch {}
+      } catch {}
+    })();
   }, []);
 
   const t = useCallback(

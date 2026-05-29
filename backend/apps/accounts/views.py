@@ -26,11 +26,11 @@ import csv
 from django.core.files.storage import default_storage
 from django.contrib.auth.hashers import make_password, check_password
 
-from apps.catalog.models import Product, ListingRequest
-from apps.orders.models import Order, OrderItem, Shipment, WishlistItem
+from apps.catalog.models import ListingRequest, Product, ProductMedia, Warehouse, WarehouseStock
+from apps.orders.models import Order, OrderItem, Shipment, WishlistItem, WarehouseRelease, Review
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
-from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Value, When
+from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Subquery, OuterRef, Value, When
 from django.db.models.functions import Coalesce, TruncDay, TruncHour, TruncMonth, TruncWeek
 
 from .models import (
@@ -38,6 +38,7 @@ from .models import (
     AdminPlatformSettings,
     AdminUiNotificationState,
     AuditLog,
+    BuyerAddress,
     BuyerProfile,
     ChatMessage,
     ChatThread,
@@ -57,6 +58,7 @@ from .serializers import (
     AdminUserListSerializer,
     AdminUserWriteSerializer,
     AdminVerificationUserSerializer,
+    BuyerAddressSerializer,
     BuyerProfileSerializer,
     ChatMessageSerializer,
     ChatThreadSerializer,
@@ -1068,12 +1070,36 @@ class MeView(APIView):
         profile = getattr(user, "profile", None)
         if profile is None:
             profile = UserProfile.objects.create(user=user)
-        for f in ["country", "province", "city", "street", "address", "nationality", "gender", "date_of_birth"]:
+        for f in [
+            "country",
+            "province",
+            "city",
+            "street",
+            "address",
+            "language_preference",
+            "nationality",
+            "gender",
+            "date_of_birth",
+        ]:
             if f in data:
-                setattr(profile, f, data.get(f) or (None if f == "date_of_birth" else ""))
+                if f == "date_of_birth":
+                    setattr(profile, f, data.get(f) or None)
+                else:
+                    setattr(profile, f, data.get(f) or "")
         profile.save()
 
         return Response(UserSerializer(user).data)
+
+
+class BuyerAddressViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = BuyerAddressSerializer
+
+    def get_queryset(self):
+        return BuyerAddress.objects.filter(user=self.request.user).order_by("kind", "-updated_at")
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 
 def _compact_relative_time(dt):
@@ -1308,12 +1334,13 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
     def opt(kind: str, label: str):
         return {"kind": kind, "label": label}
 
+    identity_required = 2 if is_seller else 1
     groups = [
         {
             "key": "identity",
             "label": "Identity Document",
             "required": True,
-            "required_count": 2,
+            "required_count": identity_required,
             "options": [
                 opt(KycDocument.Kind.PASSPORT, "Passport"),
                 opt(KycDocument.Kind.ID_CARD, "National ID"),
@@ -1525,6 +1552,47 @@ class KycDocumentsMeView(APIView):
                     {"detail": "Only one document can be uploaded for this field. Remove the existing document first."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            target_group = None
+            for g in _kyc_requirement_groups_for_user(request.user):
+                opts = g.get("options") or []
+                if any((o.get("kind") or "") == kind for o in opts):
+                    target_group = g
+                    break
+
+            if target_group is not None:
+                try:
+                    required_count = int(target_group.get("required_count") or 1)
+                except Exception:
+                    required_count = 1
+                opts = target_group.get("options") or []
+                group_kinds = {o.get("kind") for o in opts if o.get("kind")}
+                if required_count > 0 and group_kinds:
+                    group_docs = list(
+                        KycDocument.objects.filter(user=request.user, kind__in=group_kinds).order_by("-uploaded_at")
+                    )
+                    seen_kinds: set[str] = set()
+                    valid_unique = 0
+                    for d in group_docs:
+                        k = (getattr(d, "kind", "") or "").lower()
+                        if k and k in seen_kinds:
+                            continue
+                        try:
+                            name = getattr(d.file, "name", "") or ""
+                            if name and default_storage.exists(name):
+                                valid_unique += 1
+                                if k:
+                                    seen_kinds.add(k)
+                        except Exception:
+                            continue
+                    if valid_unique >= required_count:
+                        label = (target_group.get("label") or "this section").strip() or "this section"
+                        return Response(
+                            {
+                                "detail": f"Only {required_count} document(s) can be uploaded for {label}. Remove an existing document first."
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
             doc = KycDocument(
                 user=request.user,
@@ -3143,6 +3211,83 @@ class AdminKycDocumentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
 class SellerDashboardViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSeller]
 
+    def _parse_range_window(self, request):
+        now = timezone.now()
+        rng = (request.query_params.get("range") or request.query_params.get("time_range") or "7d").strip().lower()
+        if rng == "24h":
+            delta = timedelta(hours=24)
+        elif rng == "30d":
+            delta = timedelta(days=30)
+        elif rng == "120d":
+            delta = timedelta(days=120)
+        elif rng == "90d":
+            delta = timedelta(days=90)
+        else:
+            delta = timedelta(days=7)
+
+        start_curr = now - delta
+        start_prev = start_curr - delta
+        return now, start_curr, start_prev, delta
+
+    def _country_to_iso(self, raw: str) -> str:
+        v = (raw or "").strip().lower()
+        if not v:
+            return ""
+        if len(v) == 2 and v.isalpha():
+            return v
+        mapping = {
+            "united states": "us",
+            "united states of america": "us",
+            "usa": "us",
+            "us": "us",
+            "united kingdom": "gb",
+            "uk": "gb",
+            "great britain": "gb",
+            "uae": "ae",
+            "united arab emirates": "ae",
+            "germany": "de",
+            "canada": "ca",
+            "france": "fr",
+            "japan": "jp",
+            "south korea": "kr",
+            "korea": "kr",
+            "australia": "au",
+        }
+        if v in mapping:
+            return mapping[v]
+        if len(v) > 2:
+            guess = v[:2]
+            if guess.isalpha():
+                return guess
+        return ""
+
+    def _tokenize_keywords(self, s: str) -> list[str]:
+        if not s:
+            return []
+        out: list[str] = []
+        buf: list[str] = []
+        for ch in s.lower():
+            if ch.isalnum():
+                buf.append(ch)
+            else:
+                if buf:
+                    tok = "".join(buf).strip()
+                    buf = []
+                    if len(tok) >= 4:
+                        out.append(tok)
+        if buf:
+            tok = "".join(buf).strip()
+            if len(tok) >= 4:
+                out.append(tok)
+        seen = set()
+        uniq = []
+        for t in out:
+            if t in seen:
+                continue
+            seen.add(t)
+            uniq.append(t)
+        return uniq
+
     def _kyc_gate(self, request):
         _sync_seller_verification_status(request.user)
         profile = getattr(request.user, "seller_profile", None)
@@ -3159,10 +3304,29 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
         user = request.user
-        total_pending = Order.objects.filter(seller=user, status__in=[Order.Status.CREATED, Order.Status.ACCEPTED, Order.Status.SHIPPED]).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
-        last_paid = 12912.00  # Mock or fetch from payments app if implemented
-        unread_messages = ChatMessage.objects.exclude(sender=user).exclude(read_by__contains=[user.id]).filter(thread__participants__contains=[user.id]).count()
-        active_orders = Order.objects.filter(seller=user).exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED]).count()
+        orders_qs = Order.objects.filter(seller=user, deleted_at__isnull=True)
+        active_orders_qs = orders_qs.exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED])
+
+        total_pending = (
+            active_orders_qs.filter(payment_status__in=[Order.PaymentStatus.UNPAID, Order.PaymentStatus.COD_PENDING])
+            .aggregate(total=Sum("total_amount"))
+            .get("total")
+            or 0
+        )
+        last_paid = (
+            orders_qs.filter(payment_status=Order.PaymentStatus.PAID)
+            .order_by("-updated_at", "-id")
+            .values_list("total_amount", flat=True)
+            .first()
+            or 0
+        )
+        unread_messages = (
+            ChatMessage.objects.exclude(sender=user)
+            .exclude(read_by__contains=[user.id])
+            .filter(thread__participants__contains=[user.id], deleted_at__isnull=True)
+            .count()
+        )
+        active_orders = active_orders_qs.count()
         
         # Calculate protection score
         settings = getattr(user, 'settings', None)
@@ -3183,13 +3347,36 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         }
         return Response(data)
 
+    def _deadline_label(self, o: Order) -> tuple[str, bool]:
+        dt = getattr(o, "deadline_at", None)
+        if not dt:
+            return ("", False)
+        now = timezone.now()
+        delta = dt - now
+        seconds = int(delta.total_seconds())
+        if seconds <= 0:
+            return ("Overdue", True)
+        days = seconds // 86400
+        if days >= 1:
+            return (f"{days}d left", days <= 1)
+        hours = seconds // 3600
+        if hours >= 1:
+            return (f"{hours}h left", hours <= 6)
+        mins = max(1, seconds // 60)
+        return (f"{mins}m left", True)
+
     @action(detail=False, methods=["get"])
     def orders(self, request):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
         user = request.user
-        orders = Order.objects.filter(seller=user).exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED])
+        orders = (
+            Order.objects.filter(seller=user, deleted_at__isnull=True)
+            .exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED])
+            .prefetch_related("items", "items__product", "items__product__media")
+            .order_by("-created_at", "-id")[:50]
+        )
         
         results = []
         for o in orders:
@@ -3197,22 +3384,62 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             product_name = item.product.name if item else "Unknown Product"
             image_url = ""
             if item and item.product:
-                media = item.product.media.filter(media_type="image").first()
+                media = item.product.media.filter(media_type="image", deleted_at__isnull=True).first()
                 if media:
                     image_url = media.url
+
+            latest_shipment = None
+            try:
+                latest_shipment = o.shipments.filter(deleted_at__isnull=True).order_by("-created_at", "-id").first()
+            except Exception:
+                latest_shipment = None
+
+            timeline_step = 0
+            production_step = 0
+            if latest_shipment:
+                st = getattr(latest_shipment, "status", "") or ""
+                if st == Shipment.Status.PICKED_UP:
+                    timeline_step = 1
+                    production_step = 1
+                elif st in {Shipment.Status.IN_TRANSIT, Shipment.Status.CUSTOMS, Shipment.Status.OUT_FOR_DELIVERY}:
+                    timeline_step = 2
+                    production_step = 2
+                elif st == Shipment.Status.DELIVERED:
+                    timeline_step = 3
+                    production_step = 3
+                else:
+                    timeline_step = 0
+                    production_step = 1 if st == Shipment.Status.LABEL_CREATED else 0
+
+            deadline_label, deadline_urgent = self._deadline_label(o)
+            ship_addr = o.shipping_address or {}
+            city = (ship_addr.get("city") or "").strip()
+            country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+            destination = ", ".join([p for p in [city, country] if p]) or "—"
+
+            if o.status == Order.Status.CREATED:
+                typ = "approval"
+            elif o.status in {Order.Status.ACCEPTED, Order.Status.REJECTED}:
+                typ = "production"
+            elif o.status == Order.Status.SHIPPED:
+                typ = "pickup"
+            else:
+                typ = "production"
 
             results.append({
                 "id": str(o.id),
                 "product": product_name,
                 "image": image_url,
-                "type": "approval" if o.status == Order.Status.CREATED else "production",
-                "deadline": "2d left",
-                "deadline_urgent": o.status == Order.Status.CREATED,
+                "type": typ,
+                "deadline": deadline_label or ("Review required" if o.status == Order.Status.CREATED else ""),
+                "deadline_urgent": bool(deadline_urgent) or o.status == Order.Status.CREATED,
                 "order_number": f"#VH-{o.id}",
                 "qty": sum(i.quantity for i in o.items.all()),
                 "unit_price": float(item.unit_price) if item else 0,
                 "buyer": f"{o.buyer.first_name} {o.buyer.last_name}",
-                "destination": "London, UK",
+                "destination": destination,
+                "production_step": production_step,
+                "timeline_step": timeline_step,
             })
         
         if not results:
@@ -3226,9 +3453,737 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
         user = request.user
-        qs = Notification.objects.filter(user=user).order_by("-created_at")[:10]
+        qs = Notification.objects.filter(user=user).exclude(status=Notification.Status.READ).order_by("-created_at")[:10]
         ser = SellerActivitySerializer(qs, many=True)
         return Response(ser.data)
+
+    @action(detail=False, methods=["post"], url_path=r"activities/(?P<activity_id>[^/.]+)/dismiss")
+    def dismiss_activity(self, request, activity_id=None):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        try:
+            nid = int(activity_id)
+        except Exception:
+            return Response({"detail": "Invalid activity id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated = (
+            Notification.objects.filter(user=request.user, id=nid)
+            .exclude(status=Notification.Status.READ)
+            .update(status=Notification.Status.READ)
+        )
+        return Response({"dismissed": bool(updated)})
+
+    @action(detail=False, methods=["post"], url_path=r"activities/(?P<activity_id>[^/.]+)/reply")
+    def reply_activity(self, request, activity_id=None):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+
+        try:
+            nid = int(activity_id)
+        except Exception:
+            return Response({"detail": "Invalid activity id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        content = str((request.data.get("content") if isinstance(request.data, dict) else "") or "").strip()
+        if not content:
+            return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        notif = Notification.objects.filter(user=request.user, id=nid).first()
+        if not notif:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payload = notif.payload or {}
+        order_id = payload.get("order_id") or payload.get("orderId") or (request.data.get("order_id") if isinstance(request.data, dict) else None)
+        try:
+            order_id = int(order_id)
+        except Exception:
+            order_id = 0
+        if not order_id:
+            return Response({"detail": "order_id is required for reply."}, status=status.HTTP_400_BAD_REQUEST)
+
+        order = Order.objects.filter(id=order_id, seller=request.user, deleted_at__isnull=True).select_related("buyer").first()
+        if not order:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        uid = request.user.id
+        other_id = order.buyer_id
+        thread = (
+            ChatThread.objects.filter(
+                deleted_at__isnull=True,
+                type=ChatThread.ThreadType.BUYER_SELLER,
+                participants__contains=[uid, other_id],
+            )
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if not thread:
+            thread = ChatThread.objects.create(type=ChatThread.ThreadType.BUYER_SELLER, participants=[uid, other_id])
+
+        msg = ChatMessage.objects.create(thread=thread, sender=request.user, content=content, read_by=[uid])
+        ChatThread.objects.filter(id=thread.id).update(updated_at=msg.sent_at)
+
+        Notification.objects.filter(user=request.user, id=nid).update(status=Notification.Status.READ)
+
+        return Response(
+            {
+                "thread": ChatThreadSerializer(thread, context={"request": request}).data,
+                "message": ChatMessageSerializer(msg, context={"request": request}).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["get"])
+    def shipments(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        user = request.user
+        qs = (
+            Shipment.objects.select_related("order")
+            .prefetch_related("order__items", "order__items__product", "order__items__product__media")
+            .filter(order__seller=user, deleted_at__isnull=True, order__deleted_at__isnull=True)
+            .exclude(status=Shipment.Status.DELIVERED)
+            .order_by("-created_at", "-id")[:50]
+        )
+        out = []
+        for s in qs:
+            o = s.order
+            item = o.items.first()
+            if not item:
+                continue
+            media = item.product.media.filter(media_type="image", deleted_at__isnull=True).first()
+            image_url = media.url if media else ""
+            ship_addr = o.shipping_address or {}
+            city = (ship_addr.get("city") or "").strip()
+            country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+            dest = ", ".join([p for p in [city, country] if p]) or "—"
+            out.append(
+                {
+                    "id": str(s.id),
+                    "item": item.product.name,
+                    "image": image_url,
+                    "qty": sum(i.quantity for i in o.items.all()),
+                    "unit_price": float(item.unit_price),
+                    "dest": dest,
+                    "order_ref": f"#VH-{o.id}",
+                    "shipment_status": s.status,
+                    "tracking_number": (s.tracking_number or "").strip(),
+                }
+            )
+        return Response(out)
+
+    @action(detail=False, methods=["get"])
+    def reels(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        user = request.user
+        qs = (
+            ProductMedia.objects.select_related("product")
+            .filter(
+                deleted_at__isnull=True,
+                media_type=ProductMedia.MediaType.VIDEO,
+                product__seller=user,
+                product__deleted_at__isnull=True,
+            )
+            .order_by("id")[:100]
+        )
+        out = []
+        for m in qs:
+            p = m.product
+            caption = (m.title or "").strip() or p.name
+            thumb = (m.url or "").strip()
+            if not thumb:
+                img = p.media.filter(media_type="image", deleted_at__isnull=True).first()
+                thumb = img.url if img else ""
+            stats = (p.detail_config or {}).get("reels_stats") or {}
+            s = stats.get(str(m.id)) if isinstance(stats, dict) else None
+            if not isinstance(s, dict):
+                seed = int(m.id) * 2654435761 % 100000
+                s = {
+                    "views": int(500 + (seed % 25000)),
+                    "likes": int(30 + (seed % 2000)),
+                    "comments": int(seed % 200),
+                    "shares": int(seed % 300),
+                }
+            hashtags = []
+            for part in (p.name or "").replace("—", " ").replace("-", " ").split(" "):
+                part = part.strip().lower()
+                if len(part) < 4:
+                    continue
+                if len(hashtags) >= 4:
+                    break
+                hashtags.append(part)
+            out.append(
+                {
+                    "id": f"r{m.id}",
+                    "thumbnail": thumb,
+                    "caption": caption,
+                    "product": p.name,
+                    "productId": str(p.id),
+                    "status": "published",
+                    "views": int(s.get("views") or 0),
+                    "likes": int(s.get("likes") or 0),
+                    "comments": int(s.get("comments") or 0),
+                    "shares": int(s.get("shares") or 0),
+                    "duration": "0:20",
+                    "postedAt": "Recently",
+                    "hashtags": hashtags,
+                    "visibility": "public",
+                }
+            )
+        return Response(out)
+
+    @action(detail=False, methods=["get"], url_path="insights/portfolio")
+    def insights_portfolio(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+
+        now, start_curr, start_prev, delta = self._parse_range_window(request)
+        user = request.user
+
+        search = (request.query_params.get("search") or "").strip()
+        industry = (request.query_params.get("industry") or "").strip().lower()
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw) if limit_raw else 100
+        except Exception:
+            limit = 100
+        limit = max(1, min(200, limit))
+
+        prod_qs = (
+            Product.objects.filter(seller=user, deleted_at__isnull=True)
+            .exclude(status=Product.Status.ARCHIVED)
+            .select_related("category")
+            .prefetch_related("media")
+            .order_by("-updated_at", "-id")
+        )
+        if search:
+            prod_qs = prod_qs.filter(Q(name__icontains=search) | Q(sku__icontains=search))
+        if industry and industry != "all":
+            prod_qs = prod_qs.filter(category__slug=industry)
+
+        products = list(prod_qs[:limit])
+        prod_ids = [p.id for p in products]
+        if not prod_ids:
+            return Response([])
+
+        stock_map: dict[int, int] = {}
+        try:
+            stock_rows = (
+                WarehouseStock.objects.filter(deleted_at__isnull=True, seller_id=user.id, product_id__in=prod_ids)
+                .values("product_id")
+                .annotate(total=Coalesce(Sum("quantity_units"), Value(0), output_field=IntegerField()))
+                .annotate(reserved=Coalesce(Sum("reserved_units"), Value(0), output_field=IntegerField()))
+            )
+            for r in stock_rows:
+                total = int(r.get("total") or 0)
+                reserved = int(r.get("reserved") or 0)
+                stock_map[int(r["product_id"])] = max(0, total - reserved)
+        except Exception:
+            stock_map = {}
+
+        missing_stock = [pid for pid in prod_ids if pid not in stock_map]
+        if missing_stock:
+            try:
+                from apps.inventory.models import Sample
+
+                sample_rows = (
+                    Sample.objects.filter(deleted_at__isnull=True, seller_id=user.id, product_id__in=missing_stock)
+                    .values("product_id")
+                    .annotate(total=Coalesce(Sum("available_quantity"), Value(0), output_field=IntegerField()))
+                )
+                for r in sample_rows:
+                    stock_map[int(r["product_id"])] = int(r.get("total") or 0)
+            except Exception:
+                pass
+
+        review_map: dict[int, dict] = {}
+        try:
+            rr = (
+                Review.objects.filter(deleted_at__isnull=True, target_type=Review.TargetType.PRODUCT, target_product_id__in=prod_ids)
+                .values("target_product_id")
+                .annotate(avg=Coalesce(Avg("rating"), Value(0), output_field=DecimalField()))
+                .annotate(cnt=Coalesce(Count("id"), Value(0), output_field=IntegerField()))
+            )
+            for r in rr:
+                review_map[int(r["target_product_id"])] = {"avg": float(r.get("avg") or 0), "cnt": int(r.get("cnt") or 0)}
+        except Exception:
+            review_map = {}
+
+        items_qs = (
+            OrderItem.objects.select_related("order", "product")
+            .filter(
+                deleted_at__isnull=True,
+                order__deleted_at__isnull=True,
+                order__seller=user,
+                order__created_at__gte=start_prev,
+                order__created_at__lt=now,
+                product_id__in=prod_ids,
+            )
+            .exclude(order__status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+        )
+
+        sales: dict[int, dict] = {}
+        for it in items_qs.iterator(chunk_size=500):
+            pid = int(it.product_id)
+            d = sales.get(pid)
+            if d is None:
+                d = {
+                    "curr_qty": 0,
+                    "curr_rev": 0.0,
+                    "prev_qty": 0,
+                    "prev_rev": 0.0,
+                    "countries": {},
+                    "spark": [0] * 12,
+                }
+                sales[pid] = d
+
+            created_at = getattr(it.order, "created_at", None)
+            qty = int(it.quantity or 0)
+            try:
+                rev = float(it.unit_price) * qty
+            except Exception:
+                rev = 0.0
+
+            is_curr = bool(created_at and created_at >= start_curr)
+            if is_curr:
+                d["curr_qty"] += qty
+                d["curr_rev"] += rev
+                if created_at and delta.total_seconds() > 0:
+                    idx = int(((created_at - start_curr).total_seconds() / delta.total_seconds()) * 12)
+                    idx = max(0, min(11, idx))
+                    d["spark"][idx] += qty
+                ship_addr = getattr(it.order, "shipping_address", None) or {}
+                raw_country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+                iso = self._country_to_iso(raw_country)
+                if iso:
+                    d["countries"][iso] = d["countries"].get(iso, 0) + qty
+            else:
+                d["prev_qty"] += qty
+                d["prev_rev"] += rev
+
+        out = []
+        for p in products:
+            pid = int(p.id)
+            st = (p.status or "").lower()
+            if st in {Product.Status.ACTIVE, Product.Status.APPROVED}:
+                status_key = "active"
+            elif st == Product.Status.PENDING:
+                status_key = "review"
+            else:
+                status_key = "draft"
+
+            media = p.media.filter(media_type="image", deleted_at__isnull=True).first()
+            img = media.url if media else ""
+
+            d = sales.get(pid) or {}
+            curr_qty = int(d.get("curr_qty") or 0)
+            curr_rev = float(d.get("curr_rev") or 0.0)
+
+            views = max(curr_qty * (12 + (pid % 7)) + (pid % 300), curr_qty)
+            conv = round((curr_qty / max(views, 1)) * 100.0, 1)
+
+            r = review_map.get(pid) or {"avg": 0.0, "cnt": 0}
+            rating = float(r.get("avg") or 0.0)
+            reviews = int(r.get("cnt") or 0)
+
+            countries = d.get("countries") or {}
+            total_c = sum(int(v or 0) for v in countries.values())
+            top_buyers = []
+            if total_c > 0:
+                for iso, v in sorted(countries.items(), key=lambda kv: kv[1], reverse=True)[:5]:
+                    top_buyers.append({"iso": iso, "pct": int(round((int(v) / total_c) * 100))})
+
+            out.append(
+                {
+                    "id": f"sp{pid}",
+                    "name": p.name,
+                    "image": img,
+                    "price": float(p.price),
+                    "status": status_key,
+                    "sold": curr_qty,
+                    "revenue": int(round(curr_rev)),
+                    "views7d": int(views),
+                    "convRate": float(conv),
+                    "rating": float(round(rating, 1)) if rating else 0,
+                    "reviews": reviews,
+                    "stock": int(stock_map.get(pid, 0)),
+                    "category": getattr(getattr(p, "category", None), "name", "") or "—",
+                    "sparkline": (d.get("spark") or [0] * 12),
+                    "topBuyers": top_buyers,
+                }
+            )
+
+        out.sort(key=lambda r: int(r.get("revenue") or 0), reverse=True)
+        return Response(out)
+
+    @action(detail=False, methods=["get"], url_path="insights/buyers")
+    def insights_buyers(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+
+        now, start_curr, start_prev, delta = self._parse_range_window(request)
+        user = request.user
+
+        orders_qs = (
+            Order.objects.filter(seller=user, deleted_at__isnull=True, created_at__gte=start_prev, created_at__lt=now)
+            .exclude(status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+            .select_related("buyer")
+            .order_by("-created_at", "-id")
+        )
+
+        by_country: dict[str, dict] = {}
+        for o in orders_qs.iterator(chunk_size=500):
+            ship_addr = getattr(o, "shipping_address", None) or {}
+            raw_country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+            iso = self._country_to_iso(raw_country)
+            if not iso:
+                continue
+
+            d = by_country.get(iso)
+            if d is None:
+                d = {
+                    "iso": iso,
+                    "orders_curr": 0,
+                    "orders_prev": 0,
+                    "value_curr": 0.0,
+                    "value_prev": 0.0,
+                    "buyers_curr": {},
+                    "buckets": [0] * 7,
+                }
+                by_country[iso] = d
+
+            is_curr = o.created_at >= start_curr
+            total_amount = float(o.total_amount or 0)
+            if is_curr:
+                d["orders_curr"] += 1
+                d["value_curr"] += total_amount
+                d["buyers_curr"][int(o.buyer_id)] = d["buyers_curr"].get(int(o.buyer_id), 0) + 1
+                if delta.total_seconds() > 0:
+                    idx = int(((o.created_at - start_curr).total_seconds() / delta.total_seconds()) * 7)
+                    idx = max(0, min(6, idx))
+                    d["buckets"][idx] += 1
+            else:
+                d["orders_prev"] += 1
+                d["value_prev"] += total_amount
+
+        items_qs = (
+            OrderItem.objects.select_related("order", "product", "product__category")
+            .filter(
+                deleted_at__isnull=True,
+                order__deleted_at__isnull=True,
+                order__seller=user,
+                order__created_at__gte=start_curr,
+                order__created_at__lt=now,
+            )
+            .exclude(order__status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+        )
+
+        cats_by_country: dict[str, dict[str, float]] = {}
+        for it in items_qs.iterator(chunk_size=500):
+            ship_addr = getattr(it.order, "shipping_address", None) or {}
+            raw_country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+            iso = self._country_to_iso(raw_country)
+            if not iso or iso not in by_country:
+                continue
+            cat_name = getattr(getattr(it.product, "category", None), "name", "") or "Other"
+            try:
+                v = float(it.unit_price) * int(it.quantity or 0)
+            except Exception:
+                v = 0.0
+            c = cats_by_country.get(iso)
+            if c is None:
+                c = {}
+                cats_by_country[iso] = c
+            c[cat_name] = c.get(cat_name, 0.0) + v
+
+        out = []
+        for iso, d in by_country.items():
+            orders_curr = int(d.get("orders_curr") or 0)
+            orders_prev = int(d.get("orders_prev") or 0)
+            value_curr = float(d.get("value_curr") or 0.0)
+            growth = int(round(((orders_curr - orders_prev) / max(orders_prev, 1)) * 100))
+            avg_order = int(round(value_curr / max(orders_curr, 1)))
+
+            buyer_counts = d.get("buyers_curr") or {}
+            uniq_buyers = len(buyer_counts)
+            repeat_buyers = len([1 for _, c in buyer_counts.items() if int(c) >= 2])
+            repeat_rate = int(round((repeat_buyers / max(uniq_buyers, 1)) * 100))
+
+            cats = cats_by_country.get(iso) or {}
+            top_cats = [{"name": k, "value": int(round(v))} for k, v in sorted(cats.items(), key=lambda kv: kv[1], reverse=True)[:4]]
+
+            name = iso.upper()
+            mapping = {
+                "us": "United States",
+                "gb": "United Kingdom",
+                "ae": "United Arab Emirates",
+                "de": "Germany",
+                "ca": "Canada",
+                "fr": "France",
+                "jp": "Japan",
+                "kr": "South Korea",
+                "au": "Australia",
+            }
+            if iso in mapping:
+                name = mapping[iso]
+
+            out.append(
+                {
+                    "id": iso,
+                    "name": name,
+                    "flag": iso,
+                    "totalImports": int(round(value_curr)),
+                    "orders7d": orders_curr,
+                    "growth": growth,
+                    "topCategories": top_cats,
+                    "avgOrderValue": avg_order,
+                    "repeatRate": repeat_rate,
+                    "monthlyTrend": [int(x) for x in (d.get("buckets") or [0] * 7)],
+                }
+            )
+
+        out.sort(key=lambda r: int(r.get("totalImports") or 0), reverse=True)
+        return Response(out)
+
+    @action(detail=False, methods=["get"], url_path="insights/keywords")
+    def insights_keywords(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+
+        now, start_curr, start_prev, _delta = self._parse_range_window(request)
+        user = request.user
+
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw) if limit_raw else 50
+        except Exception:
+            limit = 50
+        limit = max(1, min(100, limit))
+
+        items_qs = (
+            OrderItem.objects.select_related("order", "product", "product__category")
+            .filter(
+                deleted_at__isnull=True,
+                order__deleted_at__isnull=True,
+                order__seller=user,
+                order__created_at__gte=start_prev,
+                order__created_at__lt=now,
+            )
+            .exclude(order__status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+        )
+
+        kw: dict[str, dict] = {}
+        for it in items_qs.iterator(chunk_size=500):
+            created_at = getattr(it.order, "created_at", None)
+            is_curr = bool(created_at and created_at >= start_curr)
+            qty = int(it.quantity or 0)
+
+            p = it.product
+            parts = []
+            parts.extend(self._tokenize_keywords(getattr(p, "name", "") or ""))
+            parts.extend(self._tokenize_keywords(getattr(getattr(p, "category", None), "name", "") or ""))
+            if not parts:
+                continue
+
+            for token in parts:
+                d = kw.get(token)
+                if d is None:
+                    d = {"curr": 0, "prev": 0, "product": "", "product_qty": 0}
+                    kw[token] = d
+                if is_curr:
+                    d["curr"] += qty
+                    if qty > int(d.get("product_qty") or 0):
+                        d["product_qty"] = qty
+                        d["product"] = getattr(p, "name", "") or ""
+                else:
+                    d["prev"] += qty
+
+        rows = []
+        for token, d in kw.items():
+            curr = int(d.get("curr") or 0)
+            prev = int(d.get("prev") or 0)
+            if curr <= 0 and prev <= 0:
+                continue
+            change = int(round(((curr - prev) / max(prev, 1)) * 100))
+            volume = int(curr * 120 + (hash(token) % 80))
+            rows.append({"token": token, "product": d.get("product") or "", "volume": volume, "change": change, "curr": curr})
+
+        rows.sort(key=lambda r: int(r.get("curr") or 0), reverse=True)
+        rows = rows[:limit]
+
+        out = []
+        for r in rows:
+            token = r["token"]
+            try:
+                comp = (
+                    Product.objects.filter(deleted_at__isnull=True)
+                    .exclude(status=Product.Status.ARCHIVED)
+                    .filter(Q(name__icontains=token) | Q(category__name__icontains=token))
+                    .count()
+                )
+            except Exception:
+                comp = 0
+            competition = "High" if comp > 40 else "Medium" if comp > 20 else "Low"
+
+            out.append(
+                {
+                    "keyword": token,
+                    "product": r.get("product") or "—",
+                    "volume": int(r.get("volume") or 0),
+                    "change": int(r.get("change") or 0),
+                    "competition": competition,
+                }
+            )
+
+        out.sort(key=lambda r: int(r.get("volume") or 0), reverse=True)
+        return Response(out)
+
+    @action(detail=False, methods=["get"])
+    def trends(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+
+        now, start_curr, start_prev, delta = self._parse_range_window(request)
+        user = request.user
+        industry = (request.query_params.get("industry") or "").strip().lower()
+        search = (request.query_params.get("search") or "").strip()
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw) if limit_raw else 15
+        except Exception:
+            limit = 15
+        limit = max(1, min(200, limit))
+
+        qs = (
+            OrderItem.objects.select_related("order", "product", "product__category")
+            .filter(
+                deleted_at__isnull=True,
+                order__deleted_at__isnull=True,
+                order__seller=user,
+                order__created_at__gte=start_prev,
+                product__deleted_at__isnull=True,
+            )
+            .exclude(order__status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+        )
+        if industry and industry != "all":
+            qs = qs.filter(product__category__slug=industry)
+        if search:
+            qs = qs.filter(Q(product__name__icontains=search) | Q(product__sku__icontains=search))
+
+        stats: dict[int, dict] = {}
+        for it in qs.iterator(chunk_size=500):
+            pid = int(it.product_id)
+            d = stats.get(pid)
+            if d is None:
+                d = {"product": it.product, "curr": 0, "prev": 0, "daily": {}, "markets": {}, "sum_price": 0.0, "sum_qty": 0}
+                stats[pid] = d
+            created_at = getattr(it.order, "created_at", None)
+            if created_at and created_at >= start_curr:
+                d["curr"] += int(it.quantity or 0)
+                key = created_at.date().isoformat()
+                d["daily"][key] = d["daily"].get(key, 0) + int(it.quantity or 0)
+                ship_addr = getattr(it.order, "shipping_address", None) or {}
+                raw_country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
+                iso = self._country_to_iso(raw_country)
+                if iso:
+                    d["markets"][iso] = d["markets"].get(iso, 0) + int(it.quantity or 0)
+            else:
+                d["prev"] += int(it.quantity or 0)
+            try:
+                d["sum_price"] += float(it.unit_price) * int(it.quantity or 0)
+                d["sum_qty"] += int(it.quantity or 0)
+            except Exception:
+                pass
+
+        rows = []
+        for pid, d in stats.items():
+            p: Product = d["product"]
+            curr = int(d["curr"])
+            prev = int(d["prev"])
+            if curr <= 0 and prev <= 0:
+                continue
+            change = int(round(((curr - prev) / max(prev, 1)) * 100))
+            score = max(0, min(100, int(25 + min(curr, 2000) / 25 + max(change, -50) / 2)))
+            badge = "breakout" if change >= 35 and curr >= 50 else "popular" if curr >= 200 else "rising" if change >= 10 else "steady"
+
+            media = p.media.filter(media_type="image", deleted_at__isnull=True).first()
+            img = media.url if media else ""
+
+            cat_name = getattr(getattr(p, "category", None), "name", "") or ""
+            industry = getattr(getattr(p, "category", None), "slug", "") or "all"
+
+            days_count = max(1, int(delta.total_seconds() // 86400))
+            days_count = min(days_count, 60)
+            days = [(now - timedelta(days=i)).date().isoformat() for i in range(min(6, days_count - 1), -1, -1)]
+            daily_vals = [int(d["daily"].get(day, 0)) for day in days]
+            spark = (daily_vals + daily_vals)[-12:] if daily_vals else [0] * 12
+
+            weekly_data = []
+            for day, orders in zip(days, daily_vals):
+                wd = day[-5:]
+                views = orders * 3 + (pid % 30)
+                weekly_data.append({"day": wd, "orders": orders, "views": views})
+
+            mk = d["markets"]
+            top_markets = [k for k, _ in sorted(mk.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+
+            avg_price = float(p.price)
+            if d["sum_qty"] > 0:
+                avg_price = round(float(d["sum_price"]) / float(d["sum_qty"]), 2)
+
+            keywords = []
+            for part in (p.name or "").replace("—", " ").replace("-", " ").split(" "):
+                part = part.strip().lower()
+                if len(part) < 4:
+                    continue
+                if part in keywords:
+                    continue
+                keywords.append(part)
+                if len(keywords) >= 6:
+                    break
+            if cat_name:
+                for part in cat_name.replace("&", " ").split(" "):
+                    part = part.strip().lower()
+                    if len(part) < 4:
+                        continue
+                    if part in keywords:
+                        continue
+                    keywords.append(part)
+                    if len(keywords) >= 6:
+                        break
+
+            competitor_count = Product.objects.filter(category_id=p.category_id, deleted_at__isnull=True).exclude(status=Product.Status.ARCHIVED).count()
+
+            rows.append(
+                {
+                    "id": f"tp{pid}",
+                    "name": p.name,
+                    "image": img,
+                    "category": cat_name or "—",
+                    "industry": industry or "all",
+                    "popularityScore": score,
+                    "change": change,
+                    "badge": badge,
+                    "sparkline": spark,
+                    "orders7d": curr,
+                    "avgPrice": avg_price,
+                    "topMarkets": top_markets,
+                    "buyerInterest": int(curr * 3.2 + (pid % 50)),
+                    "competitorCount": competitor_count,
+                    "relatedKeywords": keywords,
+                    "weeklyData": weekly_data,
+                }
+            )
+
+        rows.sort(key=lambda r: int(r.get("orders7d") or 0), reverse=True)
+        return Response(rows[:limit])
 
     @action(detail=False, methods=["get"])
     def products(self, request):
@@ -3236,9 +4191,81 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
         user = request.user
-        qs = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
-        ser = SellerProductSerializer(qs, many=True)
-        return Response(ser.data)
+        search = (request.query_params.get("search") or "").strip()
+
+        qs = Product.objects.filter(seller=user, deleted_at__isnull=True).exclude(status=Product.Status.ARCHIVED).prefetch_related("media")
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(sku__icontains=search))
+
+        sold_sq = (
+            OrderItem.objects.filter(
+                deleted_at__isnull=True,
+                order__deleted_at__isnull=True,
+                order__status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED],
+                product_id=OuterRef("pk"),
+            )
+            .values("product_id")
+            .annotate(total=Coalesce(Sum("quantity"), Value(0), output_field=IntegerField()))
+            .values("total")[:1]
+        )
+        transit_sq = (
+            OrderItem.objects.filter(
+                deleted_at__isnull=True,
+                order__deleted_at__isnull=True,
+                order__status=Order.Status.SHIPPED,
+                product_id=OuterRef("pk"),
+            )
+            .values("product_id")
+            .annotate(total=Coalesce(Sum("quantity"), Value(0), output_field=IntegerField()))
+            .values("total")[:1]
+        )
+        wh_sq = (
+            WarehouseStock.objects.filter(
+                deleted_at__isnull=True,
+                seller_id=user.id,
+                product_id=OuterRef("pk"),
+            )
+            .values("product_id")
+            .annotate(
+                total=Coalesce(Sum("quantity_units"), Value(0), output_field=IntegerField()),
+                reserved=Coalesce(Sum("reserved_units"), Value(0), output_field=IntegerField()),
+            )
+            .annotate(available=F("total") - F("reserved"))
+            .values("available")[:1]
+        )
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            Sample = None
+        if Sample is not None:
+            sample_sq = (
+                Sample.objects.filter(
+                    deleted_at__isnull=True,
+                    seller_id=user.id,
+                    product_id=OuterRef("pk"),
+                )
+                .values("product_id")
+                .annotate(total=Coalesce(Sum("available_quantity"), Value(0), output_field=IntegerField()))
+                .values("total")[:1]
+            )
+            in_warehouse_expr = Coalesce(Subquery(wh_sq, output_field=IntegerField()), Subquery(sample_sq, output_field=IntegerField()), Value(0))
+        else:
+            in_warehouse_expr = Coalesce(Subquery(wh_sq, output_field=IntegerField()), Value(0))
+
+        qs = qs.annotate(
+            sold=Coalesce(Subquery(sold_sq, output_field=IntegerField()), Value(0)),
+            in_transit=Coalesce(Subquery(transit_sq, output_field=IntegerField()), Value(0)),
+            in_warehouse=in_warehouse_expr,
+        ).order_by("-id")
+
+        class _SellerDashboardProductsPagination(AdminPageNumberPagination):
+            page_size = 10
+            max_page_size = 10
+
+        paginator = _SellerDashboardProductsPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        data = SellerProductSerializer(page, many=True, context={"request": request}).data
+        return paginator.get_paginated_response(data)
 
 class WarehouseDashboardViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSeller]
@@ -3258,64 +4285,69 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-        # Mock warehouses for now as there is no Warehouse model yet
-        # In a real scenario, you'd fetch from a Warehouse model
-        from .dashboard_serializers import WarehouseSerializer
-        data = [
-            {
-                "id": "w1",
-                "name": "Greenstore G1 warehouse",
-                "address": "123 Green Street, Lahore",
-                "distance": "1.2 miles away",
-                "price_per_week": 35.0,
-                "rating": "A",
-                "features": ["climate", "security", "covered"],
-                "manager_name": "John Doe",
-                "manager_phone": "0300-1234567",
-                "hours": {"open": "08:00", "close": "18:00", "days": "Mon–Sat"}
-            },
-            {
-                "id": "w2",
-                "name": "James ZS warehouse",
-                "address": "456 James Street, Islamabad",
-                "distance": "4 miles away",
-                "price_per_week": 45.0,
-                "rating": "A+",
-                "features": ["climate", "security", "covered"],
-                "manager_name": "Jane Smith",
-                "manager_phone": "0300-7654321",
-                "hours": {"open": "07:00", "close": "22:00", "days": "Mon–Sun"}
-            }
-        ]
-        return Response(data)
+        qs = Warehouse.objects.filter(active=True).order_by("country", "city", "name", "id")
+        out = []
+        for w in qs[:50]:
+            parts = [w.street1, w.street2, w.city, w.region, w.country, w.postal_code]
+            address = ", ".join([p for p in parts if p])
+            out.append(
+                {
+                    "id": str(w.id),
+                    "name": w.name,
+                    "address": address or "—",
+                    "distance": "",
+                    "price_per_week": 0,
+                    "rating": "A",
+                    "features": ["climate", "security", "covered"],
+                    "manager_name": "",
+                    "manager_phone": "",
+                    "hours": "24/7",
+                }
+            )
+        return Response(out)
 
     @action(detail=False, methods=["get"])
     def inventory(self, request):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-        warehouse_id = request.query_params.get("warehouse_id")
+        warehouse_id = (request.query_params.get("warehouse_id") or "").strip()
+        search = (request.query_params.get("search") or "").strip()
         user = request.user
-        products = Product.objects.filter(seller=user).exclude(status=Product.Status.ARCHIVED)
-        
+        qs = WarehouseStock.objects.filter(seller=user, deleted_at__isnull=True).select_related("product", "warehouse").prefetch_related("product__media")
+        if warehouse_id:
+            try:
+                wid = int(warehouse_id)
+            except Exception:
+                wid = None
+            if wid:
+                qs = qs.filter(warehouse_id=wid)
+        if search:
+            qs = qs.filter(Q(product__name__icontains=search) | Q(product__sku__icontains=search))
+
         results = []
-        for p in products:
+        for st in qs.order_by("-updated_at", "-id")[:500]:
+            p = st.product
             image_url = ""
-            media = p.media.filter(media_type="image").first()
+            media = p.media.filter(media_type="image", deleted_at__isnull=True).first()
             if media:
                 image_url = media.url
-
-            results.append({
-                "id": f"inv-{p.id}",
-                "product_name": p.name,
-                "sku": p.sku or f"SKU-{p.id}",
-                "image": image_url,
-                "total_boxes": 120,
-                "released_boxes": 34,
-                "pallets_count": 6,
-                "unit_price": float(p.price),
-                "warehouse_id": warehouse_id or "w2"
-            })
+            total_boxes = int(getattr(st, "quantity_units", 0) or 0)
+            released_boxes = int(getattr(st, "reserved_units", 0) or 0)
+            pallets_count = max(1, int((total_boxes + 29) // 30))
+            results.append(
+                {
+                    "id": f"inv-{p.id}-{st.warehouse_id}",
+                    "product_name": p.name,
+                    "sku": p.sku or f"SKU-{p.id}",
+                    "image": image_url,
+                    "total_boxes": total_boxes,
+                    "released_boxes": released_boxes,
+                    "pallets_count": pallets_count,
+                    "unit_price": float(p.price),
+                    "warehouse_id": str(st.warehouse_id),
+                }
+            )
         return Response(results)
 
     @action(detail=False, methods=["get"])
@@ -3323,39 +4355,259 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-        # Mock release requests
-        data = [
-            {
-                "id": "req1",
-                "inventory_item_id": "inv1",
-                "requester_name": "Bilal Hussain",
-                "id_card_number": "35201-1234567-9",
-                "vehicle_number": "LHR-2291",
-                "boxes_requested": 15,
-                "payment_amount": 480.0,
-                "requested_date": "2026-05-19",
-                "note": "Buyer from Lahore, needs delivery before Friday"
-            }
-        ]
-        return Response(data)
+        user = request.user
+        warehouse_id = (request.query_params.get("warehouse_id") or "").strip()
+        try:
+            wid = int(warehouse_id) if warehouse_id else None
+        except Exception:
+            wid = None
+        qs = (
+            Order.objects.filter(seller=user, deleted_at__isnull=True)
+            .filter(status=Order.Status.SHIPPED, release_authorized_at__isnull=True, release_declined_at__isnull=True)
+            .prefetch_related("items", "items__product")
+            .order_by("-created_at", "-id")[:50]
+        )
+        out = []
+        for o in qs:
+            item = o.items.first()
+            if not item:
+                continue
+            wh = None
+            if wid:
+                wh = Warehouse.objects.filter(id=wid, active=True).first()
+            if wh is None:
+                stock = WarehouseStock.objects.filter(seller_id=user.id, product_id=item.product_id, deleted_at__isnull=True).select_related("warehouse").first()
+                wh = stock.warehouse if stock else Warehouse.objects.filter(active=True).order_by("id").first()
+            wh_id = str(wh.id) if wh else ""
+            buyer_name = f"{o.buyer.first_name} {o.buyer.last_name}".strip() or (o.buyer.email or "")
+            inv_id = f"inv-{item.product_id}-{wh_id}" if wh_id else f"inv-{item.product_id}"
+            out.append(
+                {
+                    "id": f"req-{o.id}",
+                    "order_id": o.id,
+                    "warehouse_id": wh_id,
+                    "inventory_item_id": inv_id,
+                    "requester_name": buyer_name,
+                    "id_card_number": "",
+                    "vehicle_number": "",
+                    "boxes_requested": int(sum(i.quantity for i in o.items.all())),
+                    "payment_amount": float(o.total_amount),
+                    "requested_date": o.created_at.date().isoformat(),
+                    "note": f"Order #{o.id}",
+                }
+            )
+        return Response(out)
 
     @action(detail=False, methods=["get"])
     def release_records(self, request):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-        # Mock release records
-        data = [
+        user = request.user
+        warehouse_id = (request.query_params.get("warehouse_id") or "").strip()
+        try:
+            wid = int(warehouse_id) if warehouse_id else None
+        except Exception:
+            wid = None
+        qs = WarehouseRelease.objects.filter(seller=user, deleted_at__isnull=True).select_related("order", "product", "warehouse").order_by("-created_at", "-id")[:50]
+        if wid:
+            qs = qs.filter(warehouse_id=wid)
+        out = []
+        for r in qs:
+            o = r.order
+            out.append(
+                {
+                    "id": f"rel-{r.id}",
+                    "order_id": o.id,
+                    "warehouse_id": str(r.warehouse_id),
+                    "inventory_item_id": f"inv-{r.product_id}-{r.warehouse_id}",
+                    "recipient_name": r.recipient_name or "",
+                    "id_card_number": r.id_card_number or "",
+                    "vehicle_number": r.vehicle_number or "",
+                    "boxes_released": int(r.boxes_released or 0),
+                    "payment_amount": float(r.payment_amount or 0),
+                    "date": (r.created_at.date().isoformat() if r.created_at else o.updated_at.date().isoformat()),
+                    "status": ("pending" if r.status == WarehouseRelease.Status.PENDING else "completed"),
+                }
+            )
+        return Response(out)
+
+    @action(detail=False, methods=["post"], url_path=r"release_requests/(?P<order_id>\d+)/approve")
+    def approve_release_request(self, request, order_id=None):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        user = request.user
+        try:
+            oid = int(order_id)
+        except Exception:
+            return Response({"detail": "Invalid order id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        o = Order.objects.filter(id=oid, seller=user, deleted_at__isnull=True).prefetch_related("items").first()
+        if not o:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+        if o.status != Order.Status.SHIPPED:
+            return Response({"detail": "Order is not in shipped state."}, status=status.HTTP_400_BAD_REQUEST)
+        if o.release_authorized_at is not None:
+            return Response({"detail": "Release already authorized."}, status=status.HTTP_400_BAD_REQUEST)
+        if o.release_declined_at is not None:
+            return Response({"detail": "Release already declined."}, status=status.HTTP_400_BAD_REQUEST)
+
+        body = request.data or {}
+        warehouse_id = str(body.get("warehouse_id") or "").strip()
+        recipient_name = str(body.get("recipient_name") or "").strip()
+        id_card_number = str(body.get("id_card_number") or "").strip()
+        vehicle_number = str(body.get("vehicle_number") or "").strip()
+        boxes_raw = body.get("boxes_released") or body.get("boxes") or body.get("boxes_requested")
+        try:
+            boxes = int(boxes_raw)
+        except Exception:
+            boxes = 0
+        if boxes <= 0:
+            boxes = int(sum(i.quantity for i in o.items.all()))
+
+        item = o.items.first()
+        if not item:
+            return Response({"detail": "Order has no items."}, status=status.HTTP_400_BAD_REQUEST)
+
+        wh = None
+        try:
+            wid = int(warehouse_id) if warehouse_id else None
+        except Exception:
+            wid = None
+        if wid:
+            wh = Warehouse.objects.filter(id=wid, active=True).first()
+        if wh is None:
+            stock = WarehouseStock.objects.filter(seller_id=user.id, product_id=item.product_id, deleted_at__isnull=True).select_related("warehouse").first()
+            wh = stock.warehouse if stock else Warehouse.objects.filter(active=True).order_by("id").first()
+        if wh is None:
+            return Response({"detail": "No warehouse available."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            st = WarehouseStock.objects.select_for_update().filter(
+                seller_id=user.id, warehouse_id=wh.id, product_id=item.product_id, variation_id__isnull=True, deleted_at__isnull=True
+            ).first()
+            if not st:
+                return Response({"detail": "No warehouse stock for this product."}, status=status.HTTP_400_BAD_REQUEST)
+            available = int(st.quantity_units or 0) - int(st.reserved_units or 0)
+            if boxes > available:
+                return Response({"detail": f"Insufficient stock. Available: {available}."}, status=status.HTTP_400_BAD_REQUEST)
+            st.reserved_units = int(st.reserved_units or 0) + boxes
+            st.save(update_fields=["reserved_units", "updated_at"])
+
+            o.release_authorized_at = timezone.now()
+            o.release_authorized_by = user
+            o.release_declined_at = None
+            o.release_declined_by = None
+            o.release_decline_reason = ""
+            o.save(update_fields=["release_authorized_at", "release_authorized_by", "release_declined_at", "release_declined_by", "release_decline_reason", "updated_at"])
+
+            rel, _ = WarehouseRelease.objects.update_or_create(
+                order=o,
+                defaults={
+                    "seller": user,
+                    "warehouse": wh,
+                    "product_id": item.product_id,
+                    "recipient_name": recipient_name,
+                    "id_card_number": id_card_number,
+                    "vehicle_number": vehicle_number,
+                    "boxes_released": boxes,
+                    "payment_amount": o.total_amount,
+                    "status": WarehouseRelease.Status.COMPLETED,
+                    "deleted_at": None,
+                },
+            )
+
+        return Response(
             {
-                "id": "rel1",
-                "inventory_item_id": "inv1",
-                "recipient_name": "Ahmed Khan",
-                "id_card_number": "35202-XXXX-123-4",
-                "vehicle_number": "LEA-7721",
-                "boxes_released": 20,
-                "payment_amount": 640.0,
-                "date": "2026-05-18",
-                "status": "completed"
-            }
-        ]
-        return Response(data)
+                "id": f"rel-{rel.id}",
+                "order_id": o.id,
+                "warehouse_id": str(wh.id),
+                "inventory_item_id": f"inv-{item.product_id}-{wh.id}",
+                "recipient_name": rel.recipient_name,
+                "id_card_number": rel.id_card_number,
+                "vehicle_number": rel.vehicle_number,
+                "boxes_released": int(rel.boxes_released or 0),
+                "payment_amount": float(rel.payment_amount or 0),
+                "date": rel.created_at.date().isoformat(),
+                "status": "completed",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path=r"release_requests/(?P<order_id>\d+)/decline")
+    def decline_release_request(self, request, order_id=None):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        user = request.user
+        try:
+            oid = int(order_id)
+        except Exception:
+            return Response({"detail": "Invalid order id."}, status=status.HTTP_400_BAD_REQUEST)
+        o = Order.objects.filter(id=oid, seller=user, deleted_at__isnull=True).first()
+        if not o:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+        if o.status != Order.Status.SHIPPED:
+            return Response({"detail": "Order is not in shipped state."}, status=status.HTTP_400_BAD_REQUEST)
+        if o.release_authorized_at is not None:
+            return Response({"detail": "Release already authorized."}, status=status.HTTP_400_BAD_REQUEST)
+        if o.release_declined_at is not None:
+            return Response({"detail": "Release already declined."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = str((request.data or {}).get("reason") or "").strip()
+        o.release_declined_at = timezone.now()
+        o.release_declined_by = user
+        o.release_decline_reason = reason
+        o.save(update_fields=["release_declined_at", "release_declined_by", "release_decline_reason", "updated_at"])
+        return Response({"status": "declined"})
+
+    @action(detail=False, methods=["get"])
+    def auto_order_settings(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        settings_obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        business = settings_obj.business if isinstance(settings_obj.business, dict) else {}
+        data = business.get("auto_order", {})
+        return Response(data if isinstance(data, dict) else {})
+
+    @action(detail=False, methods=["patch"])
+    def update_auto_order_settings(self, request):
+        gate = self._kyc_gate(request)
+        if gate is not None:
+            return gate
+        body = request.data or {}
+        inventory_item_id = str(body.get("inventory_item_id") or "").strip()
+        if not inventory_item_id:
+            return Response({"detail": "inventory_item_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        enabled = body.get("enabled")
+        min_threshold = body.get("min_threshold")
+        max_capacity = body.get("max_capacity")
+        patch = {}
+        if enabled is not None:
+            patch["enabled"] = bool(enabled)
+        if min_threshold is not None:
+            try:
+                patch["minThreshold"] = max(0, int(min_threshold))
+            except Exception:
+                return Response({"detail": "Invalid min_threshold."}, status=status.HTTP_400_BAD_REQUEST)
+        if max_capacity is not None:
+            try:
+                patch["maxCapacity"] = max(0, int(max_capacity))
+            except Exception:
+                return Response({"detail": "Invalid max_capacity."}, status=status.HTTP_400_BAD_REQUEST)
+        settings_obj, _ = UserSettings.objects.get_or_create(user=request.user)
+        business = settings_obj.business if isinstance(settings_obj.business, dict) else {}
+        existing = business.get("auto_order", {})
+        if not isinstance(existing, dict):
+            existing = {}
+        current = existing.get(inventory_item_id, {})
+        if not isinstance(current, dict):
+            current = {}
+        merged = {**current, **patch}
+        existing[inventory_item_id] = merged
+        business["auto_order"] = existing
+        settings_obj.business = business
+        settings_obj.save(update_fields=["business", "updated_at"])
+        return Response({inventory_item_id: merged})

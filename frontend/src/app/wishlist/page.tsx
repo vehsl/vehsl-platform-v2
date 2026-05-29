@@ -6,6 +6,7 @@ import { Toaster, toast } from "sonner";
 import { Heart, Search, Trash2, RefreshCw, ArrowLeft } from "lucide-react";
 import { ImageWithFallback } from "@/components/landing/figma/ImageWithFallback";
 import { authedFetch, fetchJsonAuthed } from "@/lib/api";
+import { safeJsonParse } from "@/lib/utils";
 
 type WishlistItem = {
   id: number;
@@ -48,15 +49,15 @@ export default function Page() {
   const goDashboard = useCallback(() => {
     try {
       const raw = window.localStorage.getItem("vehsl.user");
-      const user = raw ? (JSON.parse(raw) as { account_type?: string; role?: string } | null) : null;
+      const user = safeJsonParse<{ account_type?: string; role?: string } | null>(raw, null);
       const acct = (user?.account_type || user?.role || "").toString().toLowerCase();
       if (acct === "seller") {
-        window.location.href = "/orders/1?tab=orders";
+        window.location.href = "/orders";
         return;
       }
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     } catch {
-      window.location.href = "/orders/1?tab=orders";
+      window.location.href = "/orders";
     }
   }, []);
 

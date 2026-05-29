@@ -1,208 +1,193 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-
-/* ───── Types ──────────────────────────────────────────── */
+import { createContext, useContext, useEffect, useMemo, useState, useCallback, type ReactNode } from "react";
+import { toast } from "sonner";
+import { fetchJsonAuthed } from "@/lib/api";
 
 export interface CartItem {
-  id: string;
-  productName: string;
-  colorIndex: number;
-  colorName: string;
-  colorHex: string;
-  sizeLabel: string;
-  speedLabel: string;
+  id: number;
+  product_id: number;
+  product_name: string;
+  product_title: string;
+  seller_id: number;
+  seller_name: string;
+  image_url: string;
+  variation: number | null;
   quantity: number;
-  pricePerUnit: number;
-  deliveryMethod: string | null;
-  deliverySurcharge: number;
-  imageUrl: string;
-  addedAt: number;
+  unit_price_snapshot: string;
+  currency: string;
 }
+
+type CartResponse = {
+  id: number;
+  buyer_id: number;
+  created_at: string;
+  updated_at: string;
+  items: CartItem[];
+};
 
 interface CartContextValue {
   items: CartItem[];
-  isOpen: boolean;
-  openCart: () => void;
-  closeCart: () => void;
-  toggleCart: () => void;
-  addItem: (item: Omit<CartItem, "id" | "addedAt">) => string;
-  removeItem: (id: string) => CartItem | undefined;
-  restoreItem: (item: CartItem) => void;
-  clearCart: () => void;
-  totalItems: number;
+  refresh: () => Promise<void>;
+  addToCart: (productId: number, quantity?: number, variationId?: number | null) => Promise<void>;
+  updateQuantity: (cartItemId: number, quantity: number) => Promise<void>;
+  removeItem: (cartItemId: number) => Promise<void>;
+  clearCart: () => Promise<void>;
+  totalQuantity: number;
   totalPrice: number;
-  checkoutItemIds: string[];
-  setCheckoutItemIds: (ids: string[]) => void;
+  loading: boolean;
+  lastError: string;
 }
 
 const CartContext = createContext<CartContextValue | null>(null);
 
-/* ───── Color → Image mapping ──────────────────────────── */
-
-const colorImageMap: Record<string, string> = {
-  Silver:
-    "https://images.unsplash.com/photo-1751846545116-838fe2e7e815?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxVU0IlMjBDJTIwY2FibGUlMjB3aGl0ZSUyMG1pbmltYWwlMjBwcm9kdWN0fGVufDF8fHx8MTc3Mzc0NzQzMXww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-  "Space Blue":
-    "https://images.unsplash.com/photo-1663559147223-6b0d012a4d0a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxibHVlJTIwYnJhaWRlZCUyMFVTQiUyMGNhYmxlJTIwcHJvZHVjdHxlbnwxfHx8fDE3NzM3NDc0MzF8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-  Forest:
-    "https://images.unsplash.com/photo-1674401223616-b4629a516aac?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxncmVlbiUyMGNhYmxlJTIwd2lyZSUyMG1pbmltYWwlMjBwcm9kdWN0fGVufDF8fHx8MTc3MzYwMzkyN3ww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-  Sunshine:
-    "https://images.unsplash.com/photo-1772911141560-9663e1d814f3?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHx5ZWxsb3clMjBjYWJsZSUyMHdpcmUlMjB0ZWNoJTIwYWNjZXNzb3J5fGVufDF8fHx8MTc3MzYwMzkyOHww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-  Rose:
-    "https://images.unsplash.com/photo-1647109196516-fdecf92826f2?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwaW5rJTIwcm9zZSUyMGdvbGQlMjBjYWJsZSUyMGFjY2Vzc29yeXxlbnwxfHx8fDE3NzM2MDM5Mjh8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-  Midnight:
-    "https://images.unsplash.com/photo-1687038520693-e528c10e450a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxibGFjayUyMFVTQiUyMGNhYmxlJTIwY29pbGVkJTIwbWluaW1hbHxlbnwxfHx8fDE3NzM3NDc0MzJ8MA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-  White:
-    "https://images.unsplash.com/photo-1751846545116-838fe2e7e815?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxVU0IlMjBDJTIwY2FibGUlMjB3aGl0ZSUyMG1pbmltYWwlMjBwcm9kdWN0fGVufDF8fHx8MTc3Mzc0NzQzMXww&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral",
-};
-
-export function getImageForColor(colorName: string): string {
-  return colorImageMap[colorName] ?? colorImageMap.Silver;
-}
-
-/* ───── Mock data ──────────────────────────────────────── */
-
-const mockItems: CartItem[] = [
-  {
-    id: "mock-1",
-    productName: "USB-C to USB-C Cable",
-    colorIndex: 1,
-    colorName: "Space Blue",
-    colorHex: "#2997ff",
-    sizeLabel: "2M",
-    speedLabel: "40 Gbps",
-    quantity: 80,
-    pricePerUnit: 17.5,
-    deliveryMethod: "Air Freight",
-    deliverySurcharge: 2.1,
-    imageUrl: colorImageMap["Space Blue"],
-    addedAt: Date.now() - 180000, // 3 min ago
-  },
-  {
-    id: "mock-2",
-    productName: "USB-C to USB-C Cable",
-    colorIndex: 5,
-    colorName: "Midnight",
-    colorHex: "#09090b",
-    sizeLabel: "1M",
-    speedLabel: "80 Gbps",
-    quantity: 240,
-    pricePerUnit: 16.9,
-    deliveryMethod: "Sea Freight",
-    deliverySurcharge: 0,
-    imageUrl: colorImageMap.Midnight,
-    addedAt: Date.now() - 600000, // 10 min ago
-  },
-  {
-    id: "mock-3",
-    productName: "USB-C to USB-C Cable",
-    colorIndex: 4,
-    colorName: "Rose",
-    colorHex: "#fed7d2",
-    sizeLabel: "3M",
-    speedLabel: "40 Gbps",
-    quantity: 10,
-    pricePerUnit: 17.9,
-    deliveryMethod: "Express Air",
-    deliverySurcharge: 3.85,
-    imageUrl: colorImageMap.Rose,
-    addedAt: Date.now() - 1200000, // 20 min ago
-  },
-  {
-    id: "mock-4",
-    productName: "USB-C to USB-C Cable",
-    colorIndex: 2,
-    colorName: "Forest",
-    colorHex: "#34a853",
-    sizeLabel: "5M",
-    speedLabel: "80 Gbps",
-    quantity: 1440,
-    pricePerUnit: 16.4,
-    deliveryMethod: "Sea Freight",
-    deliverySurcharge: 0,
-    imageUrl: colorImageMap.Forest,
-    addedAt: Date.now() - 2400000, // 40 min ago
-  },
-  {
-    id: "mock-5",
-    productName: "USB-C to USB-C Cable",
-    colorIndex: 0,
-    colorName: "Silver",
-    colorHex: "#e8e8ed",
-    sizeLabel: "1M",
-    speedLabel: "40 Gbps",
-    quantity: 80,
-    pricePerUnit: 17.5,
-    deliveryMethod: "Air Freight",
-    deliverySurcharge: 2.1,
-    imageUrl: colorImageMap.Silver,
-    addedAt: Date.now() - 3600000, // 1 hr ago
-  },
-];
-
-/* ───── Provider ───────────────────────────────────────── */
-
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<CartItem[]>(mockItems);
-  const [isOpen, setIsOpen] = useState(false);
-  const [checkoutItemIds, setCheckoutItemIds] = useState<string[]>([]);
+  const [items, setItems] = useState<CartItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [lastError, setLastError] = useState("");
+  const [_tokenSnapshot, setTokenSnapshot] = useState("");
 
-  const openCart = useCallback(() => setIsOpen(true), []);
-  const closeCart = useCallback(() => setIsOpen(false), []);
-  const toggleCart = useCallback(() => setIsOpen((o) => !o), []);
+  const hasAccessToken = useCallback(() => {
+    try {
+      return Boolean(window.localStorage.getItem("vehsl.access") || "");
+    } catch {
+      return false;
+    }
+  }, []);
 
-  const addItem = useCallback((item: Omit<CartItem, "id" | "addedAt">): string => {
-    const newItem: CartItem = {
-      ...item,
-      id: `cart-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      addedAt: Date.now(),
+  const refresh = useCallback(async () => {
+    if (!hasAccessToken()) {
+      setItems([]);
+      setLastError("");
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = (await fetchJsonAuthed("/api/v1/cart")) as CartResponse;
+      const rows = Array.isArray(data?.items) ? (data.items as CartItem[]) : [];
+      setItems(rows);
+      setLastError("");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load cart.";
+      setLastError(msg);
+      setItems([]);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, [hasAccessToken]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const readToken = () => {
+      try {
+        return window.localStorage.getItem("vehsl.access") || "";
+      } catch {
+        return "";
+      }
     };
-    setItems((prev) => [newItem, ...prev]);
-    return newItem.id;
-  }, []);
 
-  const removeItem = useCallback((id: string): CartItem | undefined => {
-    let removed: CartItem | undefined;
-    setItems((prev) => {
-      removed = prev.find((item) => item.id === id);
-      return prev.filter((item) => item.id !== id);
-    });
-    return removed;
-  }, []);
+    let prev = readToken();
+    setTokenSnapshot(prev);
 
-  const restoreItem = useCallback((item: CartItem) => {
-    setItems((prev) => {
-      // Insert back in correct chronological position
-      const newItems = [...prev, item].sort((a, b) => b.addedAt - a.addedAt);
-      return newItems;
-    });
-  }, []);
+    const tick = () => {
+      const next = readToken();
+      if (next === prev) return;
+      prev = next;
+      setTokenSnapshot(next);
+      void refresh();
+    };
 
-  const clearCart = useCallback(() => setItems([]), []);
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key) return;
+      if (e.key === "vehsl.access" || e.key === "vehsl.refresh" || e.key === "vehsl.user") tick();
+    };
 
-  const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
-  const totalPrice = items.reduce(
-    (sum, item) => sum + (item.pricePerUnit + item.deliverySurcharge) * item.quantity,
-    0
+    const onVis = () => {
+      if (!document.hidden) tick();
+    };
+
+    const intervalId = window.setInterval(tick, 800);
+    window.addEventListener("focus", tick);
+    window.addEventListener("storage", onStorage);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", tick);
+      window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [refresh]);
+
+  const addToCart = useCallback(
+    async (productId: number, quantity: number = 1, variationId: number | null = null) => {
+      if (!hasAccessToken()) throw new Error("Please sign in.");
+      const existing = items.find((it) => it.product_id === productId && (it.variation || null) === (variationId || null));
+      const nextQty = (existing?.quantity || 0) + Math.max(1, quantity);
+      await fetchJsonAuthed("/api/v1/cart", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: productId, variation_id: variationId, quantity: nextQty }] }),
+      });
+      await refresh();
+    },
+    [hasAccessToken, items, refresh],
   );
+
+  const updateQuantity = useCallback(
+    async (cartItemId: number, quantity: number) => {
+      if (!hasAccessToken()) throw new Error("Please sign in.");
+      await fetchJsonAuthed(`/api/v1/cart/items/${cartItemId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity }),
+      });
+      await refresh();
+    },
+    [hasAccessToken, refresh],
+  );
+
+  const removeItem = useCallback(
+    async (cartItemId: number) => {
+      if (!hasAccessToken()) throw new Error("Please sign in.");
+      await fetchJsonAuthed(`/api/v1/cart/items/${cartItemId}`, { method: "DELETE" });
+      await refresh();
+    },
+    [hasAccessToken, refresh],
+  );
+
+  const clearCart = useCallback(async () => {
+    if (!hasAccessToken()) throw new Error("Please sign in.");
+    await fetchJsonAuthed("/api/v1/cart", { method: "DELETE" });
+    setItems([]);
+    setLastError("");
+  }, [hasAccessToken]);
+
+  const totalQuantity = useMemo(() => items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0), [items]);
+  const totalPrice = useMemo(() => {
+    return items.reduce((sum, it) => {
+      const unit = Number(it.unit_price_snapshot);
+      const qty = Number(it.quantity) || 0;
+      return sum + (Number.isFinite(unit) ? unit : 0) * qty;
+    }, 0);
+  }, [items]);
 
   return (
     <CartContext.Provider
       value={{
         items,
-        isOpen,
-        openCart,
-        closeCart,
-        toggleCart,
-        addItem,
+        refresh,
+        addToCart,
+        updateQuantity,
         removeItem,
-        restoreItem,
         clearCart,
-        totalItems,
+        totalQuantity,
         totalPrice,
-        checkoutItemIds,
-        setCheckoutItemIds,
+        loading,
+        lastError,
       }}
     >
       {children}
@@ -213,21 +198,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
 export function useCart() {
   const ctx = useContext(CartContext);
   if (!ctx) {
-    // Return a safe default during hot-reload or when rendered outside provider
     return {
       items: [] as CartItem[],
-      isOpen: false,
-      openCart: () => {},
-      closeCart: () => {},
-      toggleCart: () => {},
-      addItem: () => "",
-      removeItem: () => undefined as CartItem | undefined,
-      restoreItem: () => {},
-      clearCart: () => {},
-      totalItems: 0,
+      refresh: async () => {},
+      addToCart: async () => {},
+      updateQuantity: async () => {},
+      removeItem: async () => {},
+      clearCart: async () => {},
+      totalQuantity: 0,
       totalPrice: 0,
-      checkoutItemIds: [] as string[],
-      setCheckoutItemIds: () => {},
+      loading: false,
+      lastError: "",
     } as CartContextValue;
   }
   return ctx;

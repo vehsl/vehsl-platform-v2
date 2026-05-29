@@ -15,6 +15,7 @@ import {
   Truck,
 } from "lucide-react";
 import { SellerVerificationModal } from "./seller-verification-modal";
+import { safeJsonParse } from "@/lib/utils";
 
 const spring = { type: "spring", bounce: 0.32, duration: 0.38 } as const;
 const snappy = { type: "spring", bounce: 0.45, duration: 0.26 } as const;
@@ -135,7 +136,7 @@ function readAuthTokens() {
       refresh: window.localStorage.getItem("vehsl.refresh") || "",
       user: (() => {
         const raw = window.localStorage.getItem("vehsl.user");
-        return raw ? JSON.parse(raw) : null;
+        return safeJsonParse(raw, null);
       })(),
     };
   } catch {

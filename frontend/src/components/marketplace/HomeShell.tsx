@@ -208,7 +208,9 @@ export function HomeShell() {
         });
         const reqData = await reqRes.json().catch(() => null);
         const canAccessDashboard = !!reqData && reqRes.ok && reqData.can_access_dashboard === true;
-        router.push(canAccessDashboard ? "/orders/1" : "/kyc");
+        const t = ((reqData?.account_type || tokens?.user?.account_type || tokens?.user?.role || "") as string).toLowerCase();
+        const dest = t === "buyer" ? "/explore" : "/orders";
+        router.push(canAccessDashboard ? dest : "/kyc");
       } catch {
         router.push("/kyc");
       }
