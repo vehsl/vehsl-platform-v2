@@ -1,30 +1,50 @@
 ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+
 FROM ${NODE_IMAGE} AS deps
+RUN apk add --no-cache libc6-compat
+
 USER root
 WORKDIR /app
-COPY package.json package-lock.json* ./
-COPY .npmrc ./
-RUN npm ci --include=dev || npm install --include=dev
+
+COPY package.json package-lock.json* .npmrc* ./
+
+# Workaround for npm optional dependency bug: remove lockfile to ensure linux bindings are installed
+RUN rm -f package-lock.json && npm install
 
 FROM ${NODE_IMAGE} AS builder
+
 USER root
 WORKDIR /app
+
 ENV NODE_ENV=production
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+
 ENV NEXT_TELEMETRY_DISABLED=1
+
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
+
 USER root
 WORKDIR /app
+
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN (grep -q '^app:' /etc/group || addgroup -S app) && (id -u nextjs >/dev/null 2>&1 || adduser -S nextjs -G app)
+
+RUN apk add --no-cache libc6-compat && \
+    (grep -q '^app:' /etc/group || addgroup -S app) && \
+    (id -u nextjs >/dev/null 2>&1 || adduser -S nextjs -G app)
+
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:app /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:app /app/.next/static ./.next/static
+
 USER nextjs
+
 EXPOSE 3000
+
 ENV PORT=3000 HOSTNAME=0.0.0.0
+
 CMD ["node", "server.js"]
