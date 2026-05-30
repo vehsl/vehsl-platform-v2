@@ -932,7 +932,7 @@ export function ExploreShell() {
                 {subProducts.map((p) => (
                   <Link
                     key={p.id}
-                    href={`/product/${p.id}`}
+                    href={`/products/${p.id}`}
                     className="h-full rounded-2xl border border-white/60 bg-white/85 shadow-soft overflow-hidden hover:bg-white/95 transition flex flex-col"
                   >
                     {p.hero_image_url ? (
@@ -1248,7 +1248,7 @@ export function ExploreShell() {
                     {searchResults.map((p) => (
                       <Link
                         key={p.id}
-                        href={`/product/${p.id}`}
+                        href={`/products/${p.id}`}
                         className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-black/[0.02]"
                         onClick={() => setSearchOpen(false)}
                       >

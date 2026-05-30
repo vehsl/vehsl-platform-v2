@@ -134,6 +134,8 @@ export function ProductPage() {
   const [wishlisted, setWishlisted] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [qty, setQty] = useState(1);
+  const [qtyDraft, setQtyDraft] = useState("1");
+  const [qtyEditing, setQtyEditing] = useState(false);
   const [activeImage, setActiveImage] = useState(0);
   const [tab, setTab] = useState<"overview" | "specs" | "documents" | "compare">("overview");
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string>>({});
@@ -178,6 +180,8 @@ export function ProductPage() {
 
   useEffect(() => {
     setQty(1);
+    setQtyDraft("1");
+    setQtyEditing(false);
     setActiveImage(0);
     setTab("overview");
     setSelectedAttrs({});
@@ -197,6 +201,18 @@ export function ProductPage() {
     setCompareLoading(false);
     setCompareProducts([]);
   }, [productId]);
+
+  useEffect(() => {
+    if (!qtyEditing) setQtyDraft(String(Math.max(1, Number(qty) || 1)));
+  }, [qty, qtyEditing]);
+
+  const bumpQty = useCallback((delta: number) => {
+    setQty((prev) => {
+      const next = Math.max(1, (Number(prev) || 1) + delta);
+      setQtyDraft(String(next));
+      return next;
+    });
+  }, []);
 
   const optionGroups = useMemo(() => {
     const vars = Array.isArray(product?.variations) ? product!.variations! : [];
@@ -249,6 +265,35 @@ export function ProductPage() {
     });
     return found?.id ?? null;
   }, [normalizedGroups, product?.variations, selectedAttrs]);
+
+  useEffect(() => {
+    if (!product) return;
+    if (!normalizedGroups.length) return;
+    const vars = Array.isArray(product.variations) ? product.variations : [];
+    if (!vars.length) return;
+    const v0 = vars[0];
+    const v0Attrs = v0?.attributes && typeof v0.attributes === "object" ? (v0.attributes as Record<string, unknown>) : {};
+
+    setSelectedAttrs((prev) => {
+      const keys = normalizedGroups.map((g) => g.key);
+      const missing = keys.filter((k) => !String(prev[k] || "").trim());
+      if (!missing.length) return prev;
+      const next: Record<string, string> = { ...prev };
+      for (const k of missing) {
+        const raw = v0Attrs[k];
+        const fromVar =
+          typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean" ? String(raw).trim() : "";
+        if (fromVar) {
+          next[k] = fromVar;
+          continue;
+        }
+        const g = normalizedGroups.find((x) => x.key === k);
+        const fallback = String(g?.values?.[0] || "").trim();
+        if (fallback) next[k] = fallback;
+      }
+      return next;
+    });
+  }, [normalizedGroups, product]);
 
   const mediaByVariation = useMemo(() => {
     const rows = Array.isArray(product?.media) ? product!.media! : [];
@@ -356,11 +401,12 @@ export function ProductPage() {
     try {
       await addToCart(product.id, Math.max(1, qty), selectedVariationId);
       toast.success(t("Added to cart", "已加入购物车"));
+      router.push("/explore");
     } catch (e) {
       const msg = e instanceof Error ? e.message : t("Add to cart failed.", "加入购物车失败。");
       toast.error(msg);
     }
-  }, [addToCart, product, qty, selectedVariationId, t]);
+  }, [addToCart, product, qty, router, selectedVariationId, t]);
 
   const localizedCategory = useMemo(() => {
     const raw = (product?.category_name || "").trim();
@@ -376,8 +422,39 @@ export function ProductPage() {
 
   const tiers = useMemo(() => {
     const rows = Array.isArray(product?.pricing_tiers) ? product!.pricing_tiers! : [];
-    const filtered = selectedVariationId ? rows.filter((r) => (r.variation || null) === selectedVariationId) : rows;
-    const sorted = [...filtered].sort((a, b) => (a.min_quantity || 0) - (b.min_quantity || 0));
+    const base = rows.filter((r) => (r.variation ?? null) === null);
+    const byVariation = selectedVariationId ? rows.filter((r) => (r.variation ?? null) === selectedVariationId) : [];
+    const pool = selectedVariationId ? byVariation : base.length ? base : rows;
+
+    const deduped = new Map<string, (typeof rows)[number]>();
+    for (const r of pool) {
+      const minQ = Number(r.min_quantity || 0) || 0;
+      const maxQ = r.max_quantity === null || r.max_quantity === undefined ? null : Number(r.max_quantity);
+      const curr = String(r.currency || product?.currency || "USD");
+      const k = `${minQ}:${maxQ ?? ""}:${curr}`;
+
+      const prev = deduped.get(k);
+      if (!prev) {
+        deduped.set(k, r);
+        continue;
+      }
+      const prevPrice = Number((prev.unit_price as any) ?? NaN);
+      const nextPrice = Number((r.unit_price as any) ?? NaN);
+      if (Number.isFinite(nextPrice) && (!Number.isFinite(prevPrice) || nextPrice < prevPrice)) {
+        deduped.set(k, r);
+      }
+    }
+
+    const sorted = [...deduped.values()].sort((a, b) => {
+      const amin = Number(a.min_quantity || 0) || 0;
+      const bmin = Number(b.min_quantity || 0) || 0;
+      if (amin !== bmin) return amin - bmin;
+      const amax = a.max_quantity === null || a.max_quantity === undefined ? Number.POSITIVE_INFINITY : Number(a.max_quantity);
+      const bmax = b.max_quantity === null || b.max_quantity === undefined ? Number.POSITIVE_INFINITY : Number(b.max_quantity);
+      if (amax !== bmax) return amax - bmax;
+      return (a.id || 0) - (b.id || 0);
+    });
+
     return sorted;
   }, [product?.pricing_tiers, selectedVariationId]);
 
@@ -861,15 +938,12 @@ export function ProductPage() {
     return `+${fmtMoney(q.currency, q.unit_price)}/unit`;
   }, [deliverySolution, quoteByMethod]);
 
-  const canConfigure = useMemo(() => {
+  const canAddToCart = useMemo(() => {
     const needsVariation = normalizedGroups.length > 0;
     const allSelected = normalizedGroups.every((g) => Boolean(selectedAttrs[g.key]));
     const variationOk = needsVariation ? allSelected && Boolean(selectedVariationId) : true;
-    const tierOk = tiers.length ? Boolean(selectedTierId) : true;
-    const addressOk = deliveryLocation === "storage" ? true : Boolean(selectedAddress?.id);
-    const deliveryOk = Boolean(deliverySolution) && addressOk;
-    return variationOk && tierOk && deliveryOk;
-  }, [deliveryLocation, deliverySolution, normalizedGroups, selectedAddress?.id, selectedAttrs, selectedTierId, selectedVariationId, tiers.length]);
+    return variationOk;
+  }, [normalizedGroups, selectedAttrs, selectedVariationId]);
 
   const copyShareLink = useCallback(async () => {
     try {
@@ -1482,7 +1556,10 @@ export function ProductPage() {
                                 type="button"
                                 onClick={() => {
                                   setSelectedTierId(row.id);
-                                  setQty(Math.max(1, row.min_quantity));
+                                  const nextQty = Math.max(1, row.min_quantity);
+                                  setQty(nextQty);
+                                  setQtyDraft(String(nextQty));
+                                  setQtyEditing(false);
                                 }}
                                 className="flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-left hover:bg-white/40"
                               >
@@ -1502,16 +1579,42 @@ export function ProductPage() {
                           <div className="inline-flex items-center gap-2 rounded-2xl border border-black/[0.06] bg-white px-2 py-1.5">
                             <button
                               type="button"
-                              onClick={() => setQty((q) => Math.max(1, q - 1))}
+                              onClick={() => bumpQty(-1)}
                               className="flex h-8 w-8 items-center justify-center rounded-xl hover:bg-black/[0.03]"
                               aria-label={t("Decrease quantity", "减少数量")}
                             >
                               <Minus className="h-4 w-4" />
                             </button>
-                            <div className="min-w-[34px] text-center text-[12px] font-bold text-[#1A1A1A]">{qty}</div>
+                            <input
+                              value={qtyEditing ? qtyDraft : String(qty)}
+                              onFocus={() => setQtyEditing(true)}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const cleaned = raw.replace(/[^\d]/g, "");
+                                setQtyDraft(cleaned);
+                                if (!cleaned) return;
+                                const n = parseInt(cleaned, 10);
+                                if (Number.isFinite(n) && n > 0) setQty(n);
+                              }}
+                              onBlur={() => {
+                                setQtyEditing(false);
+                                const cleaned = String(qtyDraft || "").replace(/[^\d]/g, "");
+                                if (!cleaned) {
+                                  setQtyDraft(String(Math.max(1, Number(qty) || 1)));
+                                  return;
+                                }
+                                const n = parseInt(cleaned, 10);
+                                const next = Number.isFinite(n) && n > 0 ? n : 1;
+                                setQty(next);
+                                setQtyDraft(String(next));
+                              }}
+                              inputMode="numeric"
+                              className="min-w-[44px] bg-transparent text-center text-[12px] font-bold text-[#1A1A1A] outline-none"
+                              aria-label={t("Quantity", "数量")}
+                            />
                             <button
                               type="button"
-                              onClick={() => setQty((q) => q + 1)}
+                              onClick={() => bumpQty(1)}
                               className="flex h-8 w-8 items-center justify-center rounded-xl hover:bg-black/[0.03]"
                               aria-label={t("Increase quantity", "增加数量")}
                             >
@@ -1526,15 +1629,41 @@ export function ProductPage() {
                         <div className="inline-flex items-center gap-2 rounded-2xl border border-black/[0.06] bg-white px-2 py-1.5">
                           <button
                             type="button"
-                            onClick={() => setQty((q) => Math.max(1, q - 1))}
+                            onClick={() => bumpQty(-1)}
                             className="flex h-8 w-8 items-center justify-center rounded-xl hover:bg-black/[0.03]"
                           >
                             <Minus className="h-4 w-4" />
                           </button>
-                          <div className="min-w-[34px] text-center text-[12px] font-bold text-[#1A1A1A]">{qty}</div>
+                          <input
+                            value={qtyEditing ? qtyDraft : String(qty)}
+                            onFocus={() => setQtyEditing(true)}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const cleaned = raw.replace(/[^\d]/g, "");
+                              setQtyDraft(cleaned);
+                              if (!cleaned) return;
+                              const n = parseInt(cleaned, 10);
+                              if (Number.isFinite(n) && n > 0) setQty(n);
+                            }}
+                            onBlur={() => {
+                              setQtyEditing(false);
+                              const cleaned = String(qtyDraft || "").replace(/[^\d]/g, "");
+                              if (!cleaned) {
+                                setQtyDraft(String(Math.max(1, Number(qty) || 1)));
+                                return;
+                              }
+                              const n = parseInt(cleaned, 10);
+                              const next = Number.isFinite(n) && n > 0 ? n : 1;
+                              setQty(next);
+                              setQtyDraft(String(next));
+                            }}
+                            inputMode="numeric"
+                            className="min-w-[44px] bg-transparent text-center text-[12px] font-bold text-[#1A1A1A] outline-none"
+                            aria-label={t("Quantity", "数量")}
+                          />
                           <button
                             type="button"
-                            onClick={() => setQty((q) => q + 1)}
+                            onClick={() => bumpQty(1)}
                             className="flex h-8 w-8 items-center justify-center rounded-xl hover:bg-black/[0.03]"
                           >
                             <Plus className="h-4 w-4" />
@@ -1660,11 +1789,11 @@ export function ProductPage() {
 
                   <button
                     type="button"
-                    disabled={!canConfigure}
+                    disabled={!canAddToCart}
                     onClick={() => void addThisToCart()}
                     className="mt-2 h-11 w-full rounded-full bg-black px-6 text-[12px] font-semibold text-white disabled:bg-black/10 disabled:text-[#1A1A1A]/35"
                   >
-                    {canConfigure ? t("Add to cart", "加入购物车") : t("Configure your product above", "请先完成上方配置")}
+                    {canAddToCart ? t("Add to cart", "加入购物车") : t("Select options above", "请先选择规格")}
                   </button>
 
                   <div className="mt-2 text-center text-[11px] text-[#1A1A1A]/35">

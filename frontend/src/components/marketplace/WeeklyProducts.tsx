@@ -61,7 +61,7 @@ export function WeeklyProducts() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
                 {cards.map((product, i) => (
                     <SectionReveal key={`weekly-${product.id}-${i}`} delay={i + 1}>
-                        <Link href={`/product/${product.id}`}>
+                        <Link href={`/products/${product.id}`}>
                             <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i + 4} />
                         </Link>
                     </SectionReveal>
