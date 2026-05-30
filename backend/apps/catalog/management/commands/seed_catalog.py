@@ -15,6 +15,7 @@ from django.utils.text import slugify
 
 from apps.accounts.models import AdminProfile, BuyerAddress, BuyerProfile, KycDocument, Notification, SellerProfile, User, UserProfile
 from apps.catalog.models import Category, PricingTier, Product, ProductMedia, ProductVariation, ShippingRate
+from apps.inventory.models import QualityInspection, SampleRequest
 from apps.orders.models import CartItem, Order, OrderItem, Shipment, WishlistItem
 
 
@@ -527,6 +528,8 @@ class Command(BaseCommand):
                 now = timezone.now()
                 seeded_products = Product.objects.filter(sku__startswith="SEED-")
                 seeded_ids = list(seeded_products.values_list("id", flat=True))
+                quality_deleted = QualityInspection.objects.filter(product_id__in=seeded_ids).delete()[0] if seeded_ids else 0
+                sample_requests_deleted = SampleRequest.objects.filter(product_id__in=seeded_ids).delete()[0] if seeded_ids else 0
                 cart_deleted = CartItem.objects.filter(product_id__in=seeded_ids).delete()[0] if seeded_ids else 0
                 wishlist_deleted = WishlistItem.objects.filter(product_id__in=seeded_ids).delete()[0] if seeded_ids else 0
                 tiers_deleted = PricingTier.objects.filter(product_id__in=seeded_ids).delete()[0] if seeded_ids else 0
@@ -544,7 +547,8 @@ class Command(BaseCommand):
                         "seed_catalog cleanup: "
                         f"products_deleted={products_deleted} products_hidden={products_hidden} "
                         f"media_deleted={media_deleted} tiers_deleted={tiers_deleted} "
-                        f"cart_items_deleted={cart_deleted} wishlist_deleted={wishlist_deleted}"
+                        f"cart_items_deleted={cart_deleted} wishlist_deleted={wishlist_deleted} "
+                        f"quality_deleted={quality_deleted} sample_requests_deleted={sample_requests_deleted}"
                     )
                 )
                 if should_return:
@@ -573,6 +577,20 @@ class Command(BaseCommand):
                 first_name="Buyer",
                 last_name="Seed",
             )
+            BuyerProfile.objects.filter(user=buyer).update(name="Buyer Seed Co.")
+
+            buyers: list[User] = [buyer]
+            for i in range(2):
+                b = _ensure_user(
+                    email=os.environ.get(f"SEED_BUYER_{i+2}_EMAIL", f"buyer{i+2}@vehsl.local"),
+                    role=User.Role.BUYER,
+                    account_type=User.AccountType.BUYER,
+                    password=password,
+                    first_name=f"Buyer{i+2}",
+                    last_name="Seed",
+                )
+                BuyerProfile.objects.filter(user=b).update(name=f"Buyer {i+2} Seed Co.")
+                buyers.append(b)
 
             sellers: list[User] = []
             primary_seller = _ensure_user(
@@ -929,6 +947,11 @@ class Command(BaseCommand):
                 .exclude(status=Product.Status.ARCHIVED)
                 .order_by("id")[:6]
             )
+            seed_quality_products = list(
+                Product.objects.filter(seller=primary_seller, deleted_at__isnull=True, sku__startswith="SEED-")
+                .exclude(status=Product.Status.ARCHIVED)
+                .order_by("-id")[:30]
+            )
             addr = BuyerAddress.objects.filter(user=buyer, kind=BuyerAddress.Kind.PRIMARY).first()
             ship_addr = {
                 "contact_name": getattr(addr, "contact_name", "") or "",
@@ -940,6 +963,65 @@ class Command(BaseCommand):
                 "street2": getattr(addr, "street2", "") or "",
                 "postal_code": getattr(addr, "postal_code", "") or "",
             }
+
+            inspector = _ensure_user(
+                email=os.environ.get("SEED_INSPECTOR_EMAIL", "inspector@vehsl.local"),
+                role=User.Role.ADMIN,
+                account_type=User.AccountType.BUYER,
+                password=password,
+                first_name="Inspector",
+                last_name="Seed",
+            )
+            AdminProfile.objects.get_or_create(user=inspector, defaults={"admin_role": AdminProfile.AdminRole.INSPECTOR, "department": "Quality"})
+            AdminProfile.objects.filter(user=inspector).update(admin_role=AdminProfile.AdminRole.INSPECTOR, department="Quality")
+
+            created_sample_requests = 0
+            created_quality_inspections = 0
+
+            if seed_quality_products:
+                for b in buyers:
+                    pick_n = min(6, len(seed_quality_products))
+                    for p in rng.sample(seed_quality_products, k=pick_n):
+                        if SampleRequest.objects.filter(buyer=b, product=p, deleted_at__isnull=True).exists():
+                            continue
+                        st = rng.choice([SampleRequest.Status.REQUESTED, SampleRequest.Status.SHIPPED, SampleRequest.Status.DELIVERED])
+                        sr = SampleRequest.objects.create(buyer=b, product=p, status=st)
+                        days_ago = rng.randint(0, 20)
+                        requested_at = timezone.now() - timedelta(days=days_ago, hours=rng.randint(0, 23))
+                        SampleRequest.objects.filter(id=sr.id).update(requested_at=requested_at)
+                        created_sample_requests += 1
+
+                existing_qi = QualityInspection.objects.filter(deleted_at__isnull=True, product_id__in=[p.id for p in seed_quality_products]).count()
+                target_qi = 30
+                to_create = max(0, target_qi - int(existing_qi or 0))
+                if to_create:
+                    for _ in range(to_create):
+                        p = rng.choice(seed_quality_products)
+                        status_val = rng.choices(
+                            [QualityInspection.Status.IN_PROGRESS, QualityInspection.Status.PASSED, QualityInspection.Status.FAILED],
+                            weights=[0.35, 0.45, 0.20],
+                            k=1,
+                        )[0]
+                        created_at = timezone.now() - timedelta(days=rng.randint(0, 20), hours=rng.randint(0, 23))
+                        inspected_at = None
+                        score = 0
+                        if status_val in {QualityInspection.Status.PASSED, QualityInspection.Status.FAILED}:
+                            inspected_at = created_at + timedelta(days=rng.randint(0, 3), hours=rng.randint(0, 12))
+                            if status_val == QualityInspection.Status.PASSED:
+                                score = rng.randint(80, 100)
+                            else:
+                                score = rng.randint(40, 79)
+                        qi = QualityInspection.objects.create(
+                            product=p,
+                            seller=p.seller,
+                            inspector=inspector if rng.random() < 0.85 else None,
+                            inspector_name="",
+                            status=status_val,
+                            score=score,
+                            inspected_at=inspected_at,
+                        )
+                        QualityInspection.objects.filter(id=qi.id).update(created_at=created_at)
+                        created_quality_inspections += 1
 
             def _create_order(*, product: Product, quantity: int, status: str, payment_method: str, payment_status: str, authorized: bool, shipped: bool):
                 qty = max(1, int(quantity))
@@ -1026,7 +1108,12 @@ class Command(BaseCommand):
                     sent_at=timezone.now(),
                 )
 
-        self.stdout.write(self.style.SUCCESS(f"seed_catalog: sellers={sellers_n} products_created={created_products} media_created={created_media}"))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"seed_catalog: sellers={sellers_n} products_created={created_products} media_created={created_media} "
+                f"quality_inspections_created={created_quality_inspections} sample_requests_created={created_sample_requests}"
+            )
+        )
         self.stdout.write(self.style.SUCCESS(f"seed_catalog password: {password}"))
 
         base_products = Product.objects.filter(deleted_at__isnull=True, status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
