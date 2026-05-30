@@ -161,11 +161,41 @@ class ProductViewSet(viewsets.ModelViewSet):
             if cat_id:
                 out = out.filter(category_id=cat_id)
             else:
-                out = out.filter(category__slug__iexact=cat)
+                cat_obj = Category.objects.filter(deleted_at__isnull=True, slug__iexact=cat).first()
+                if cat_obj:
+                    child_ids = list(
+                        Category.objects.filter(deleted_at__isnull=True, parent=cat_obj).values_list("id", flat=True)
+                    )
+                    out = out.filter(category_id__in=[int(cat_obj.id), *[int(x) for x in child_ids]])
+                else:
+                    out = out.filter(category__slug__iexact=cat)
+
+        raw_min_price = (self.request.query_params.get("min_price") or "").strip()
+        if raw_min_price:
+            try:
+                out = out.filter(price__gte=Decimal(raw_min_price))
+            except Exception:
+                pass
+
+        raw_max_price = (self.request.query_params.get("max_price") or "").strip()
+        if raw_max_price:
+            try:
+                out = out.filter(price__lte=Decimal(raw_max_price))
+            except Exception:
+                pass
+
         out = out.annotate(
             review_count=Count("reviews", filter=Q(reviews__deleted_at__isnull=True), distinct=True),
             average_rating=Avg("reviews__rating", filter=Q(reviews__deleted_at__isnull=True)),
         )
+
+        raw_min_rating = (self.request.query_params.get("min_rating") or "").strip()
+        if raw_min_rating:
+            try:
+                out = out.filter(average_rating__gte=float(raw_min_rating))
+            except Exception:
+                pass
+
         return out.prefetch_related("variations", "pricing_tiers")
 
     def get_permissions(self):
@@ -204,6 +234,32 @@ class ProductViewSet(viewsets.ModelViewSet):
         rows.sort(key=lambda p: order.get(getattr(p, "id", 0), 999))
         data = ProductSerializer(rows, many=True, context={"request": request}).data
         return Response({"results": data})
+
+    @action(detail=False, methods=["get"], url_path="facets")
+    def facets(self, request):
+        return Response(
+            {
+                "price_options": [
+                    {"label": "Under $50", "value": "under-50", "min_price": None, "max_price": 50},
+                    {"label": "$50–$500", "value": "50-500", "min_price": 50, "max_price": 500},
+                    {"label": "$500–$5K", "value": "500-5k", "min_price": 500, "max_price": 5000},
+                    {"label": "$5K–$50K", "value": "5k-50k", "min_price": 5000, "max_price": 50000},
+                    {"label": "$50K+", "value": "50k-plus", "min_price": 50000, "max_price": None},
+                    {"label": "Bulk / B2B", "value": "bulk", "min_price": None, "max_price": None},
+                ],
+                "rating_options": [
+                    {"label": "4.5+", "value": 4.5},
+                    {"label": "4.0+", "value": 4.0},
+                    {"label": "3.5+", "value": 3.5},
+                ],
+                "qa_grades": [
+                    {"label": "A+", "desc": "Premium", "value": "a-plus", "color": "#059669", "bg": "rgba(5,150,105,0.08)"},
+                    {"label": "A", "desc": "Verified", "value": "a", "color": "#2563eb", "bg": "rgba(37,99,235,0.08)"},
+                    {"label": "B", "desc": "Standard", "value": "b", "color": "#d97706", "bg": "rgba(217,119,6,0.08)"},
+                    {"label": "C", "desc": "Budget", "value": "c", "color": "#6b7280", "bg": "rgba(107,114,128,0.06)"},
+                ],
+            }
+        )
 
 
 class WarehouseViewSet(viewsets.ReadOnlyModelViewSet):
@@ -427,6 +483,17 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         ser = ListingRequestCreateSerializer(data=request.data, context={"request": request})
         ser.is_valid(raise_exception=True)
         lr = ser.save()
+        audit(
+            request.user,
+            action="seller_listing_request_submitted",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={
+                "product_name": (getattr(lr, "product_name", "") or "").strip(),
+                "stage": (getattr(lr, "stage", "") or "").strip(),
+                "category_id": str(getattr(lr, "category_id", "") or ""),
+            },
+        )
         out = ListingRequestSerializer(lr, context={"request": request}).data
         return Response(out, status=status.HTTP_201_CREATED)
 
@@ -446,6 +513,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
 
         lr.stage = ListingRequest.Stage.INSPECTION
         lr.save()
+        audit(
+            request.user,
+            action="seller_listing_request_stage_updated",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage, "from": "sample"},
+        )
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="advance")
@@ -466,6 +540,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
             lr.rating = rating
             lr.stage = ListingRequest.Stage.LIVE
             lr.save()
+            audit(
+                request.user,
+                action="seller_listing_request_stage_updated",
+                target_type="listing_request",
+                target_id=str(lr.id),
+                payload={"stage": lr.stage, "from": "inspection", "rating": float(rating)},
+            )
             return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
@@ -482,6 +563,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         if lr.created_product_id:
             lr.stage = ListingRequest.Stage.DONE
             lr.save(update_fields=["stage", "updated_at"])
+            audit(
+                request.user,
+                action="seller_listing_request_published",
+                target_type="listing_request",
+                target_id=str(lr.id),
+                payload={"stage": lr.stage, "created_product_id": str(lr.created_product_id)},
+            )
             return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
         category = lr.category
@@ -503,6 +591,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
             status=Product.Status.ACTIVE,
             vehsl_rating=lr.rating,
         )
+        audit(
+            request.user,
+            action="seller_product_created",
+            target_type="product",
+            target_id=str(p.id),
+            payload={"product_name": (p.name or "").strip(), "source": "listing_request", "listing_request_id": str(lr.id)},
+        )
         photos = list(lr.photos.all())
         for idx, ph in enumerate(photos[:10]):
             try:
@@ -514,6 +609,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         lr.created_product = p
         lr.stage = ListingRequest.Stage.DONE
         lr.save(update_fields=["created_product", "stage", "updated_at"])
+        audit(
+            request.user,
+            action="seller_listing_request_published",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage, "created_product_id": str(p.id)},
+        )
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
 
@@ -832,7 +934,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         threshold = self._low_stock_threshold()
         qs = (
             Product.objects.filter(deleted_at__isnull=True)
-            .select_related("category", "seller", "seller__seller_profile")
+            .select_related("category", "category__parent", "seller", "seller__seller_profile")
             .annotate(
                 stock_units=Coalesce(Sum("samples__available_quantity"), Value(0), output_field=IntegerField()),
                 vehsl_rating_num=Coalesce("vehsl_rating", Value(0), output_field=DecimalField(max_digits=4, decimal_places=2)),
@@ -983,6 +1085,30 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             qs = qs.filter(
                 Q(missing_hs_code=1) | Q(missing_media=1) | Q(missing_hero_image=1) | Q(compliance_docs_required_count__gt=0)
             )
+
+        status_param = (self.request.query_params.get("status") or "").strip().lower()
+        if status_param:
+            raw = [s.strip().lower() for s in status_param.split(",") if s.strip()]
+            allowed = {str(v).lower() for v, _ in Product.Status.choices}
+            statuses = [s for s in raw if s in allowed]
+            if statuses:
+                qs = qs.filter(status__in=statuses)
+
+        missing_hs_code = (self.request.query_params.get("missing_hs_code") or "").strip().lower()
+        if missing_hs_code in {"1", "true", "yes", "y"}:
+            qs = qs.filter(missing_hs_code=1)
+
+        missing_media = (self.request.query_params.get("missing_media") or "").strip().lower()
+        if missing_media in {"1", "true", "yes", "y"}:
+            qs = qs.filter(missing_media=1)
+
+        missing_documents = (self.request.query_params.get("missing_documents") or "").strip().lower()
+        if missing_documents in {"1", "true", "yes", "y"}:
+            qs = qs.filter(compliance_docs_required_count__gt=0)
+
+        rejected_with_reason = (self.request.query_params.get("rejected_with_reason") or "").strip().lower()
+        if rejected_with_reason in {"1", "true", "yes", "y"}:
+            qs = qs.filter(status=Product.Status.REJECTED, detail_config__review__rejection_reason__gt="")
 
         needs_compliance = (self.request.query_params.get("needs_compliance") or "").strip().lower()
         if needs_compliance in {"1", "true", "yes", "y"}:
@@ -1397,7 +1523,17 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not product:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         product.status = Product.Status.APPROVED
-        product.save(update_fields=["status", "updated_at"])
+        try:
+            cfg = product.detail_config if isinstance(product.detail_config, dict) else {}
+        except Exception:
+            cfg = {}
+        if isinstance(cfg, dict) and "review" in cfg:
+            cfg = dict(cfg)
+            cfg.pop("review", None)
+            product.detail_config = cfg
+            product.save(update_fields=["status", "detail_config", "updated_at"])
+        else:
+            product.save(update_fields=["status", "updated_at"])
         audit(request.user, action="admin_product_approved", target_type="product", target_id=str(product.id), payload={})
         return self.retrieve(request, pk=pk)
 
@@ -1406,9 +1542,84 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         product = Product.objects.filter(id=pk, deleted_at__isnull=True).first()
         if not product:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        reason = (request.data.get("reason") or request.data.get("rejection_reason") or request.data.get("rejectionReason") or "").strip()
+        raw_photos = request.data.get("rejection_photos") or request.data.get("rejectionPhotos") or []
+        raw_suggestions = request.data.get("improvement_suggestions") or request.data.get("improvementSuggestions") or []
+
+        photos: list[dict] = []
+        try:
+            if isinstance(raw_photos, list):
+                for it in raw_photos[:20]:
+                    if isinstance(it, str):
+                        u = it.strip()
+                        if u:
+                            photos.append({"url": u, "caption": ""})
+                    elif isinstance(it, dict):
+                        u = str(it.get("url") or "").strip()
+                        if not u:
+                            continue
+                        cap = str(it.get("caption") or "").strip()
+                        photos.append({"url": u, "caption": cap})
+        except Exception:
+            photos = []
+
+        suggestions: list[dict] = []
+        try:
+            if isinstance(raw_suggestions, list):
+                for s in raw_suggestions[:10]:
+                    if not isinstance(s, dict):
+                        continue
+                    text = str(s.get("text") or "").strip()
+                    tip = str(s.get("tip") or "").strip()
+                    if not text:
+                        continue
+                    step_photos: list[dict] = []
+                    sp = s.get("photos") or []
+                    if isinstance(sp, list):
+                        for p in sp[:10]:
+                            if isinstance(p, str):
+                                u = p.strip()
+                                if u:
+                                    step_photos.append({"url": u, "caption": ""})
+                            elif isinstance(p, dict):
+                                u = str(p.get("url") or "").strip()
+                                if not u:
+                                    continue
+                                cap = str(p.get("caption") or "").strip()
+                                step_photos.append({"url": u, "caption": cap})
+                    entry = {"text": text}
+                    if tip:
+                        entry["tip"] = tip
+                    if step_photos:
+                        entry["photos"] = step_photos
+                    suggestions.append(entry)
+        except Exception:
+            suggestions = []
+
+        try:
+            cfg = product.detail_config if isinstance(product.detail_config, dict) else {}
+        except Exception:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg = dict(cfg)
+        cfg["review"] = {
+            "rejection_reason": reason,
+            "rejection_photos": photos,
+            "improvement_suggestions": suggestions,
+            "rejected_by": getattr(request.user, "id", None),
+            "rejected_at": timezone.now().isoformat(),
+        }
+        product.detail_config = cfg
         product.status = Product.Status.REJECTED
-        product.save(update_fields=["status", "updated_at"])
-        audit(request.user, action="admin_product_rejected", target_type="product", target_id=str(product.id), payload={})
+        product.save(update_fields=["status", "detail_config", "updated_at"])
+        audit(
+            request.user,
+            action="admin_product_rejected",
+            target_type="product",
+            target_id=str(product.id),
+            payload={"reason": reason, "photos_count": len(photos), "suggestions_count": len(suggestions)},
+        )
         return self.retrieve(request, pk=pk)
 
     @action(detail=True, methods=["post"], url_path="archive")
@@ -1427,7 +1638,17 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not product:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         product.status = Product.Status.ACTIVE
-        product.save(update_fields=["status", "updated_at"])
+        try:
+            cfg = product.detail_config if isinstance(product.detail_config, dict) else {}
+        except Exception:
+            cfg = {}
+        if isinstance(cfg, dict) and "review" in cfg:
+            cfg = dict(cfg)
+            cfg.pop("review", None)
+            product.detail_config = cfg
+            product.save(update_fields=["status", "detail_config", "updated_at"])
+        else:
+            product.save(update_fields=["status", "updated_at"])
         audit(request.user, action="admin_product_activated", target_type="product", target_id=str(product.id), payload={})
         return self.retrieve(request, pk=pk)
 
@@ -1624,11 +1845,29 @@ class AdminProductViewSet(viewsets.GenericViewSet):
     def categories(self, request):
         qs = (
             Category.objects.filter(deleted_at__isnull=True)
+            .select_related("parent")
             .annotate(products_count=Count("products", filter=Q(products__deleted_at__isnull=True)))
             .filter(products_count__gt=0)
             .order_by("name")
         )
-        return Response([{"id": c.id, "name": c.name, "slug": c.slug, "count": c.products_count} for c in qs])
+        out = []
+        for c in qs:
+            parent = getattr(c, "parent", None)
+            label = c.name
+            if parent and getattr(parent, "name", ""):
+                label = f"{parent.name} / {c.name}"
+            out.append(
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "slug": c.slug,
+                    "count": c.products_count,
+                    "parent_id": getattr(c, "parent_id", None),
+                    "parent_name": getattr(parent, "name", "") if parent else "",
+                    "label": label,
+                }
+            )
+        return Response(out)
 
     @action(detail=False, methods=["get"], url_path="export")
     def export(self, request):

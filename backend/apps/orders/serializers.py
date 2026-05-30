@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
+from apps.catalog.serializers import ProductMediaSerializer
 
 from .models import (
     Cart,
@@ -62,12 +63,9 @@ class CartItemSerializer(serializers.ModelSerializer):
                 .order_by("position", "id")
                 .first()
             )
-            if media and media.url:
-                url = media.url
+            if media:
                 req = self.context.get("request")
-                if req and isinstance(url, str) and url.startswith("/"):
-                    return req.build_absolute_uri(url)
-                return url
+                return (ProductMediaSerializer(media, context={"request": req}).data.get("public_url") or "").strip()
         except Exception:
             pass
         return ""
@@ -121,12 +119,9 @@ class WishlistItemSerializer(serializers.ModelSerializer):
                 .order_by("position", "id")
                 .first()
             )
-            if media and media.url:
-                url = media.url
+            if media:
                 req = self.context.get("request")
-                if req and isinstance(url, str) and url.startswith("/"):
-                    return req.build_absolute_uri(url)
-                return url
+                return (ProductMediaSerializer(media, context={"request": req}).data.get("public_url") or "").strip()
         except Exception:
             pass
         return ""
@@ -158,12 +153,6 @@ class OrderItemSerializer(serializers.ModelSerializer):
         if not product:
             return ""
         req = self.context.get("request")
-        try:
-            from apps.catalog.models import ProductMedia
-        except Exception:
-            ProductMedia = None
-        if not ProductMedia:
-            return ""
         media = (
             ProductMedia.objects.filter(product=product, deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE)
             .order_by("position", "id")
@@ -171,10 +160,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         )
         if not media:
             return ""
-        url = getattr(media, "url", "") or ""
-        if req and isinstance(url, str) and url.startswith("/"):
-            return req.build_absolute_uri(url)
-        return url
+        return (ProductMediaSerializer(media, context={"request": req}).data.get("public_url") or "").strip()
 
     def get_specs(self, obj: OrderItem):
         attrs = getattr(getattr(obj, "variation", None), "attributes", None) or {}

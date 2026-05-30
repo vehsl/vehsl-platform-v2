@@ -1,8 +1,9 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
+import { useLocation } from "react-router";
 import {
   Package, Truck, Users, Briefcase, Search, Filter,
   CheckCircle2, Clock, AlertTriangle, ArrowRight,
@@ -11,6 +12,7 @@ import {
   UserCheck, Calendar, Shield, Mail, ChevronRight,
   ArrowUpRight, MoreHorizontal, Box, Layers,
 } from "lucide-react";
+import { fetchJsonAuthed } from "@/lib/api";
 import { StatCard } from "./StatCard";
 import { StatusPill } from "./StatusPill";
 import { BounceButton } from "./BounceButton";
@@ -41,94 +43,236 @@ function SectionCard({ children, className = "" }: { children: React.ReactNode; 
 //  MANAGEMENT → ORDER PIPELINE
 // ════════════════════════════════════════════════════════════
 
-const orders = [
-  { id: "ORD-4852", buyer: "Meridian Corp", items: 24, total: "$4,680", status: "processing" as const, date: "Mar 18", priority: "urgent" as const, seller: "GreenLeaf Organics", progress: 65 },
-  { id: "ORD-4851", buyer: "BioLab Solutions", items: 15, total: "$2,250", status: "confirmed" as const, date: "Mar 18", priority: "normal" as const, seller: "Atlas Materials", progress: 30 },
-  { id: "ORD-4850", buyer: "TechStar Inc", items: 50, total: "$3,600", status: "packing" as const, date: "Mar 17", priority: "normal" as const, seller: "BrightStar Electronics", progress: 80 },
-  { id: "ORD-4849", buyer: "FreshMart", items: 100, total: "$8,400", status: "quality-check" as const, date: "Mar 17", priority: "urgent" as const, seller: "FreshPack Foods", progress: 45 },
-  { id: "ORD-4848", buyer: "Nordic Health", items: 200, total: "$12,000", status: "shipped" as const, date: "Mar 16", priority: "low" as const, seller: "FreshPack Foods", progress: 95 },
-  { id: "ORD-4847", buyer: "Atlas Corp HQ", items: 8, total: "$1,512", status: "delivered" as const, date: "Mar 15", priority: "low" as const, seller: "Atlas Materials", progress: 100 },
-];
-
 const orderStatusMap: Record<string, { status: "pending" | "info" | "warning" | "success" | "error" | "neutral"; label: string }> = {
-  "confirmed": { status: "info", label: "Confirmed" },
-  "processing": { status: "pending", label: "Processing" },
-  "packing": { status: "warning", label: "Packing" },
-  "quality-check": { status: "warning", label: "QC Check" },
-  "shipped": { status: "info", label: "Shipped" },
-  "delivered": { status: "success", label: "Delivered" },
+  created: { status: "pending", label: "Created" },
+  accepted: { status: "info", label: "Accepted" },
+  shipped: { status: "info", label: "Shipped" },
+  delivered: { status: "success", label: "Delivered" },
+  completed: { status: "success", label: "Completed" },
+  disputed: { status: "warning", label: "Disputed" },
+  cancelled: { status: "neutral", label: "Cancelled" },
+  rejected: { status: "error", label: "Rejected" },
 };
 
-const orderVolume = [
-  { day: "Mon", orders: 18 }, { day: "Tue", orders: 24 }, { day: "Wed", orders: 31 },
-  { day: "Thu", orders: 28 }, { day: "Fri", orders: 42 }, { day: "Sat", orders: 15 }, { day: "Sun", orders: 8 },
-];
+const orderProgress: Record<string, number> = {
+  created: 20,
+  accepted: 40,
+  shipped: 70,
+  delivered: 95,
+  completed: 100,
+  disputed: 60,
+  cancelled: 100,
+  rejected: 100,
+};
 
 export function ManagementOrders() {
+  const fetchJson = fetchJsonAuthed;
+  const location = useLocation();
   const [statusFilter, setStatusFilter] = useState("all");
-  const statuses = ["all", "confirmed", "processing", "packing", "quality-check", "shipped", "delivered"];
-  const filtered = statusFilter === "all" ? orders : orders.filter(o => o.status === statusFilter);
+  const [q, setQ] = useState("");
+  const [overdueDeadline, setOverdueDeadline] = useState<boolean>(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const [orders, setOrders] = useState<any[]>([]);
+  const [count, setCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const statuses = ["all", "created", "accepted", "shipped", "delivered", "disputed", "completed", "cancelled", "rejected"];
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const s = (params.get("status") || "").trim().toLowerCase();
+    const qIn = (params.get("q") || "").trim();
+    const overdue = (params.get("overdue_deadline") || "").trim().toLowerCase();
+    const pageIn = Number(params.get("page") || "1");
+
+    setQ(qIn);
+    if (s && statuses.includes(s)) setStatusFilter(s);
+    else setStatusFilter("all");
+
+    const od = overdue === "1" || overdue === "true" || overdue === "yes";
+    setOverdueDeadline(od);
+
+    if (Number.isFinite(pageIn) && pageIn >= 1) setPage(Math.floor(pageIn));
+    else setPage(1);
+  }, [location.search]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("page_size", String(pageSize));
+        if (q.trim()) params.set("q", q.trim());
+        if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+        if (overdueDeadline) params.set("overdue_deadline", "1");
+        const resp = await fetchJson(`/api/v1/admin/orders/?${params.toString()}`);
+        if (cancelled) return;
+        const rows = Array.isArray(resp?.results) ? resp.results : [];
+        const cnt = Number(resp?.count || 0);
+        setOrders(rows);
+        setCount(Number.isFinite(cnt) ? cnt : 0);
+        setTotalPages(Math.max(1, Math.ceil((Number.isFinite(cnt) ? cnt : 0) / pageSize)));
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load orders.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [statusFilter, q, overdueDeadline, page]);
+
+  const totalAmount = useMemo(() => {
+    return orders.reduce((sum, o) => sum + (Number(o?.total_amount || 0) || 0), 0);
+  }, [orders]);
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-foreground tracking-tight mb-1.5">Order Pipeline</h1>
-          <p className="text-muted-foreground text-[0.875rem]">Track every order from confirmation to delivery.</p>
+          <p className="text-muted-foreground text-[0.875rem]">Admin order stream (real data).</p>
         </div>
-        <BounceButton variant="primary" size="md" icon={<Package size={16} />}>Create Order</BounceButton>
+        <BounceButton variant="primary" size="md" icon={<Package size={16} />} onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+          Refresh
+        </BounceButton>
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Active Orders" value="24" icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
-        <StatCard label="This Week" value="$48.2K" icon={<DollarSign size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" change="+12%" changeType="positive" />
-        <StatCard label="Awaiting QC" value="6" icon={<Shield size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-        <StatCard label="Avg Fulfillment" value="1.8d" icon={<Clock size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" subtitle="Target: 2 days" />
+        <StatCard label="Matching Orders" value={count.toLocaleString()} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
+        <StatCard label="Page Total" value={`$${Math.round(totalAmount).toLocaleString()}`} icon={<DollarSign size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        <StatCard label="Page" value={`${page}/${totalPages}`} icon={<Hash size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        <StatCard label="Filter" value={statusFilter === "all" ? "All" : (orderStatusMap[statusFilter]?.label || statusFilter)} icon={<Filter size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
       </motion.div>
 
-      {/* Pipeline stages */}
-      <motion.div variants={stagger.item} className="flex gap-3 overflow-x-auto pb-1">
-        {statuses.map(s => {
-          const count = s === "all" ? orders.length : orders.filter(o => o.status === s).length;
-          return (
-            <button key={s} onClick={() => setStatusFilter(s)}
-              className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] whitespace-nowrap transition-all cursor-pointer ${
-                statusFilter === s ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
-              }`}
-            >{s === "all" ? "All" : (orderStatusMap[s]?.label || s)} ({count})</button>
-          );
-        })}
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1 relative">
+          <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+          <input
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setPage(1);
+            }}
+            placeholder="Search by order id, buyer, seller, product..."
+            className="w-full pl-11 pr-4 py-3 rounded-2xl text-[0.875rem] bg-muted/20 border border-border/30 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => {
+            setStatusFilter(e.target.value);
+            setOverdueDeadline(false);
+            setPage(1);
+          }}
+          className="px-4 py-3 rounded-2xl text-[0.875rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+        >
+          {statuses.map((s) => (
+            <option key={s} value={s}>
+              {s === "all" ? "All statuses" : (orderStatusMap[s]?.label || s)}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => {
+            setOverdueDeadline((v) => !v);
+            setPage(1);
+          }}
+          className={`px-4 py-3 rounded-2xl text-[0.875rem] border border-border/30 transition-all ${
+            overdueDeadline ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Overdue
+        </button>
       </motion.div>
 
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <div className="space-y-2">
-            {filtered.map((o, i) => (
-              <motion.div key={o.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
-              >
-                <div className="w-12 h-12 rounded-2xl bg-primary/6 flex flex-col items-center justify-center">
-                  <span className="text-[0.6875rem] text-primary/70">{o.id.split("-")[1]}</span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[0.875rem] text-foreground">{o.buyer}</span>
-                    {o.priority === "urgent" && <span className="w-1.5 h-1.5 rounded-full bg-[#E5484D] animate-pulse" />}
-                  </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{o.seller} · {o.items} items</span>
-                </div>
-                <div className="hidden sm:flex items-center gap-4">
-                  <span className="text-[0.875rem] text-foreground/70">{o.total}</span>
-                  <div className="w-20">
-                    <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
-                      <motion.div className="h-full rounded-full bg-primary/50" initial={{ width: 0 }} animate={{ width: `${o.progress}%` }} transition={{ duration: 0.8, delay: i * 0.05 }} />
+          {error && <div className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem] mb-4">{error}</div>}
+          {loading ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              Loading orders…
+            </div>
+          ) : orders.length === 0 ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              No orders match this filter.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {orders.map((o, i) => {
+                const rawStatus = (o?.status || "").toString().toLowerCase();
+                const pct = orderProgress[rawStatus] ?? 0;
+                return (
+                  <motion.div
+                    key={o?.id || i}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.03 }}
+                    className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors group"
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-primary/6 flex flex-col items-center justify-center">
+                      <span className="text-[0.6875rem] text-primary/70">{String(o?.id || "").slice(-4) || "—"}</span>
                     </div>
-                  </div>
-                </div>
-                <StatusPill status={orderStatusMap[o.status]?.status || "neutral"} label={orderStatusMap[o.status]?.label || o.status} pulse={o.status === "processing"} />
-              </motion.div>
-            ))}
-          </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[0.875rem] text-foreground truncate">{o?.buyer || "—"}</span>
+                      </div>
+                      <span className="text-[0.75rem] text-muted-foreground/50 block truncate">
+                        {o?.seller || "—"} · {(Number(o?.item_count || 0) || 0).toLocaleString()} items
+                      </span>
+                    </div>
+                    <div className="hidden sm:flex items-center gap-4">
+                      <span className="text-[0.875rem] text-foreground/70">
+                        {o?.total_amount ? `$${Math.round(Number(o.total_amount) || 0).toLocaleString()}` : "—"}
+                      </span>
+                      <div className="w-20">
+                        <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                          <motion.div
+                            className="h-full rounded-full bg-primary/50"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${pct}%` }}
+                            transition={{ duration: 0.8, delay: i * 0.05 }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <StatusPill status={orderStatusMap[rawStatus]?.status || "neutral"} label={orderStatusMap[rawStatus]?.label || rawStatus || "—"} />
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+          {!loading && totalPages > 1 && (
+            <div className="pt-4 flex items-center justify-between">
+              <div className="text-[0.75rem] text-muted-foreground/60">Page {page} / {totalPages}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </SectionCard>
       </motion.div>
     </motion.div>
@@ -139,82 +283,150 @@ export function ManagementOrders() {
 //  MANAGEMENT → DELIVERIES
 // ════════════════════════════════════════════════════════════
 
-const deliveries = [
-  { id: "DLV-291", order: "ORD-4848", destination: "Nordic Health, Minneapolis", driver: "Mike Torres", status: "in-transit" as const, eta: "2h 15m", distance: "128 mi", items: 200 },
-  { id: "DLV-290", order: "ORD-4845", destination: "TechStar Inc, Detroit", driver: "Sam Wilson", status: "out-for-delivery" as const, eta: "45 min", distance: "32 mi", items: 30 },
-  { id: "DLV-289", order: "ORD-4842", destination: "Meridian Corp, Chicago", driver: "Nina Patel", status: "delivered" as const, eta: "—", distance: "12 mi", items: 24 },
-  { id: "DLV-288", order: "ORD-4840", destination: "FreshPack HQ, Aurora", driver: "Tony Ruiz", status: "pending-pickup" as const, eta: "3h", distance: "45 mi", items: 8 },
-  { id: "DLV-287", order: "ORD-4838", destination: "BioLab Solutions, Evanston", driver: "Aisha Khan", status: "delivered" as const, eta: "—", distance: "18 mi", items: 15 },
-];
-
 const deliveryStatusMap: Record<string, { status: "pending" | "info" | "warning" | "success" | "neutral"; label: string }> = {
-  "pending-pickup": { status: "warning", label: "Pending Pickup" },
-  "in-transit": { status: "info", label: "In Transit" },
-  "out-for-delivery": { status: "pending", label: "Out for Delivery" },
+  "label_created": { status: "warning", label: "Label Created" },
+  "picked_up": { status: "info", label: "Picked Up" },
+  "in_transit": { status: "info", label: "In Transit" },
+  "customs": { status: "warning", label: "Customs" },
+  "out_for_delivery": { status: "pending", label: "Out for Delivery" },
   "delivered": { status: "success", label: "Delivered" },
 };
 
 export function ManagementDeliveries() {
+  const fetchJson = fetchJsonAuthed;
+  const [days, setDays] = useState(7);
+  const [shipments, setShipments] = useState<any[]>([]);
+  const [shipCount, setShipCount] = useState(0);
+  const [shipPage, setShipPage] = useState(1);
+  const pageSize = 10;
+  const [shipTotalPages, setShipTotalPages] = useState(1);
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(shipPage));
+        params.set("page_size", String(pageSize));
+        const [s, listResp] = await Promise.all([
+          fetchJson(`/api/v1/admin/logistics/stats/?days=${days}`),
+          fetchJson(`/api/v1/admin/logistics/shipments/?${params.toString()}`),
+        ]);
+        if (cancelled) return;
+        setStats(s);
+        const rows = Array.isArray(listResp?.results) ? listResp.results : [];
+        const cnt = Number(listResp?.count || 0);
+        setShipments(rows);
+        setShipCount(Number.isFinite(cnt) ? cnt : 0);
+        setShipTotalPages(Math.max(1, Math.ceil((Number.isFinite(cnt) ? cnt : 0) / pageSize)));
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load deliveries.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [days, shipPage]);
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
-      <motion.div variants={stagger.item}>
-        <h1 className="text-foreground tracking-tight mb-1.5">Deliveries</h1>
-        <p className="text-muted-foreground text-[0.875rem]">Real-time tracking of all outgoing deliveries.</p>
+      <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-foreground tracking-tight mb-1.5">Deliveries</h1>
+          <p className="text-muted-foreground text-[0.875rem]">Real shipment list from logistics.</p>
+        </div>
+        <select
+          value={String(days)}
+          onChange={(e) => {
+            setDays(Number(e.target.value) || 7);
+            setShipPage(1);
+          }}
+          className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+        >
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30">Last 30 days</option>
+        </select>
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="In Transit" value="8" icon={<Truck size={20} className="text-[#3B82F6]" />} iconBg="bg-[#3B82F6]/8" index={0} accentColor="#3B82F6" />
-        <StatCard label="Delivered Today" value="14" icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
-        <StatCard label="On-Time Rate" value="96%" icon={<Clock size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={2} accentColor="#0171E3" />
-        <StatCard label="Delayed" value="1" icon={<AlertTriangle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
-      </motion.div>
-
-      {/* Delivery Map placeholder */}
-      <motion.div variants={stagger.item}>
-        <SectionCard>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-foreground text-[0.9375rem]">Live Deliveries</h2>
-            <StatusPill status="info" label="3 active" pulse />
-          </div>
-          <div className="h-48 rounded-2xl bg-gradient-to-br from-[#0171E3]/4 to-[#30A46C]/4 flex items-center justify-center border border-border/20">
-            <div className="text-center">
-              <MapPin size={32} className="text-primary/30 mx-auto mb-2" />
-              <p className="text-muted-foreground/40 text-[0.8125rem]">Live map view — 3 vehicles active</p>
-              <p className="text-muted-foreground/30 text-[0.75rem]">Tap a delivery below for route details</p>
-            </div>
-          </div>
-        </SectionCard>
+        <StatCard label="In Transit" value={typeof stats?.in_transit === "number" ? stats.in_transit : "—"} icon={<Truck size={20} className="text-[#3B82F6]" />} iconBg="bg-[#3B82F6]/8" index={0} accentColor="#3B82F6" />
+        <StatCard label="Active Vehicles" value={typeof stats?.active_vehicles === "number" ? `${stats.active_vehicles}/${stats.total_vehicles}` : "—"} icon={<MapPin size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
+        <StatCard label="On-Time Rate" value={typeof stats?.on_time_rate === "number" ? `${Number(stats.on_time_rate).toFixed(1)}%` : "—"} icon={<Clock size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={2} accentColor="#0171E3" />
+        <StatCard label="Shipments" value={shipCount.toLocaleString()} icon={<Hash size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
       </motion.div>
 
       <motion.div variants={stagger.item}>
         <SectionCard>
           <h2 className="text-foreground text-[0.9375rem] mb-6">All Deliveries</h2>
-          <div className="space-y-2">
-            {deliveries.map((d, i) => (
-              <motion.div key={d.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
-              >
-                <div className="w-10 h-10 rounded-2xl bg-[#3B82F6]/8 flex items-center justify-center">
-                  <Truck size={18} className="text-[#3B82F6]/60" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[0.875rem] text-foreground truncate">{d.destination}</span>
-                  </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{d.driver} · {d.order} · {d.items} items</span>
-                </div>
-                <div className="hidden sm:flex items-center gap-4 text-[0.75rem] text-muted-foreground/50">
-                  <span>{d.distance}</span>
-                  {d.eta !== "—" && <span className="text-primary/70">ETA {d.eta}</span>}
-                </div>
-                <StatusPill
-                  status={deliveryStatusMap[d.status]?.status || "neutral"}
-                  label={deliveryStatusMap[d.status]?.label || d.status}
-                  pulse={d.status === "in-transit" || d.status === "out-for-delivery"}
-                />
-              </motion.div>
-            ))}
-          </div>
+          {error && <div className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem] mb-4">{error}</div>}
+          {loading ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              Loading shipments…
+            </div>
+          ) : shipments.length === 0 ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              No shipments yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {shipments.map((d: any, i: number) => {
+                const st = (d?.status || "").toString().toLowerCase();
+                return (
+                  <motion.div
+                    key={d?.id || i}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.04 }}
+                    className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+                  >
+                    <div className="w-10 h-10 rounded-2xl bg-[#3B82F6]/8 flex items-center justify-center">
+                      <Truck size={18} className="text-[#3B82F6]/60" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[0.875rem] text-foreground truncate">{d?.destination || "—"}</span>
+                      </div>
+                      <span className="text-[0.75rem] text-muted-foreground/50 block truncate">
+                        {(d?.seller || "—")} · ORD-{d?.order_id ?? "—"} · {d?.tracking_number ? `#${d.tracking_number}` : "no tracking"}
+                      </span>
+                    </div>
+                    <StatusPill status={deliveryStatusMap[st]?.status || "neutral"} label={deliveryStatusMap[st]?.label || st || "—"} pulse={st === "in_transit" || st === "out_for_delivery"} />
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+          {!loading && shipTotalPages > 1 && (
+            <div className="pt-4 flex items-center justify-between">
+              <div className="text-[0.75rem] text-muted-foreground/60">Page {shipPage} / {shipTotalPages}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setShipPage((p) => Math.max(1, p - 1))}
+                  disabled={shipPage <= 1}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70 disabled:opacity-50"
+                  onClick={() => setShipPage((p) => Math.min(shipTotalPages, p + 1))}
+                  disabled={shipPage >= shipTotalPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </SectionCard>
       </motion.div>
     </motion.div>
@@ -225,92 +437,99 @@ export function ManagementDeliveries() {
 //  MANAGEMENT → WORKFORCE
 // ════════════════════════════════════════════════════════════
 
-const employees = [
-  { id: 1, name: "Mike Torres", role: "Driver", status: "active" as const, performance: 4.9, tasksToday: 5, completed: 3, shift: "8:00 AM - 4:00 PM", avatar: "MT" },
-  { id: 2, name: "Sam Wilson", role: "Driver", status: "active" as const, performance: 4.7, tasksToday: 4, completed: 2, shift: "8:00 AM - 4:00 PM", avatar: "SW" },
-  { id: 3, name: "Nina Patel", role: "Driver", status: "break" as const, performance: 4.8, tasksToday: 6, completed: 4, shift: "6:00 AM - 2:00 PM", avatar: "NP" },
-  { id: 4, name: "Dr. Amara Johnson", role: "Inspector", status: "active" as const, performance: 4.9, tasksToday: 3, completed: 1, shift: "9:00 AM - 5:00 PM", avatar: "AJ" },
-  { id: 5, name: "Marcus Lee", role: "Inspector", status: "active" as const, performance: 4.6, tasksToday: 4, completed: 2, shift: "9:00 AM - 5:00 PM", avatar: "ML" },
-  { id: 6, name: "Tony Ruiz", role: "Packaging", status: "active" as const, performance: 4.5, tasksToday: 8, completed: 5, shift: "7:00 AM - 3:00 PM", avatar: "TR" },
-  { id: 7, name: "Aisha Khan", role: "Driver", status: "off-duty" as const, performance: 4.4, tasksToday: 0, completed: 0, shift: "Off today", avatar: "AK" },
-];
-
-const roleColor: Record<string, string> = { Driver: "#3B82F6", Inspector: "#0171E3", Packaging: "#D97706" };
-
 export function ManagementWorkforce() {
+  const fetchJson = fetchJsonAuthed;
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [logistics, setLogistics] = useState<any>(null);
+  const [inspectors, setInspectors] = useState<any>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const params = (adminRole: string) => {
+          const p = new URLSearchParams();
+          p.set("role", "admin");
+          p.set("admin_role", adminRole);
+          p.set("page", "1");
+          p.set("page_size", "25");
+          return p;
+        };
+        const [l, i] = await Promise.all([
+          fetchJson(`/api/v1/admin/users/?${params("logistics").toString()}`),
+          fetchJson(`/api/v1/admin/users/?${params("inspector").toString()}`),
+        ]);
+        if (cancelled) return;
+        setLogistics(l);
+        setInspectors(i);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load workforce.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const logisticsCount = Number(logistics?.count || 0) || 0;
+  const inspectorCount = Number(inspectors?.count || 0) || 0;
+  const staffCount = logisticsCount + inspectorCount;
+  const staffRows = [
+    ...((Array.isArray(logistics?.results) ? logistics.results : []).map((u: any) => ({ ...u, team: "Logistics" }))),
+    ...((Array.isArray(inspectors?.results) ? inspectors.results : []).map((u: any) => ({ ...u, team: "Inspection" }))),
+  ];
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-foreground tracking-tight mb-1.5">Workforce</h1>
-          <p className="text-muted-foreground text-[0.875rem]">Team performance, schedules, and availability at a glance.</p>
+          <p className="text-muted-foreground text-[0.875rem]">Admin teams (Logistics + Inspectors) from real users.</p>
         </div>
-        <BounceButton variant="primary" size="md" icon={<UserCheck size={16} />}>Add Team Member</BounceButton>
+        <BounceButton variant="primary" size="md" icon={<UserCheck size={16} />}>Invite Member</BounceButton>
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="On Duty" value="6/7" icon={<Users size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={0} accentColor="#30A46C" />
-        <StatCard label="Avg Performance" value="4.7" icon={<Star size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={1} accentColor="#FFB224" sparklineData={[4.3, 4.4, 4.5, 4.6, 4.7, 4.7]} sparklineColor="#FFB224" />
-        <StatCard label="Tasks Completed" value="17/30" icon={<CheckCircle2 size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={2} accentColor="#0171E3" subtitle="57% done today" />
-        <StatCard label="On Break" value="1" icon={<Clock size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+        <StatCard label="Staff" value={staffCount.toLocaleString()} icon={<Users size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={0} accentColor="#30A46C" />
+        <StatCard label="Logistics" value={logisticsCount.toLocaleString()} icon={<Truck size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={1} accentColor="#0171E3" />
+        <StatCard label="Inspectors" value={inspectorCount.toLocaleString()} icon={<Shield size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        <StatCard label="Status" value={loading ? "Loading" : error ? "Error" : "OK"} icon={<Clock size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
       </motion.div>
 
-      {/* Role distribution */}
-      <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {(["Driver", "Inspector", "Packaging"] as const).map(role => {
-          const members = employees.filter(e => e.role === role);
-          const active = members.filter(e => e.status === "active" || e.status === "break").length;
-          return (
-            <SectionCard key={role}>
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${roleColor[role]}10` }}>
-                  {role === "Driver" ? <Truck size={16} style={{ color: roleColor[role] }} /> :
-                   role === "Inspector" ? <Shield size={16} style={{ color: roleColor[role] }} /> :
-                   <Package size={16} style={{ color: roleColor[role] }} />}
-                </div>
-                <div>
-                  <span className="text-[0.875rem] text-foreground">{role}s</span>
-                  <span className="text-[0.75rem] text-muted-foreground/50 ml-2">{active}/{members.length} active</span>
-                </div>
-              </div>
-              {members.map(m => (
-                <div key={m.id} className="flex items-center gap-3 py-2.5">
-                  <div className="w-8 h-8 rounded-xl text-white text-[0.6875rem] flex items-center justify-center" style={{ backgroundColor: roleColor[role] }}>{m.avatar}</div>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-[0.8125rem] text-foreground block truncate">{m.name}</span>
-                    <span className="text-[0.6875rem] text-muted-foreground/40">{m.shift}</span>
-                  </div>
-                  <StatusPill
-                    status={m.status === "active" ? "success" : m.status === "break" ? "warning" : "neutral"}
-                    label={m.status === "off-duty" ? "Off" : m.status}
-                  />
-                </div>
-              ))}
-            </SectionCard>
-          );
-        })}
-      </motion.div>
-
-      {/* Full team list */}
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <h2 className="text-foreground text-[0.9375rem] mb-6">Performance Board</h2>
-          <div className="space-y-2">
-            {employees.sort((a, b) => b.performance - a.performance).map((e, i) => (
-              <div key={e.id} className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors">
-                <span className="text-[0.75rem] text-muted-foreground/30 w-5">{i + 1}</span>
-                <div className="w-10 h-10 rounded-2xl text-white text-[0.75rem] flex items-center justify-center" style={{ backgroundColor: roleColor[e.role] }}>{e.avatar}</div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-[0.875rem] text-foreground">{e.name}</span>
-                  <span className="text-[0.75rem] text-muted-foreground/50 block">{e.role} · {e.completed}/{e.tasksToday} tasks done</span>
+          <h2 className="text-foreground text-[0.9375rem] mb-6">Team Members</h2>
+          {error && <div className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem] mb-4">{error}</div>}
+          {loading ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              Loading staff…
+            </div>
+          ) : staffRows.length === 0 ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              No staff found.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {staffRows.map((u: any, i: number) => (
+                <div key={u?.id || i} className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors">
+                  <span className="text-[0.75rem] text-muted-foreground/30 w-5">{i + 1}</span>
+                  <div className="w-10 h-10 rounded-2xl bg-primary/8 text-primary text-[0.75rem] flex items-center justify-center">
+                    {((u?.first_name || "U")[0] || "U").toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[0.875rem] text-foreground block truncate">{(u?.email || u?.phone || `User #${u?.id}`) || "—"}</span>
+                    <span className="text-[0.75rem] text-muted-foreground/50 block truncate">{u?.team || "Admin"}</span>
+                  </div>
+                  <StatusPill status="info" label="active" />
                 </div>
-                <div className="flex items-center gap-1 text-[#FFB224]">
-                  <Star size={14} fill="#FFB224" />
-                  <span className="text-[0.875rem]">{e.performance}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </SectionCard>
       </motion.div>
     </motion.div>
@@ -321,64 +540,81 @@ export function ManagementWorkforce() {
 //  MANAGEMENT → B2B ACCOUNTS
 // ════════════════════════════════════════════════════════════
 
-const b2bAccounts = [
-  { id: 1, name: "Meridian Corp", industry: "Manufacturing", country: "us", value: "$245K", orders: 142, status: "active" as const, since: "Jan 2024", contact: "James Rodriguez", tier: "Enterprise" },
-  { id: 2, name: "Nordic Health", industry: "Healthcare", country: "no", value: "$180K", orders: 87, status: "active" as const, since: "Mar 2024", contact: "Erik Svensson", tier: "Growth" },
-  { id: 3, name: "TechStar Inc", industry: "Technology", country: "us", value: "$520K", orders: 234, status: "active" as const, since: "Nov 2023", contact: "David Chen", tier: "Enterprise" },
-  { id: 4, name: "BioLab Solutions", industry: "Biotech", country: "de", value: "$92K", orders: 45, status: "active" as const, since: "Jun 2024", contact: "Dr. Sarah Kim", tier: "Growth" },
-  { id: 5, name: "Atlas Corp HQ", industry: "Industrial", country: "jp", value: "$310K", orders: 178, status: "active" as const, since: "Aug 2023", contact: "Yuki Tanaka", tier: "Enterprise" },
-  { id: 6, name: "FreshMart", industry: "Retail", country: "ca", value: "$156K", orders: 91, status: "pending" as const, since: "Feb 2026", contact: "Lisa Tremblay", tier: "Starter" },
-];
-
-const tierColor: Record<string, string> = { Enterprise: "#0171E3", Growth: "#30A46C", Starter: "#FFB224" };
-
 export function ManagementB2B() {
+  const fetchJson = fetchJsonAuthed;
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [overview, setOverview] = useState<any>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const data = await fetchJson("/api/v1/admin/overview?period=30d");
+        if (cancelled) return;
+        setOverview(data);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load B2B overview.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const regions = Array.isArray(overview?.regions) ? overview.regions : [];
+  const channels = Array.isArray(overview?.channels) ? overview.channels : [];
+  const revenue = overview?.hero?.total_revenue?.total ?? 0;
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-foreground tracking-tight mb-1.5">B2B Accounts</h1>
-          <p className="text-muted-foreground text-[0.875rem]">Enterprise partners and wholesale relationships.</p>
+          <p className="text-muted-foreground text-[0.875rem]">Revenue mix and regions (real overview data).</p>
         </div>
         <BounceButton variant="primary" size="md" icon={<Building2 size={16} />}>Add Account</BounceButton>
       </motion.div>
 
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-4 gap-5">
-        <StatCard label="Active Accounts" value="5" icon={<Building2 size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
-        <StatCard label="Total Revenue" value="$1.5M" icon={<DollarSign size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" change="+18%" changeType="positive" />
-        <StatCard label="Avg Order Value" value="$2,180" icon={<TrendingUp size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
-        <StatCard label="Countries" value="5" icon={<Globe size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
+        <StatCard label="Revenue (30d)" value={`$${Math.round(Number(revenue) || 0).toLocaleString()}`} icon={<DollarSign size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={0} accentColor="#30A46C" />
+        <StatCard label="Top Regions" value={regions.length ? String(regions.length) : "—"} icon={<Globe size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={1} accentColor="#0171E3" />
+        <StatCard label="Channels" value={channels.length ? String(channels.length) : "—"} icon={<BarChart3 size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+        <StatCard label="Status" value={loading ? "Loading" : error ? "Error" : "OK"} icon={<Clock size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={3} accentColor="#8B5CF6" />
       </motion.div>
 
       <motion.div variants={stagger.item}>
         <SectionCard>
-          <h2 className="text-foreground text-[0.9375rem] mb-6">Partner Accounts</h2>
-          <div className="space-y-2">
-            {b2bAccounts.map((a, i) => (
-              <motion.div key={a.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-4 px-5 py-5 rounded-2xl hover:bg-muted/20 transition-colors group"
-              >
-                <img
-                  src={`https://flagcdn.com/40x30/${a.country}.png`}
-                  alt={a.country}
-                  className="w-10 h-8 rounded-lg object-cover shadow-[0_1px_3px_rgba(0,0,0,0.1)]"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[0.875rem] text-foreground">{a.name}</span>
-                    <span className="text-[0.6875rem] px-2 py-0.5 rounded-full" style={{ backgroundColor: `${tierColor[a.tier]}10`, color: tierColor[a.tier] }}>{a.tier}</span>
-                  </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{a.industry} · {a.contact} · Since {a.since}</span>
-                </div>
-                <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
-                  <span className="text-foreground/70">{a.value}</span>
-                  <span className="text-muted-foreground/50">{a.orders} orders</span>
-                </div>
-                <StatusPill status={a.status === "active" ? "success" : "pending"} label={a.status} />
-                <ChevronRight size={16} className="text-muted-foreground/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-              </motion.div>
-            ))}
-          </div>
+          <h2 className="text-foreground text-[0.9375rem] mb-6">Top Regions</h2>
+          {error && <div className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem] mb-4">{error}</div>}
+          {loading ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              Loading…
+            </div>
+          ) : regions.length === 0 ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              No payments/regions yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {regions.map((r: any, i: number) => (
+                <motion.div
+                  key={`${r?.label}-${i}`}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  className="flex items-center justify-between px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors"
+                >
+                  <span className="text-[0.875rem] text-foreground">{r?.label || "Unknown"}</span>
+                  <span className="text-[0.8125rem] text-muted-foreground/60">${Math.round(Number(r?.value || 0) || 0).toLocaleString()}</span>
+                </motion.div>
+              ))}
+            </div>
+          )}
         </SectionCard>
       </motion.div>
     </motion.div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Car,
@@ -205,8 +205,8 @@ import {
   ChevronRight,
   type LucideIcon,
 } from "lucide-react";
-import { categories } from "./category-data";
 import { useBounce } from "./bounce-context";
+import { fetchJsonAuthed } from "@/lib/api";
 import {
   CarIcon,
   FactoryIcon,
@@ -291,6 +291,51 @@ export function getIcon(iconName: string): LucideIcon {
   return lucideIconMap[iconName] || CircleDot;
 }
 
+type ExploreApiChild = {
+  id: number;
+  name: string;
+  slug: string;
+  accent: string;
+  icon: string;
+  product_count: number;
+  parent_id: number;
+};
+
+type ExploreApiCategory = {
+  id: number;
+  name: string;
+  slug: string;
+  accent: string;
+  icon: string;
+  product_count: number;
+  children: ExploreApiChild[];
+};
+
+type ExploreApiResponse = {
+  categories: ExploreApiCategory[];
+  total_products: number;
+};
+
+type UiProduct = {
+  id: number;
+  name: string;
+  icon: string;
+};
+
+type UiSubcategory = {
+  id: string;
+  label: string;
+  icon: string;
+  products: UiProduct[];
+};
+
+type UiCategory = {
+  id: string;
+  label: string;
+  icon: string;
+  subcategories: UiSubcategory[];
+};
+
 // ── Custom Figma SVG icons for main categories ──
 const mainCategoryIconMap: Record<string, React.FC<{ size?: number; className?: string }>> = {
   car: CarIcon,
@@ -320,18 +365,99 @@ export function CategoryNav({
   const { triggerBounce } = useBounce();
   const containerRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [categories, setCategories] = useState<UiCategory[]>([]);
+  const [productsBySub, setProductsBySub] = useState<Record<string, UiProduct[]>>({});
+  const [productsLoadingBySub, setProductsLoadingBySub] = useState<Record<string, boolean>>({});
   const [activeSubcategory, setActiveSubcategory] = useState<string | null>(null);
   const [clickLocked, setClickLocked] = useState(false);
   const [subClickLocked, setSubClickLocked] = useState(false);
 
   const activeCat = categories.find((c) => c.id === activeCategory);
   const activeSub = activeCat?.subcategories.find((s) => s.id === activeSubcategory);
+  const activeSubProducts = useMemo(() => {
+    if (!activeSub) return [];
+    return productsBySub[activeSub.id] || [];
+  }, [activeSub, productsBySub]);
+  const activeSubLoading = useMemo(() => {
+    if (!activeSub) return false;
+    return Boolean(productsLoadingBySub[activeSub.id]);
+  }, [activeSub, productsLoadingBySub]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/categories/explore/")
+      .then((data) => {
+        if (cancelled) return;
+        const payload = data as ExploreApiResponse;
+        const rows = Array.isArray(payload?.categories) ? payload.categories : [];
+        const mapped: UiCategory[] = rows
+          .map((c) => ({
+            id: String(c?.slug || c?.id || ""),
+            label: String(c?.name || ""),
+            icon: String(c?.icon || "circle"),
+            subcategories: (Array.isArray(c?.children) ? c.children : []).map((ch) => ({
+              id: String(ch?.slug || ch?.id || ""),
+              label: String(ch?.name || ""),
+              icon: String(ch?.icon || "circle"),
+              products: [],
+            })),
+          }))
+          .filter((c) => c.id && c.label);
+        setCategories(mapped);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Reset subcategory when main category changes
   useEffect(() => {
     setActiveSubcategory(null);
     setSubClickLocked(false);
   }, [activeCategory]);
+
+  useEffect(() => {
+    const sub = activeSub;
+    if (!sub) return;
+    if (productsBySub[sub.id]) return;
+    if (productsLoadingBySub[sub.id]) return;
+
+    let cancelled = false;
+    setProductsLoadingBySub((p) => ({ ...p, [sub.id]: true }));
+    const params = new URLSearchParams();
+    params.set("category", sub.id);
+    params.set("page_size", "24");
+    params.set("ordering", "-created_at");
+    fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+        const items: UiProduct[] = rows
+          .map((r: any) => ({
+            id: Number(r?.id || 0),
+            name: String(r?.name || r?.title || "").trim(),
+            icon: "tag",
+          }))
+          .filter((p: UiProduct) => p.id && p.name);
+        setProductsBySub((p) => ({ ...p, [sub.id]: items }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProductsBySub((p) => ({ ...p, [sub.id]: [] }));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setProductsLoadingBySub((p) => ({ ...p, [sub.id]: false }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSub, productsBySub, productsLoadingBySub]);
 
   // Reset click locks when category closes
   useEffect(() => {
@@ -637,51 +763,59 @@ export function CategoryNav({
                               scrollbarColor: "rgba(86,88,93,0.15) transparent",
                             }}
                           >
-                            <div className="flex flex-wrap justify-center gap-5 p-3">
-                              {activeSub.products.map((product, i) => {
-                                const ProdIcon = getIcon(product.icon);
-                                return (
-                                  <motion.button
-                                    key={product.id}
-                                    initial={{ opacity: 0, y: 12 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{
-                                      delay: 0.08 + i * 0.035,
-                                      duration: 0.35,
-                                      ease: [0.25, 0.46, 0.45, 0.94],
-                                    }}
-                                    whileHover={{ scale: 1.08, y: -3 }}
-                                    whileTap={{ scale: 0.94 }}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      triggerBounce();
-                                      onSubcategorySelect(activeCat.id, activeSub.id);
-                                    }}
-                                    className="flex flex-col items-center gap-2 cursor-pointer group"
-                                  >
-                                    <div
-                                      className="relative w-[48px] h-[48px] rounded-[18px] backdrop-blur-sm border shadow-[0_2px_10px_rgba(0,0,0,0.04)] flex items-center justify-center transition-all duration-300 bg-white/45 border-white/60 group-hover:bg-white/75 group-hover:shadow-[0_6px_20px_rgba(0,0,0,0.08)]"
+                            {activeSubLoading ? (
+                              <div className="p-6 text-center text-[12px] text-[#56585D]" style={{ fontWeight: 520 }}>
+                                Loading products…
+                              </div>
+                            ) : activeSubProducts.length > 0 ? (
+                              <div className="flex flex-wrap justify-center gap-5 p-3">
+                                {activeSubProducts.map((product, i) => {
+                                  const ProdIcon = getIcon(product.icon);
+                                  return (
+                                    <motion.button
+                                      key={product.id}
+                                      initial={{ opacity: 0, y: 12 }}
+                                      animate={{ opacity: 1, y: 0 }}
+                                      transition={{
+                                        delay: 0.08 + i * 0.035,
+                                        duration: 0.35,
+                                        ease: [0.25, 0.46, 0.45, 0.94],
+                                      }}
+                                      whileHover={{ scale: 1.08, y: -3 }}
+                                      whileTap={{ scale: 0.94 }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        triggerBounce();
+                                        onSubcategorySelect(activeCat.id, activeSub.id);
+                                      }}
+                                      className="flex flex-col items-center gap-2 cursor-pointer group"
                                     >
-                                      <ProdIcon
-                                        size={18}
-                                        strokeWidth={1.2}
-                                        className="text-[#3a3c41] group-hover:text-[#0d1117] transition-colors duration-200"
-                                      />
-                                    </div>
-                                    <span
-                                      className="font-['Urbanist',sans-serif] text-[12px] text-[#3a3c41] opacity-70 group-hover:opacity-100 transition-opacity text-center max-w-[72px] leading-tight"
-                                      style={{ fontWeight: 600 }}
-                                    >
-                                      {product.name}
-                                    </span>
-                                  </motion.button>
-                                );
-                              })}
-                            </div>
+                                      <div className="relative w-[48px] h-[48px] rounded-[18px] backdrop-blur-sm border shadow-[0_2px_10px_rgba(0,0,0,0.04)] flex items-center justify-center transition-all duration-300 bg-white/45 border-white/60 group-hover:bg-white/75 group-hover:shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
+                                        <ProdIcon
+                                          size={18}
+                                          strokeWidth={1.2}
+                                          className="text-[#3a3c41] group-hover:text-[#0d1117] transition-colors duration-200"
+                                        />
+                                      </div>
+                                      <span
+                                        className="font-['Urbanist',sans-serif] text-[12px] text-[#3a3c41] opacity-70 group-hover:opacity-100 transition-opacity text-center max-w-[72px] leading-tight"
+                                        style={{ fontWeight: 600 }}
+                                      >
+                                        {product.name}
+                                      </span>
+                                    </motion.button>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="p-6 text-center text-[12px] text-[#56585D]" style={{ fontWeight: 520 }}>
+                                No products yet.
+                              </div>
+                            )}
                           </div>
 
                           {/* Bottom fade hint when scrollable */}
-                          {activeSub.products.length > 8 && (
+                          {activeSubProducts.length > 8 && (
                             <div className="absolute bottom-0 left-0 right-2 h-[40px] bg-gradient-to-t from-[rgba(237,236,232,0.6)] to-transparent pointer-events-none rounded-b-[18px]" />
                           )}
                         </div>

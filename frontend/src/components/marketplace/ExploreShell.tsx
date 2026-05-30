@@ -485,6 +485,7 @@ export function ExploreShell() {
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const didInitFromQueryRef = useRef(false);
 
   const setRef = (id: string, el: HTMLElement | null) => {
     sectionRefs.current[id] = el;
@@ -631,6 +632,42 @@ export function ExploreShell() {
     setSubPage(1);
     void fetchSubProducts(1, sub.slug, "");
   };
+
+  useEffect(() => {
+    if (didInitFromQueryRef.current) return;
+    const sp = new URLSearchParams(window.location.search);
+    const rawSearch = (sp.get("search") || "").trim();
+    const rawCategory = (sp.get("category") || "").trim();
+    if (!rawSearch && !rawCategory) {
+      didInitFromQueryRef.current = true;
+      return;
+    }
+
+    if (rawSearch) {
+      setSearch(rawSearch);
+      setSearchOpen(true);
+      window.setTimeout(() => searchInputRef.current?.focus(), 0);
+    }
+
+    if (rawCategory && uiCategories.length > 0) {
+      const hit = uiCategories
+        .flatMap((c) => c.subcategories.map((sub) => ({ category: c, sub })))
+        .find((x) => x.sub.slug === rawCategory || x.sub.id === rawCategory);
+      if (hit) {
+        onSelectSubcategory(hit.category, hit.sub);
+      } else {
+        const top = uiCategories.find((c) => c.id === rawCategory);
+        if (top) jumpTo(top.id);
+      }
+    }
+
+    sp.delete("search");
+    sp.delete("category");
+    const qs = sp.toString();
+    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState({}, "", next);
+    didInitFromQueryRef.current = true;
+  }, [uiCategories]);
 
   const goDashboard = () => {
     window.location.href = "/";
@@ -932,7 +969,7 @@ export function ExploreShell() {
                 {subProducts.map((p) => (
                   <Link
                     key={p.id}
-                    href={`/product/${p.id}`}
+                    href={`/products/${p.id}`}
                     className="h-full rounded-2xl border border-white/60 bg-white/85 shadow-soft overflow-hidden hover:bg-white/95 transition flex flex-col"
                   >
                     {p.hero_image_url ? (
@@ -1248,7 +1285,7 @@ export function ExploreShell() {
                     {searchResults.map((p) => (
                       <Link
                         key={p.id}
-                        href={`/product/${p.id}`}
+                        href={`/products/${p.id}`}
                         className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-black/[0.02]"
                         onClick={() => setSearchOpen(false)}
                       >

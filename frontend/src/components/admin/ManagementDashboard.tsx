@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router";
 import {
@@ -26,6 +26,7 @@ import {
   ArrowUp,
   Hash,
 } from "lucide-react";
+import { fetchJsonAuthed } from "@/lib/api";
 import { StatCard } from "./StatCard";
 import { StatusPill } from "./StatusPill";
 import { ProgressRing } from "./ProgressRing";
@@ -127,7 +128,276 @@ function Section({ children, className = "" }: { children: React.ReactNode; clas
 
 export function ManagementDashboard() {
   const navigate = useNavigate();
+  const fetchJson = fetchJsonAuthed;
+  const [period, setPeriod] = useState<"24h" | "7d" | "30d" | "90d">("7d");
+  const [overview, setOverview] = useState<any>(null);
+  const [shipments, setShipments] = useState<any[]>([]);
+  const [logisticsStats, setLogisticsStats] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
+  const days = period === "24h" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : 90;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("page", "1");
+        params.set("page_size", "6");
+        params.set("status", "label_created,picked_up,in_transit,customs,out_for_delivery");
+        const [ov, ls, sh] = await Promise.all([
+          fetchJson(`/api/v1/admin/overview?period=${period}`),
+          fetchJson(`/api/v1/admin/logistics/stats/?days=${days}`),
+          fetchJson(`/api/v1/admin/logistics/shipments/?${params.toString()}`),
+        ]);
+        if (cancelled) return;
+        setOverview(ov);
+        setLogisticsStats(ls);
+        setShipments(Array.isArray(sh?.results) ? sh.results : []);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "Failed to load command center.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [period, days]);
+
+  const listings = overview?.pipelines?.listings || {};
+  const orders = overview?.pipelines?.orders || {};
+  const orderCounts = orders?.status_counts || {};
+
+  const listingSummaryWired = useMemo(() => {
+    return [
+      { stage: "Pending", count: Number(listings?.pending_products || 0), color: "#3B82F6", icon: <Package size={14} /> , path: "/admin/management/listings?status=pending"},
+      { stage: "Rejected", count: Number(listings?.rejected_products || 0), color: "#E5484D", icon: <AlertTriangle size={14} /> , path: "/admin/management/listings?status=rejected"},
+      { stage: "Missing Images", count: Number(listings?.missing_images || 0), color: "#D97706", icon: <Camera size={14} /> , path: "/admin/management/listings"},
+      { stage: "Missing Docs", count: Number(listings?.missing_docs || 0), color: "#8B5CF6", icon: <Scale size={14} /> , path: "/admin/management/listings"},
+      { stage: "Missing HS Code", count: Number(listings?.missing_hs_code || 0), color: "#0171E3", icon: <Hash size={14} /> , path: "/admin/management/listings"},
+    ];
+  }, [listings]);
+
+  const orderPipelineWired = useMemo(() => {
+    return [
+      { stage: "Created", count: Number(orderCounts?.created || 0), color: "#3B82F6", icon: <Package size={16} /> },
+      { stage: "Accepted", count: Number(orderCounts?.accepted || 0), color: "#0171E3", icon: <ClipboardCheck size={16} /> },
+      { stage: "Shipped", count: Number(orderCounts?.shipped || 0), color: "#D97706", icon: <Truck size={16} /> },
+      { stage: "Delivered", count: Number(orderCounts?.delivered || 0), color: "#30A46C", icon: <CheckCircle2 size={16} /> },
+      { stage: "Disputed", count: Number(orderCounts?.disputed || 0), color: "#FFB224", icon: <AlertTriangle size={16} /> },
+    ];
+  }, [orderCounts]);
+
+  const totalPipelineWired = useMemo(() => orderPipelineWired.reduce((s, p) => s + (Number(p.count) || 0), 0), [orderPipelineWired]);
+
+  const activeOrdersNow = Number(overview?.hero?.active_orders?.snapshot_total || overview?.hero?.active_orders?.total || 0) || 0;
+  const b2bNow = Number(overview?.hero?.active_orders?.snapshot_b2b || 0) || 0;
+  const b2cNow = Number(overview?.hero?.active_orders?.snapshot_b2c || 0) || 0;
+  const qualityScore = Number(overview?.hero?.quality_score?.total || 0) || 0;
+  const qualityPassRate = typeof overview?.hero?.quality_score?.pass_rate === "number" ? overview.hero.quality_score.pass_rate : null;
+  const qualityPending = typeof overview?.hero?.quality_score?.pending === "number" ? overview.hero.quality_score.pending : null;
+  const onlineNow = Number(overview?.hero?.users_online?.snapshot_total || 0) || 0;
+  const onlineBuyers = Number(overview?.hero?.users_online?.snapshot_buyers || 0) || 0;
+  const onlineSellers = Number(overview?.hero?.users_online?.snapshot_sellers || 0) || 0;
+  const onlineWorkers = Number(overview?.hero?.users_online?.snapshot_workers || 0) || 0;
+
+  const shipmentsInTransit = typeof logisticsStats?.in_transit === "number" ? logisticsStats.in_transit : null;
+  const onTimeRate = typeof logisticsStats?.on_time_rate === "number" ? logisticsStats.on_time_rate : null;
+
+  if (loading && !overview && !error) {
+    return (
+      <div className="space-y-7">
+        <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.875rem] text-muted-foreground/60">
+          Loading command center…
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !overview) {
+    return (
+      <div className="space-y-7">
+        <div className="px-5 py-4 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.875rem]">{error}</div>
+      </div>
+    );
+  }
+
+  if (overview) {
+    return (
+      <div className="space-y-7">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-5">
+          <div>
+            <motion.h1 className="text-foreground tracking-tight mb-1.5" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+              Command Center
+            </motion.h1>
+            <motion.p className="text-muted-foreground/70 text-[0.875rem]" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
+              Live operations from real endpoints.
+            </motion.p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={period}
+              onChange={(e) => setPeriod(e.target.value as any)}
+              className="px-4 py-2.5 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none"
+            >
+              <option value="24h">24h</option>
+              <option value="7d">7d</option>
+              <option value="30d">30d</option>
+              <option value="90d">90d</option>
+            </select>
+            <BounceButton variant="secondary" size="sm" icon={<RotateCcw size={14} />} onClick={() => setPeriod((p) => p)}>
+              Refresh
+            </BounceButton>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+          <div className="cursor-pointer" onClick={() => navigate(overview?.hero?.active_orders?.path || "/admin/logistics")}>
+            <StatCard label="Open Orders (Now)" value={activeOrdersNow.toLocaleString()} icon={<Package size={20} className="text-[#3B82F6]" />} iconBg="bg-[#3B82F6]/8" index={0} accentColor="#3B82F6" subtitle={`${b2cNow} B2C · ${b2bNow} B2B`} />
+          </div>
+          <div className="cursor-pointer" onClick={() => navigate(overview?.hero?.quality_score?.path || "/admin/quality")}>
+            <StatCard label="Quality Score" value={`${qualityScore.toFixed(1)}%`} icon={<ClipboardCheck size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" subtitle={qualityPassRate === null ? period : `${qualityPassRate.toFixed(1)}% pass · ${qualityPending ?? 0} pending`} />
+          </div>
+          <div className="cursor-pointer" onClick={() => navigate(overview?.hero?.users_online?.path || "/admin/users")}>
+            <StatCard label="Users Online" value={onlineNow.toLocaleString()} icon={<Users size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={2} accentColor="#8B5CF6" subtitle={`${onlineSellers} sellers · ${onlineBuyers} buyers · ${onlineWorkers} staff`} />
+          </div>
+          <div className="cursor-pointer" onClick={() => navigate("/admin/logistics")}>
+            <StatCard label="Shipments In Transit" value={shipmentsInTransit === null ? "—" : String(shipmentsInTransit)} icon={<Truck size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={3} accentColor="#0171E3" subtitle={onTimeRate === null ? period : `${Number(onTimeRate).toFixed(1)}% on-time`} />
+          </div>
+        </div>
+
+        <Section>
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-primary/6 flex items-center justify-center">
+                <Layers size={17} className="text-primary/70" />
+              </div>
+              <div>
+                <p className="text-[0.875rem] text-foreground/90">Listings Pipeline</p>
+                <p className="text-muted-foreground/50 text-[0.6875rem]">Backlog + missing compliance</p>
+              </div>
+            </div>
+            <BounceButton variant="secondary" size="sm" icon={<Eye size={14} />} onClick={() => navigate("/admin/management/listings")}>
+              View
+            </BounceButton>
+          </div>
+          <div className="flex flex-wrap gap-2.5">
+            {listingSummaryWired.map((item) => (
+              <button
+                key={item.stage}
+                type="button"
+                onClick={() => navigate(item.path)}
+                className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-black/[0.015] border border-black/[0.03] hover:bg-black/[0.02] transition-colors"
+              >
+                <span style={{ color: item.color, opacity: 0.7 }}>{item.icon}</span>
+                <span className="text-[0.75rem] text-muted-foreground/60">{item.stage}</span>
+                <span className="text-[0.8125rem] text-foreground/80 min-w-[16px] text-center tabular-nums">{item.count}</span>
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section>
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-primary/6 flex items-center justify-center">
+                <Layers size={16} className="text-primary/70" />
+              </div>
+              <div>
+                <p className="text-[0.875rem] text-foreground/90">Order Flow</p>
+                <p className="text-[0.6875rem] text-muted-foreground/50">{totalPipelineWired} orders in pipeline</p>
+              </div>
+            </div>
+            <BounceButton variant="secondary" size="sm" icon={<Eye size={14} />} onClick={() => navigate("/admin/management/orders")}>
+              View Orders
+            </BounceButton>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            {orderPipelineWired.map((stage, i) => {
+              const pct = totalPipelineWired ? Math.round((stage.count / totalPipelineWired) * 100) : 0;
+              return (
+                <motion.div
+                  key={stage.stage}
+                  className="rounded-2xl p-4 bg-black/[0.012] border border-black/[0.03] relative overflow-hidden"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 + i * 0.04 }}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${stage.color}12`, color: stage.color }}>
+                      {stage.icon}
+                    </div>
+                    <span className="text-[0.6875rem] text-muted-foreground/45">{pct}%</span>
+                  </div>
+                  <p className="text-[0.75rem] text-muted-foreground/55">{stage.stage}</p>
+                  <p className="text-[1.25rem] text-foreground/85 tabular-nums mt-1">{stage.count}</p>
+                  <div className="mt-3 h-1.5 rounded-full bg-black/[0.03] overflow-hidden">
+                    <motion.div
+                      className="h-full rounded-full"
+                      style={{ backgroundColor: stage.color, opacity: 0.55 }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${pct}%` }}
+                      transition={{ duration: 0.9, delay: 0.15 + i * 0.05 }}
+                    />
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </Section>
+
+        <Section>
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-primary/6 flex items-center justify-center">
+                <Truck size={16} className="text-primary/70" />
+              </div>
+              <div>
+                <p className="text-[0.875rem] text-foreground/90">Live Shipments</p>
+                <p className="text-[0.6875rem] text-muted-foreground/50">Latest active shipments</p>
+              </div>
+            </div>
+            <StatusPill status="info" label={`${shipments.length} items`} pulse={shipments.length > 0} />
+          </div>
+          {shipments.length === 0 ? (
+            <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
+              No active shipments yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {shipments.map((sh: any, i: number) => (
+                <motion.div
+                  key={sh?.id || i}
+                  className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-black/[0.02] transition-colors cursor-pointer"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  onClick={() => navigate(`/admin/logistics?q=sh-${sh?.id || ""}`)}
+                >
+                  <div className="w-10 h-10 rounded-2xl bg-[#3B82F6]/8 flex items-center justify-center">
+                    <Truck size={18} className="text-[#3B82F6]/70" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[0.875rem] text-foreground/80 truncate">{sh?.destination || "—"}</p>
+                    <p className="text-[0.75rem] text-muted-foreground/50 truncate">
+                      {sh?.seller || "—"} · ORD-{sh?.order_id ?? "—"} · {sh?.tracking_number ? `#${sh.tracking_number}` : "no tracking"}
+                    </p>
+                  </div>
+                  <StatusPill status="info" label={(sh?.status || "—").toString().replaceAll("_", " ")} />
+                </motion.div>
+              ))}
+            </div>
+          )}
+        </Section>
+      </div>
+    );
+  }
+
+  if (false) {
   const listingSummary = [
     { stage: "New Requests", count: 1, color: "#3B82F6", icon: <Package size={14} /> },
     { stage: "Sample Pickup", count: 1, color: "#8B5CF6", icon: <Truck size={14} /> },
@@ -875,4 +1145,5 @@ export function ManagementDashboard() {
       </div>
     </div>
   );
+  }
 }

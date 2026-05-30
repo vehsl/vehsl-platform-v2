@@ -12,7 +12,7 @@ import {
     Building2, ClipboardCheck,
 } from 'lucide-react';
 import { ImageWithFallback } from './figma/ImageWithFallback';
-import { FONT, EASE, GLASS, GLASS_ELEVATED, fmt, PRODUCTS } from './seller-dashboard-data';
+import { FONT, EASE, GLASS, GLASS_ELEVATED, fmt } from './seller-dashboard-data';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,8 +40,6 @@ interface SampleDraft {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const DEMO_PHOTOS = Object.values(PRODUCTS);
 
 const CATEGORIES = [
     'Electronics', 'Fashion & Apparel', 'Home & Garden',

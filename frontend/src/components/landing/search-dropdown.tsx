@@ -13,32 +13,14 @@ import {
   Tag,
   SlidersHorizontal,
 } from "lucide-react";
-import { trendingProducts, getAllSearchableItems, categories } from "./category-data";
+import { useRouter } from "next/navigation";
+import { fetchJsonAuthed } from "@/lib/api";
 import { getIcon } from "./category-nav";
 import { useBounce } from "./bounce-context";
 
-// ─── Filter Data ──────────────────────────────────────────────────────────
-const PRICE_OPTIONS = [
-  { label: "Under $50",  value: "under-50" },
-  { label: "$50–$500",   value: "50-500"   },
-  { label: "$500–$5K",   value: "500-5k"   },
-  { label: "$5K–$50K",   value: "5k-50k"   },
-  { label: "$50K+",      value: "50k-plus" },
-  { label: "Bulk / B2B", value: "bulk"     },
-];
-
-const RATING_OPTIONS = [
-  { label: "4.5+", value: 4.5 },
-  { label: "4.0+", value: 4.0 },
-  { label: "3.5+", value: 3.5 },
-];
-
-const QA_GRADES = [
-  { label: "A+", desc: "Premium",  value: "a-plus", color: "#059669", bg: "rgba(5,150,105,0.08)"  },
-  { label: "A",  desc: "Verified", value: "a",       color: "#2563eb", bg: "rgba(37,99,235,0.08)" },
-  { label: "B",  desc: "Standard", value: "b",       color: "#d97706", bg: "rgba(217,119,6,0.08)" },
-  { label: "C",  desc: "Budget",   value: "c",       color: "#6b7280", bg: "rgba(107,114,128,0.06)"},
-];
+type PriceOption = { label: string; value: string; min_price: number | null; max_price: number | null };
+type RatingOption = { label: string; value: number };
+type QaGrade = { label: string; desc: string; value: string; color: string; bg: string };
 
 // ─── Filter row: label + horizontal scrollable chips ──────────────────────
 function FilterRow({
@@ -178,10 +160,27 @@ export interface SearchDropdownProps {
 }
 
 export function SearchDropdown({ className = "" }: SearchDropdownProps) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [serverCategories, setServerCategories] = useState<
+    Array<{
+      id: string;
+      label: string;
+      icon: string;
+      children: Array<{ id: string; label: string; icon: string }>;
+    }>
+  >([]);
+  const [trending, setTrending] = useState<Array<{ id: number; name: string; icon: string; category: string }>>([]);
+  const [results, setResults] = useState<
+    Array<{ key: string; name: string; icon: string; category: string; productId?: number; categorySlug?: string }>
+  >([]);
+  const [resultsLoading, setResultsLoading] = useState(false);
+  const [priceOptions, setPriceOptions] = useState<PriceOption[]>([]);
+  const [ratingOptions, setRatingOptions] = useState<RatingOption[]>([]);
+  const [qaGrades, setQaGrades] = useState<QaGrade[]>([]);
   const [filters, setFilters] = useState<{
     category: string | null;
     price: string | null;
@@ -201,6 +200,111 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
   const hasQuery = query.trim().length > 0;
   const showDropdown = isFocused;
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/products/facets/")
+      .then((data) => {
+        if (cancelled) return;
+        const rawPrice: PriceOption[] = Array.isArray((data as any)?.price_options) ? (data as any).price_options : [];
+        const rawRating: RatingOption[] = Array.isArray((data as any)?.rating_options) ? (data as any).rating_options : [];
+        const rawQa: QaGrade[] = Array.isArray((data as any)?.qa_grades) ? (data as any).qa_grades : [];
+        setPriceOptions(
+          rawPrice
+            .map((x: any) => ({
+              label: String(x?.label || "").trim(),
+              value: String(x?.value || "").trim(),
+              min_price: x?.min_price === null || x?.min_price === undefined ? null : Number(x.min_price),
+              max_price: x?.max_price === null || x?.max_price === undefined ? null : Number(x.max_price),
+            }))
+            .filter((x: PriceOption) => x.label && x.value),
+        );
+        setRatingOptions(
+          rawRating
+            .map((x: any) => ({ label: String(x?.label || "").trim(), value: Number(x?.value || 0) }))
+            .filter((x: RatingOption) => x.label && Number.isFinite(x.value) && x.value > 0),
+        );
+        setQaGrades(
+          rawQa
+            .map((x: any) => ({
+              label: String(x?.label || "").trim(),
+              desc: String(x?.desc || "").trim(),
+              value: String(x?.value || "").trim(),
+              color: String(x?.color || "").trim(),
+              bg: String(x?.bg || "").trim(),
+            }))
+            .filter((x: QaGrade) => x.label && x.value),
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPriceOptions([]);
+        setRatingOptions([]);
+        setQaGrades([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/categories/explore/")
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.categories) ? (data as any).categories : [];
+        const mapped = rows
+          .map((c: any) => ({
+            id: String(c?.slug || c?.id || ""),
+            label: String(c?.name || "").trim(),
+            icon: String(c?.icon || "circle"),
+            children: (Array.isArray(c?.children) ? c.children : [])
+              .map((ch: any) => ({
+                id: String(ch?.slug || ch?.id || ""),
+                label: String(ch?.name || "").trim(),
+                icon: String(ch?.icon || "circle"),
+              }))
+              .filter((ch: any) => ch.id && ch.label),
+          }))
+          .filter((c: any) => c.id && c.label);
+        setServerCategories(mapped);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setServerCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams();
+    params.set("page_size", "7");
+    params.set("ordering", "-created_at");
+    fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+        const mapped = rows
+          .map((r: any) => ({
+            id: Number(r?.id || 0),
+            name: String(r?.name || r?.title || "").trim(),
+            icon: "tag",
+            category: String(r?.category_name || "").trim(),
+          }))
+          .filter((x: any) => x.id && x.name);
+        setTrending(mapped);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTrending([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Toggle helpers ──
   const toggleCategory = useCallback((val: string) => {
@@ -228,19 +332,98 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
     triggerBounce();
   }, [triggerBounce]);
 
-  // ── Filter results ──
-  const allItems = useMemo(() => getAllSearchableItems(), []);
-  const filtered = useMemo(() => {
-    if (!hasQuery) return [];
-    const q = query.toLowerCase();
-    let results = allItems.filter((item) =>
-      item.name.toLowerCase().includes(q)
-    );
-    if (filters.category) {
-      results = results.filter((item) => item.category === filters.category);
+  useEffect(() => {
+    if (!hasQuery) {
+      setResults([]);
+      setResultsLoading(false);
+      return;
     }
-    return results.slice(0, 8);
-  }, [query, allItems, hasQuery, filters.category]);
+
+    const q = query.trim();
+    if (q.length < 2) {
+      const qq = q.toLowerCase();
+      const local = serverCategories
+        .flatMap((c) => {
+          const items: Array<{ key: string; name: string; icon: string; category: string; categorySlug?: string }> = [];
+          if (c.label.toLowerCase().includes(qq)) {
+            items.push({ key: `cat:${c.id}`, name: c.label, icon: c.icon, category: "Category", categorySlug: c.id });
+          }
+          for (const ch of c.children) {
+            if (ch.label.toLowerCase().includes(qq)) {
+              items.push({ key: `sub:${ch.id}`, name: ch.label, icon: ch.icon, category: c.label, categorySlug: ch.id });
+            }
+          }
+          return items;
+        })
+        .slice(0, 8);
+      setResults(local);
+      setResultsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const tmr = window.setTimeout(() => {
+      const qq = q.toLowerCase();
+      const local = serverCategories.flatMap((c) => {
+        const items: Array<{ key: string; name: string; icon: string; category: string; categorySlug?: string }> = [];
+        if (c.label.toLowerCase().includes(qq)) {
+          items.push({ key: `cat:${c.id}`, name: c.label, icon: c.icon, category: "Category", categorySlug: c.id });
+        }
+        for (const ch of c.children) {
+          if (ch.label.toLowerCase().includes(qq)) {
+            items.push({ key: `sub:${ch.id}`, name: ch.label, icon: ch.icon, category: c.label, categorySlug: ch.id });
+          }
+        }
+        return items;
+      });
+
+      setResultsLoading(true);
+      const params = new URLSearchParams();
+      params.set("search", q);
+      params.set("page_size", "8");
+      params.set("ordering", "-created_at");
+      if (filters.category) params.set("category", filters.category);
+      if (filters.price) {
+        const opt = priceOptions.find((x) => x.value === filters.price);
+        if (opt?.min_price !== null && opt?.min_price !== undefined) params.set("min_price", String(opt.min_price));
+        if (opt?.max_price !== null && opt?.max_price !== undefined) params.set("max_price", String(opt.max_price));
+      }
+      if (typeof filters.rating === "number" && Number.isFinite(filters.rating)) {
+        params.set("min_rating", String(filters.rating));
+      }
+      if (filters.qaGrade) params.set("qa_grade", filters.qaGrade);
+      fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+        .then((data) => {
+          if (cancelled) return;
+          const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+          const prods = rows
+            .map((r: any) => ({
+              key: `prod:${String(r?.id || "")}`,
+              name: String(r?.name || r?.title || "").trim(),
+              icon: "tag",
+              category: String(r?.category_name || "").trim() || "Product",
+              productId: Number(r?.id || 0),
+            }))
+            .filter((x: any) => x.productId && x.name);
+
+          const merged = [...local, ...prods].slice(0, 8);
+          setResults(merged);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setResults(local.slice(0, 8));
+        })
+        .finally(() => {
+          if (cancelled) return;
+          setResultsLoading(false);
+        });
+    }, 220);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(tmr);
+    };
+  }, [filters.category, filters.price, filters.qaGrade, filters.rating, hasQuery, priceOptions, query, serverCategories]);
 
   // ── Close on outside click ──
   useEffect(() => {
@@ -258,25 +441,44 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
   }, [query]);
 
   const handleItemClick = useCallback(
-    (name: string) => {
+    (item: { name: string; productId?: number; categorySlug?: string }) => {
       triggerBounce();
-      setQuery(name);
+      if (item.productId) {
+        router.push(`/products/${item.productId}`);
+        setIsFocused(false);
+        return;
+      }
+      if (item.categorySlug) {
+        const sp = new URLSearchParams();
+        sp.set("category", item.categorySlug);
+        router.push(`/explore?${sp.toString()}`);
+        setIsFocused(false);
+        return;
+      }
+      setQuery(item.name);
       setIsFocused(false);
     },
-    [triggerBounce]
+    [router, triggerBounce]
   );
 
   const handleSubmit = useCallback(() => {
-    if (hasQuery) {
-      triggerBounce();
-      setIsFocused(false);
-    }
-  }, [hasQuery, triggerBounce]);
+    const q = query.trim();
+    if (!q && !filters.category && !filters.price && !filters.rating && !filters.qaGrade) return;
+    const sp = new URLSearchParams();
+    if (q) sp.set("search", q);
+    if (filters.category) sp.set("category", filters.category);
+    if (filters.price) sp.set("price", filters.price);
+    if (typeof filters.rating === "number" && Number.isFinite(filters.rating)) sp.set("rating", String(filters.rating));
+    if (filters.qaGrade) sp.set("qa_grade", filters.qaGrade);
+    triggerBounce();
+    setIsFocused(false);
+    router.push(`/explore?${sp.toString()}`);
+  }, [filters.category, filters.price, filters.qaGrade, filters.rating, query, router, triggerBounce]);
 
   // ── Category chips: just the 11 categories ──
-  const categoryChips = useMemo(() =>
-    categories.map((c) => ({ id: c.id, label: c.label, icon: c.icon })),
-    []
+  const categoryChips = useMemo(
+    () => serverCategories.map((c) => ({ id: c.id, label: c.label, icon: c.icon })),
+    [serverCategories]
   );
 
   return (
@@ -490,7 +692,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
                       {/* ── Price ── */}
                       <FilterRow icon={Tag} label="Price">
-                        {PRICE_OPTIONS.map((opt) => (
+                        {priceOptions.map((opt) => (
                           <Chip
                             key={opt.value}
                             label={opt.label}
@@ -502,7 +704,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
                       {/* ── Rating ── */}
                       <FilterRow icon={Star} label="Rating">
-                        {RATING_OPTIONS.map((opt) => (
+                        {ratingOptions.map((opt) => (
                           <StarChip
                             key={opt.value}
                             label={`${opt.label} ★`}
@@ -514,7 +716,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
                       {/* ── QA Grade ── */}
                       <FilterRow icon={ShieldCheck} label="QA Grade">
-                        {QA_GRADES.map((grade) => (
+                        {qaGrades.map((grade) => (
                           <motion.button
                             key={grade.value}
                             whileTap={{ scale: 0.91 }}
@@ -581,7 +783,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
                       Trending now
                     </p>
                     <div className="flex flex-col">
-                      {trendingProducts.map((product, i) => {
+                      {trending.map((product, i) => {
                         const Icon = getIcon(product.icon);
                         const isHovered = hoveredIndex === i;
                         return (
@@ -592,7 +794,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
                             transition={{ delay: i * 0.04, duration: 0.22 }}
                             onMouseEnter={() => setHoveredIndex(i)}
                             onMouseLeave={() => setHoveredIndex(null)}
-                            onClick={() => handleItemClick(product.name)}
+                            onClick={() => handleItemClick({ name: product.name, productId: product.id })}
                             className={`flex items-center gap-3 px-3 py-2.5 rounded-[14px] cursor-pointer transition-all duration-200 text-left ${
                               isHovered ? "bg-white/70 shadow-[0_1px_4px_rgba(0,0,0,0.07)]" : ""
                             }`}
@@ -623,7 +825,13 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
                       })}
                     </div>
                   </div>
-                ) : filtered.length > 0 ? (
+                ) : resultsLoading && results.length === 0 ? (
+                  <div className="py-6 text-center">
+                    <p className="font-['Urbanist',sans-serif] text-[13.5px] text-[#b4b4b4]" style={{ fontWeight: 520 }}>
+                      Searching…
+                    </p>
+                  </div>
+                ) : results.length > 0 ? (
                   /* Live results */
                   <div>
                     <div className="flex items-center justify-between mb-2 px-1">
@@ -643,18 +851,18 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
                       )}
                     </div>
                     <div className="flex flex-col">
-                      {filtered.map((item, i) => {
+                      {results.map((item, i) => {
                         const Icon = getIcon(item.icon);
                         const isHovered = hoveredIndex === i;
                         return (
                           <motion.button
-                            key={`${item.name}-${item.category}-${i}`}
+                            key={item.key}
                             initial={{ opacity: 0, x: -8 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: i * 0.025, duration: 0.2 }}
                             onMouseEnter={() => setHoveredIndex(i)}
                             onMouseLeave={() => setHoveredIndex(null)}
-                            onClick={() => handleItemClick(item.name)}
+                            onClick={() => handleItemClick(item)}
                             className={`flex items-center gap-3 px-3 py-2.5 rounded-[14px] cursor-pointer transition-all duration-200 text-left ${
                               isHovered ? "bg-white/70 shadow-[0_1px_4px_rgba(0,0,0,0.07)]" : ""
                             }`}

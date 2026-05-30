@@ -3,6 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { useLocation, useNavigate } from "react-router";
 import {
   Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
   Package, Eye, Edit3, Trash2, CheckCircle2, XCircle, Clock,
@@ -59,9 +60,12 @@ const roleColors: Record<string, string> = {
 };
 
 export function AdminUsers() {
+  const location = useLocation();
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | "buyer" | "seller" | "partner" | "manager">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending" | "review" | "suspended">("all");
+  const [activeNow, setActiveNow] = useState<boolean>(false);
+  const [activePeriod, setActivePeriod] = useState<string>("");
   const [stats, setStats] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
@@ -143,6 +147,8 @@ export function AdminUsers() {
     const f: any = {};
     const s = search.trim();
     if (s) f.q = s;
+    if (activeNow) f.active_now = 1;
+    else if (activePeriod) f.active_period = activePeriod;
     if (roleFilter !== "all") {
       if (roleFilter === "manager") {
         f.role = "admin";
@@ -153,7 +159,7 @@ export function AdminUsers() {
     }
     if (statusFilter !== "all") f.admin_status = statusFilter;
     return f;
-  }, [search, roleFilter, statusFilter]);
+  }, [search, activeNow, activePeriod, roleFilter, statusFilter]);
 
   const {
     rows: listRows,
@@ -200,6 +206,8 @@ export function AdminUsers() {
     const sf = (opts?.statusFilter ?? statusFilter).toString();
     const p = opts?.page ?? 1;
     if (s) params.set("q", s);
+    if (activeNow) params.set("active_now", "1");
+    else if (activePeriod) params.set("active_period", activePeriod);
     if (rf !== "all") {
       if (rf === "manager") {
         params.set("role", "admin");
@@ -212,6 +220,36 @@ export function AdminUsers() {
     if (p && p !== 1) params.set("page", String(p));
     return params;
   };
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const qIn = params.get("q");
+    const roleIn = (params.get("role") || "").toLowerCase();
+    const adminRoleIn = (params.get("admin_role") || "").toLowerCase();
+    const statusIn = (params.get("admin_status") || "").toLowerCase();
+    const activeNowIn = (params.get("active_now") || "").toLowerCase();
+    const activePeriodIn = (params.get("active_period") || "").toLowerCase();
+    const pageIn = Number(params.get("page") || "1");
+
+    if (qIn != null) setSearch(qIn);
+
+    if (roleIn === "admin" && adminRoleIn === "manager") setRoleFilter("manager");
+    else if (roleIn === "buyer" || roleIn === "seller" || roleIn === "partner") setRoleFilter(roleIn as any);
+    else if (!roleIn) setRoleFilter("all");
+
+    if (statusIn === "active" || statusIn === "pending" || statusIn === "review" || statusIn === "suspended") {
+      setStatusFilter(statusIn as any);
+    } else if (!statusIn) {
+      setStatusFilter("all");
+    }
+
+    const onNow = activeNowIn === "1" || activeNowIn === "true" || activeNowIn === "yes";
+    setActiveNow(onNow);
+    if (onNow) setActivePeriod("");
+    else setActivePeriod(activePeriodIn);
+
+    if (Number.isFinite(pageIn) && pageIn >= 1) setPage(Math.floor(pageIn));
+  }, [location.search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1347,6 +1385,7 @@ export function AdminUsers() {
 
 export function AdminProducts() {
   const fetchJson = fetchJsonAuthed;
+  const location = useLocation();
 
   const formatNumber = (v: any) => {
     const n = Number(v);
@@ -1374,9 +1413,51 @@ export function AdminProducts() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "out" | "review" | "compliance">("all");
+  const [exactStatusFilter, setExactStatusFilter] = useState<string>("");
+  const [missingHsCodeFilter, setMissingHsCodeFilter] = useState<boolean>(false);
+  const [missingMediaFilter, setMissingMediaFilter] = useState<boolean>(false);
+  const [missingDocumentsFilter, setMissingDocumentsFilter] = useState<boolean>(false);
+  const [rejectedWithReasonFilter, setRejectedWithReasonFilter] = useState<boolean>(false);
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
+  const [requestingMedia, setRequestingMedia] = useState(false);
+
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [categoryQuery, setCategoryQuery] = useState("");
+  const categoryPopoverRef = useRef<HTMLDivElement | null>(null);
+  const categoryButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const selectedCategory = useMemo(() => {
+    if (catFilter === "all") return null;
+    return (
+      categories.find((c: any) => String(c?.slug || "") === String(catFilter)) ||
+      categories.find((c: any) => String(c?.id || "") === String(catFilter)) ||
+      null
+    );
+  }, [catFilter, categories]);
+
+  const filteredCategories = useMemo(() => {
+    const q = (categoryQuery || "").trim().toLowerCase();
+    const base = [...(categories || [])].sort((a: any, b: any) => Number(b?.count || 0) - Number(a?.count || 0));
+    if (!q) return base;
+    return base.filter((c: any) => {
+      const label = (c?.label || c?.name || c?.slug || "").toString().toLowerCase();
+      return label.includes(q);
+    });
+  }, [categories, categoryQuery]);
+
+  useEffect(() => {
+    if (!categoryOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as any;
+      if (categoryPopoverRef.current && categoryPopoverRef.current.contains(t)) return;
+      if (categoryButtonRef.current && categoryButtonRef.current.contains(t)) return;
+      setCategoryOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [categoryOpen]);
   const listFilters = useMemo(() => {
     const f: any = {};
     const q = search.trim();
@@ -1384,8 +1465,22 @@ export function AdminProducts() {
     if (catFilter !== "all") f.category = catFilter;
     if (statusFilter === "compliance") f.needs_compliance = 1;
     else if (statusFilter !== "all") f.admin_status = statusFilter;
+    if (exactStatusFilter) f.status = exactStatusFilter;
+    if (missingHsCodeFilter) f.missing_hs_code = 1;
+    if (missingMediaFilter) f.missing_media = 1;
+    if (missingDocumentsFilter) f.missing_documents = 1;
+    if (rejectedWithReasonFilter) f.rejected_with_reason = 1;
     return f;
-  }, [search, catFilter, statusFilter]);
+  }, [
+    search,
+    catFilter,
+    statusFilter,
+    exactStatusFilter,
+    missingHsCodeFilter,
+    missingMediaFilter,
+    missingDocumentsFilter,
+    rejectedWithReasonFilter,
+  ]);
 
   const {
     rows: products,
@@ -1407,6 +1502,38 @@ export function AdminProducts() {
     initialPageSize: 20,
     debounceMs: 250,
   });
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const q = (params.get("q") || "").trim();
+    const category = (params.get("category") || "").trim();
+    const adminStatus = (params.get("admin_status") || "").trim().toLowerCase();
+    const needsCompliance = (params.get("needs_compliance") || "").trim().toLowerCase();
+    const status = (params.get("status") || "").trim().toLowerCase();
+    const missingHsCode = (params.get("missing_hs_code") || "").trim().toLowerCase();
+    const missingMedia = (params.get("missing_media") || "").trim().toLowerCase();
+    const missingDocuments = (params.get("missing_documents") || "").trim().toLowerCase();
+    const rejectedWithReason = (params.get("rejected_with_reason") || "").trim().toLowerCase();
+
+    setSearch(q);
+    setCatFilter(category || "all");
+
+    if (adminStatus && ["all", "active", "low_stock", "out", "review", "compliance"].includes(adminStatus)) {
+      setStatusFilter(adminStatus as any);
+    } else if (needsCompliance === "1" || needsCompliance === "true" || needsCompliance === "yes") {
+      setStatusFilter("compliance");
+    } else {
+      setStatusFilter("all");
+    }
+
+    setExactStatusFilter(status);
+    setMissingHsCodeFilter(missingHsCode === "1" || missingHsCode === "true" || missingHsCode === "yes");
+    setMissingMediaFilter(missingMedia === "1" || missingMedia === "true" || missingMedia === "yes");
+    setMissingDocumentsFilter(missingDocuments === "1" || missingDocuments === "true" || missingDocuments === "yes");
+    setRejectedWithReasonFilter(rejectedWithReason === "1" || rejectedWithReason === "true" || rejectedWithReason === "yes");
+
+    setPage(1);
+  }, [location.search, setPage]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -1832,13 +1959,80 @@ export function AdminProducts() {
                 <option value="50">50 / page</option>
                 <option value="100">100 / page</option>
               </select>
-              <button
-                key="all"
-                onClick={() => setCatFilter("all")}
-                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
-              >
-                All
-              </button>
+              <div className="relative">
+                <button
+                  ref={categoryButtonRef}
+                  type="button"
+                  onClick={() => {
+                    setCategoryOpen((v) => !v);
+                    setCategoryQuery("");
+                  }}
+                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap inline-flex items-center gap-2 ${
+                    catFilter !== "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Filter size={14} className="opacity-70" />
+                  {selectedCategory?.label || "All categories"}
+                  <ChevronRight size={14} className={`opacity-50 transition-transform ${categoryOpen ? "rotate-90" : ""}`} />
+                </button>
+                <AnimatePresence>
+                  {categoryOpen && (
+                    <motion.div
+                      ref={categoryPopoverRef}
+                      initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute z-30 mt-2 w-[340px] rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                    >
+                      <div className="p-3 border-b border-border/30">
+                        <div className="flex items-center gap-2 bg-muted/20 border border-border/30 rounded-2xl px-3 py-2.5">
+                          <Search size={14} className="text-muted-foreground/50" />
+                          <input
+                            value={categoryQuery}
+                            onChange={(e) => setCategoryQuery(e.target.value)}
+                            placeholder="Search categories..."
+                            className="bg-transparent border-none outline-none text-[0.8125rem] text-foreground/80 placeholder:text-muted-foreground/40 w-full"
+                          />
+                        </div>
+                      </div>
+                      <div className="max-h-[320px] overflow-y-auto p-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCatFilter("all");
+                            setCategoryOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-[0.8125rem] transition-colors ${
+                            catFilter === "all" ? "bg-primary/8 text-primary" : "hover:bg-muted/20 text-foreground/80"
+                          }`}
+                        >
+                          <span>All categories</span>
+                          <span className="text-[0.75rem] text-muted-foreground/60 tabular-nums">{formatNumber(stats?.total_products)}</span>
+                        </button>
+                        {filteredCategories.map((cat: any) => (
+                          <button
+                            key={cat.slug || cat.id}
+                            type="button"
+                            onClick={() => {
+                              setCatFilter(cat.slug || String(cat.id));
+                              setCategoryOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-[0.8125rem] transition-colors ${
+                              catFilter === (cat.slug || String(cat.id))
+                                ? "bg-primary/8 text-primary"
+                                : "hover:bg-muted/20 text-foreground/80"
+                            }`}
+                          >
+                            <span className="truncate">{cat.label || cat.name}</span>
+                            <span className="text-[0.75rem] text-muted-foreground/60 tabular-nums">{formatNumber(cat.count)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
               <button
                 type="button"
                 onClick={() => setStatusFilter(v => (v === "compliance" ? "all" : "compliance"))}
@@ -1848,17 +2042,6 @@ export function AdminProducts() {
               >
                 Needs compliance
               </button>
-              {categories.map((cat: any) => (
-                <button
-                  key={cat.slug || cat.id}
-                  onClick={() => setCatFilter(cat.slug || String(cat.id))}
-                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
-                    catFilter === (cat.slug || String(cat.id)) ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {cat.name}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -1920,7 +2103,7 @@ export function AdminProducts() {
                     <option value="">Select category…</option>
                     {categories.map((c: any) => (
                       <option key={c.id} value={String(c.id)}>
-                        {c.name}
+                        {c.label || c.name}
                       </option>
                     ))}
                   </select>
@@ -1994,7 +2177,7 @@ export function AdminProducts() {
                       <span className="text-[0.6875rem] text-[#E5484D]/80 hidden sm:inline">Needs compliance</span>
                     )}
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_name || "—"}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_display || p.category_name || "—"}</span>
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
                   <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
@@ -2205,7 +2388,7 @@ export function AdminProducts() {
                 >
                   {categories.map((c: any) => (
                     <option key={c.id} value={String(c.id)}>
-                      {c.name}
+                      {c.label || c.name}
                     </option>
                   ))}
                 </select>
@@ -2521,6 +2704,8 @@ const vehicleStatusColor: Record<string, string> = {
 };
 
 export function AdminLogistics() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
@@ -2530,7 +2715,13 @@ export function AdminLogistics() {
   const [fleetStatus, setFleetStatus] = useState<string>("all");
   const [shipments, setShipments] = useState<any[]>([]);
   const [shipQ, setShipQ] = useState<string>("");
+  const [shipSeller, setShipSeller] = useState<string>("");
+  const [shipBuyer, setShipBuyer] = useState<string>("");
+  const [shipRoute, setShipRoute] = useState<string>("");
   const [shipStatus, setShipStatus] = useState<string>("all");
+  const [trackingFilter, setTrackingFilter] = useState<"all" | "has" | "missing">("all");
+  const [lateOnly, setLateOnly] = useState<boolean>(false);
+  const [deliveredOnly, setDeliveredOnly] = useState<boolean>(false);
   const [shipPage, setShipPage] = useState<number>(1);
   const [shipTotalPages, setShipTotalPages] = useState<number>(1);
   const [shipCount, setShipCount] = useState<number>(0);
@@ -2538,9 +2729,82 @@ export function AdminLogistics() {
   const [shipmentOpen, setShipmentOpen] = useState(false);
   const [shipmentLoading, setShipmentLoading] = useState(false);
   const [shipmentDetail, setShipmentDetail] = useState<any>(null);
+  const [flowMode, setFlowMode] = useState<"outgoing" | "incoming" | "late">("outgoing");
+  const [shipActionSaving, setShipActionSaving] = useState(false);
+  const [editTracking, setEditTracking] = useState("");
+  const [editCarrier, setEditCarrier] = useState("");
+  const [editEta, setEditEta] = useState("");
+  const [editStatus, setEditStatus] = useState("");
   const [error, setError] = useState<string>("");
+  const [success, setSuccess] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const copyToClipboard = useCallback(async (text: string, successMsg: string) => {
+    const t = (text || "").toString();
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      setSuccess(successMsg);
+      window.setTimeout(() => setSuccess(""), 2000);
+    } catch {
+      try {
+        window.prompt("Copy to clipboard:", t);
+      } catch {}
+    }
+  }, []);
+
+  const syncUrl = useCallback(
+    (next?: Partial<Record<string, string>>) => {
+      const params = new URLSearchParams(location.search || "");
+      const setOrDel = (k: string, v: string) => {
+        if (v) params.set(k, v);
+        else params.delete(k);
+      };
+
+      setOrDel("status", shipStatus !== "all" ? shipStatus : "");
+      setOrDel("q", shipQ.trim());
+      setOrDel("seller", shipSeller.trim());
+      setOrDel("buyer", shipBuyer.trim());
+      setOrDel("route", shipRoute.trim());
+      setOrDel("has_tracking", trackingFilter === "has" ? "1" : trackingFilter === "missing" ? "0" : "");
+      setOrDel("late_only", lateOnly ? "1" : "");
+      setOrDel("delivered_only", deliveredOnly ? "1" : "");
+      setOrDel("page", shipPage && shipPage !== 1 ? String(shipPage) : "");
+
+      for (const [k, v] of Object.entries(next || {})) {
+        setOrDel(k, v);
+      }
+
+      navigate({ search: `?${params.toString()}` }, { replace: true });
+    },
+    [location.search, navigate, shipBuyer, shipPage, shipQ, shipRoute, shipSeller, shipStatus, trackingFilter, lateOnly, deliveredOnly]
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const statusIn = (params.get("status") || "").trim();
+    const qIn = params.get("q");
+    const sellerIn = params.get("seller");
+    const buyerIn = params.get("buyer");
+    const routeIn = params.get("route");
+    const trackingIn = (params.get("has_tracking") || "").trim();
+    const lateIn = (params.get("late_only") || "").trim();
+    const deliveredIn = (params.get("delivered_only") || "").trim();
+    const pageIn = Number(params.get("page") || "1");
+    if (qIn != null) setShipQ(qIn);
+    if (sellerIn != null) setShipSeller(sellerIn);
+    if (buyerIn != null) setShipBuyer(buyerIn);
+    if (routeIn != null) setShipRoute(routeIn);
+    if (statusIn) setShipStatus(statusIn);
+    else setShipStatus("all");
+    if (trackingIn === "1") setTrackingFilter("has");
+    else if (trackingIn === "0") setTrackingFilter("missing");
+    else setTrackingFilter("all");
+    setLateOnly(lateIn === "1" || lateIn === "true" || lateIn === "yes");
+    setDeliveredOnly(deliveredIn === "1" || deliveredIn === "true" || deliveredIn === "yes");
+    if (Number.isFinite(pageIn) && pageIn >= 1) setShipPage(Math.floor(pageIn));
+  }, [location.search]);
 
   const fmtVehicles = (a: any, t: any) => {
     const aa = Number(a);
@@ -2578,6 +2842,7 @@ export function AdminLogistics() {
   useEffect(() => {
     let cancelled = false;
     setError("");
+    setSuccess("");
     setLoading(true);
     (async () => {
       try {
@@ -2589,7 +2854,14 @@ export function AdminLogistics() {
         shipParams.set("page", String(shipPage));
         shipParams.set("page_size", "10");
         if (shipQ.trim()) shipParams.set("q", shipQ.trim());
+        if (shipSeller.trim()) shipParams.set("seller", shipSeller.trim());
+        if (shipBuyer.trim()) shipParams.set("buyer", shipBuyer.trim());
+        if (shipRoute.trim()) shipParams.set("route", shipRoute.trim());
         if (shipStatus && shipStatus !== "all") shipParams.set("status", shipStatus);
+        if (trackingFilter === "has") shipParams.set("has_tracking", "1");
+        if (trackingFilter === "missing") shipParams.set("has_tracking", "0");
+        if (lateOnly) shipParams.set("late_only", "1");
+        if (deliveredOnly) shipParams.set("delivered_only", "1");
 
         const [s, f, fl] = await Promise.all([
           fetchJson(`/api/v1/admin/logistics/stats/?days=${days}`),
@@ -2619,7 +2891,7 @@ export function AdminLogistics() {
     return () => {
       cancelled = true;
     };
-  }, [days, fleetStatus, shipPage, shipQ, shipStatus, refreshNonce]);
+  }, [days, fleetStatus, shipPage, shipQ, shipSeller, shipBuyer, shipRoute, shipStatus, trackingFilter, lateOnly, deliveredOnly, refreshNonce]);
 
   const openShipment = async (shipmentId: number) => {
     if (!shipmentId) return;
@@ -2629,12 +2901,139 @@ export function AdminLogistics() {
     try {
       const d = await fetchJson(`/api/v1/admin/logistics/shipment-detail/?id=${shipmentId}`);
       setShipmentDetail(d);
+      const sh = d?.shipment || {};
+      setEditTracking((sh?.tracking_number || "").toString());
+      setEditCarrier((sh?.carrier_id || "").toString());
+      setEditStatus((sh?.status || "").toString());
+      const etaIso = (sh?.estimated_delivery_at || "").toString();
+      if (etaIso) {
+        const dt = new Date(etaIso);
+        const pad = (n: number) => String(n).padStart(2, "0");
+        if (!isNaN(dt.getTime())) {
+          const local = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+          setEditEta(local);
+        } else {
+          setEditEta("");
+        }
+      } else {
+        setEditEta("");
+      }
     } catch (e: any) {
       setShipmentDetail(null);
       setError(e?.message || "Failed to load shipment.");
       setShipmentOpen(false);
     } finally {
       setShipmentLoading(false);
+    }
+  };
+
+  const refreshAfterShipmentAction = async (shipmentId: number) => {
+    setRefreshNonce((n) => n + 1);
+    await openShipment(shipmentId);
+  };
+
+  const setShipmentTracking = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    const tracking_number = (editTracking || "").trim();
+    const carrier_id = (editCarrier || "").trim();
+    if (!tracking_number && !carrier_id) {
+      setError("Enter a tracking number or carrier id.");
+      return;
+    }
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/set-tracking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId, tracking_number, carrier_id }),
+      });
+      setSuccess("Tracking updated.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update tracking.");
+    } finally {
+      setShipActionSaving(false);
+    }
+  };
+
+  const setShipmentStatus = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    const statusVal = (editStatus || "").trim();
+    if (!statusVal) {
+      setError("Select a status.");
+      return;
+    }
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/set-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId, status: statusVal }),
+      });
+      setSuccess("Status updated.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update status.");
+    } finally {
+      setShipActionSaving(false);
+    }
+  };
+
+  const setShipmentEta = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    const raw = (editEta || "").trim();
+    if (!raw) {
+      setError("Select an ETA.");
+      return;
+    }
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) {
+      setError("Invalid ETA.");
+      return;
+    }
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/set-eta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId, estimated_delivery_at: dt.toISOString() }),
+      });
+      setSuccess("ETA updated.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to set ETA.");
+    } finally {
+      setShipActionSaving(false);
+    }
+  };
+
+  const markShipmentDelivered = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/mark-delivered", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId }),
+      });
+      setSuccess("Marked delivered.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to mark delivered.");
+    } finally {
+      setShipActionSaving(false);
     }
   };
 
@@ -2664,6 +3063,11 @@ export function AdminLogistics() {
       {error && (
         <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
           {error}
+        </motion.div>
+      )}
+      {success && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#30A46C]/8 text-[#1f7a4a] text-[0.8125rem]">
+          {success}
         </motion.div>
       )}
 
@@ -2711,16 +3115,30 @@ export function AdminLogistics() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-foreground text-[0.9375rem] mb-1">Shipment Flow — This Week</h2>
-              <p className="text-muted-foreground/50 text-[0.75rem]">Incoming vs outgoing parcels</p>
+              <p className="text-muted-foreground/50 text-[0.75rem]">
+                {flowMode === "outgoing" ? "Created shipments" : flowMode === "incoming" ? "Delivered shipments" : "Late shipments"}
+              </p>
             </div>
+            <select
+              value={flowMode}
+              onChange={(e) => setFlowMode(e.target.value as any)}
+              className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+            >
+              <option value="outgoing">Created</option>
+              <option value="incoming">Delivered</option>
+              <option value="late">Late</option>
+            </select>
           </div>
           <CustomAreaChart
             data={flow}
             xKey="month"
-            series={[
-              { dataKey: "incoming", color: "#3B82F6", label: "Incoming" },
-              { dataKey: "outgoing", color: "#30A46C", label: "Outgoing" },
-            ]}
+            series={
+              flowMode === "incoming"
+                ? [{ dataKey: "incoming", color: "#3B82F6", label: "Delivered" }]
+                : flowMode === "late"
+                  ? [{ dataKey: "late", color: "#E5484D", label: "Late" }]
+                  : [{ dataKey: "outgoing", color: "#30A46C", label: "Created" }]
+            }
             height={200}
           />
         </SectionCard>
@@ -2730,7 +3148,7 @@ export function AdminLogistics() {
       <motion.div variants={stagger.item}>
         <SectionCard>
           <div className="flex items-center justify-between gap-3 mb-6">
-            <h2 className="text-foreground text-[0.9375rem]">Fleet Status</h2>
+            <h2 className="text-foreground text-[0.9375rem]">Shipment Watchlist</h2>
             <select
               value={fleetStatus}
               onChange={(e) => setFleetStatus(e.target.value)}
@@ -2750,11 +3168,11 @@ export function AdminLogistics() {
             )}
             {!loading && fleet.length === 0 && (
               <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
-                No fleet activity yet.
+                No shipments to watch yet.
               </div>
             )}
             {fleet.map((v, i) => (
-              <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
+              <motion.div key={v.shipment_id || i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
                 onClick={() => openShipment(Number(v.shipment_id || 0))}
               >
@@ -2763,17 +3181,23 @@ export function AdminLogistics() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[0.875rem] text-foreground">{v.driver}</span>
-                    <span className="text-[0.6875rem] text-muted-foreground/40">{v.id} · {v.plate}</span>
+                    <span className="text-[0.875rem] text-foreground/90 truncate">
+                      SH-{v.shipment_id} · ORD-{v.order_id || "—"}
+                    </span>
+                    <span className="text-[0.6875rem] text-muted-foreground/40 truncate">
+                      {v.tracking_number || v.carrier_id || "No tracking"}
+                    </span>
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{v.currentTask}</span>
+                  <div className="text-[0.75rem] text-muted-foreground/55 truncate">
+                    {(v.seller?.label || "—")} → {(v.buyer?.label || "—")}
+                  </div>
+                  <div className="text-[0.75rem] text-muted-foreground/45 truncate">
+                    {(v.origin || "—")} → {(v.destination || "—")}
+                  </div>
                 </div>
                 <div className="hidden sm:flex items-center gap-4">
                   <div className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground/50">
-                    <MapPin size={12} />{v.location}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[0.75rem]" style={{ color: v.fuel < 40 ? "#E5484D" : "#30A46C" }}>
-                    <Fuel size={12} />{v.fuel}%
+                    <MapPin size={12} />{v.last_location || "—"}
                   </div>
                 </div>
                 <StatusPill
@@ -2802,16 +3226,48 @@ export function AdminLogistics() {
                   onChange={(e) => {
                     setShipQ(e.target.value);
                     setShipPage(1);
+                    syncUrl({ q: e.target.value, page: "" });
                   }}
                   placeholder="Search tracking, order, email…"
                   className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
                 />
               </div>
+              <input
+                value={shipSeller}
+                onChange={(e) => {
+                  setShipSeller(e.target.value);
+                  setShipPage(1);
+                  syncUrl({ seller: e.target.value, page: "" });
+                }}
+                placeholder="Seller (id/email/name)"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[220px]"
+              />
+              <input
+                value={shipBuyer}
+                onChange={(e) => {
+                  setShipBuyer(e.target.value);
+                  setShipPage(1);
+                  syncUrl({ buyer: e.target.value, page: "" });
+                }}
+                placeholder="Buyer (id/email/name)"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[220px]"
+              />
+              <input
+                value={shipRoute}
+                onChange={(e) => {
+                  setShipRoute(e.target.value);
+                  setShipPage(1);
+                  syncUrl({ route: e.target.value, page: "" });
+                }}
+                placeholder="Route (origin/dest)"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[200px]"
+              />
               <select
                 value={shipStatus}
                 onChange={(e) => {
                   setShipStatus(e.target.value);
                   setShipPage(1);
+                  syncUrl({ status: e.target.value === "all" ? "" : e.target.value, page: "" });
                 }}
                 className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
               >
@@ -2823,6 +3279,48 @@ export function AdminLogistics() {
                 <option value="out_for_delivery">Out for delivery</option>
                 <option value="delivered">Delivered</option>
               </select>
+              <select
+                value={trackingFilter}
+                onChange={(e) => {
+                  const v = e.target.value as any;
+                  setTrackingFilter(v);
+                  setShipPage(1);
+                  syncUrl({ has_tracking: v === "has" ? "1" : v === "missing" ? "0" : "", page: "" });
+                }}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="all">Tracking: all</option>
+                <option value="has">Has tracking</option>
+                <option value="missing">Missing tracking</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !lateOnly;
+                  setLateOnly(next);
+                  setShipPage(1);
+                  syncUrl({ late_only: next ? "1" : "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  lateOnly ? "bg-[#E5484D]/10 text-[#E5484D]/80" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Late only
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !deliveredOnly;
+                  setDeliveredOnly(next);
+                  setShipPage(1);
+                  syncUrl({ delivered_only: next ? "1" : "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  deliveredOnly ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Delivered only
+              </button>
             </div>
           </div>
 
@@ -2834,12 +3332,39 @@ export function AdminLogistics() {
 
           {!shipLoading && shipments.length === 0 && (
             <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
-              No shipments found.
+              <div>No shipments found.</div>
+              <div className="mt-3 flex items-center justify-center">
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate("/management/orders")}
+                >
+                  Open orders
+                </BounceButton>
+              </div>
             </div>
           )}
 
           {!shipLoading && shipments.length > 0 && (
             <div className="space-y-2">
+              {trackingFilter === "all" &&
+                shipments.length > 0 &&
+                shipments.every((s: any) => !String(s?.tracking_number || s?.carrier_id || "").trim()) && (
+                  <div className="px-5 py-4 rounded-2xl bg-[#FFB224]/8 border border-[#FFB224]/15 text-[0.8125rem] text-foreground/70 flex items-center justify-between gap-3">
+                    <span>No tracking numbers found. Connect carrier integration or enter tracking.</span>
+                    <BounceButton
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setTrackingFilter("missing");
+                        setShipPage(1);
+                        syncUrl({ has_tracking: "0", page: "" });
+                      }}
+                    >
+                      Show missing
+                    </BounceButton>
+                  </div>
+                )}
               {shipments.map((s, i) => (
                 <motion.div
                   key={s.id}
@@ -2852,11 +3377,62 @@ export function AdminLogistics() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-[0.875rem] text-foreground/80 truncate">SH-{s.id}</span>
-                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">ORD-{s.order_id || "—"}</span>
-                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">{s.tracking_number || s.carrier_id || "—"}</span>
+                      <button
+                        type="button"
+                        className="text-[0.6875rem] text-muted-foreground/55 hover:text-foreground truncate"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const oid = s.order_id || "";
+                          if (!oid) return;
+                          navigate(`/management/orders?q=${encodeURIComponent(`ORD-${oid}`)}`);
+                        }}
+                        title="Open order"
+                      >
+                        ORD-{s.order_id || "—"}
+                      </button>
+                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate" title={s.tracking_number || s.carrier_id || ""}>
+                        {s.tracking_number || s.carrier_id || "—"}
+                      </span>
                     </div>
                     <div className="text-[0.75rem] text-muted-foreground/50 truncate">
-                      {s.origin || "—"} → {s.destination || "—"} · {s.seller || "—"} → {s.buyer || "—"}
+                      {s.origin || "—"} → {s.destination || "—"} ·{" "}
+                      <button
+                        type="button"
+                        className="hover:text-foreground"
+                        title={s?.seller_contact?.email || s?.seller_contact?.phone || ""}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const key = s?.seller_contact?.email || s?.seller_contact?.phone || s?.seller || "";
+                          if (!key) return;
+                          navigate(`/users?q=${encodeURIComponent(key)}`);
+                        }}
+                      >
+                        {s.seller || "—"}
+                      </button>{" "}
+                      {!!(s?.seller_contact?.email || s?.seller_contact?.phone) && (
+                        <span className="text-[0.6875rem] text-muted-foreground/40" title={s?.seller_contact?.email || s?.seller_contact?.phone || ""}>
+                          ({s?.seller_contact?.phone || s?.seller_contact?.email})
+                        </span>
+                      )}{" "}
+                      →{" "}
+                      <button
+                        type="button"
+                        className="hover:text-foreground"
+                        title={s?.buyer_contact?.email || s?.buyer_contact?.phone || ""}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const key = s?.buyer_contact?.email || s?.buyer_contact?.phone || s?.buyer || "";
+                          if (!key) return;
+                          navigate(`/users?q=${encodeURIComponent(key)}`);
+                        }}
+                      >
+                        {s.buyer || "—"}
+                      </button>
+                      {!!(s?.buyer_contact?.email || s?.buyer_contact?.phone) && (
+                        <span className="text-[0.6875rem] text-muted-foreground/40" title={s?.buyer_contact?.email || s?.buyer_contact?.phone || ""}>
+                          ({s?.buyer_contact?.phone || s?.buyer_contact?.email})
+                        </span>
+                      )}
                     </div>
                   </div>
                   <StatusPill
@@ -2879,10 +3455,36 @@ export function AdminLogistics() {
               {shipCount ? `Showing ${(shipPage - 1) * 10 + 1}-${Math.min(shipPage * 10, shipCount)} of ${shipCount}` : "—"}
             </div>
             <div className="flex items-center gap-2">
-              <BounceButton variant="ghost" size="sm" onClick={shipPage <= 1 ? undefined : () => setShipPage((p) => Math.max(1, p - 1))} className={shipPage <= 1 ? "opacity-60 pointer-events-none" : ""}>
+              <BounceButton
+                variant="ghost"
+                size="sm"
+                onClick={
+                  shipPage <= 1
+                    ? undefined
+                    : () => {
+                        const next = Math.max(1, shipPage - 1);
+                        setShipPage(next);
+                        syncUrl({ page: next === 1 ? "" : String(next) });
+                      }
+                }
+                className={shipPage <= 1 ? "opacity-60 pointer-events-none" : ""}
+              >
                 Prev
               </BounceButton>
-              <BounceButton variant="ghost" size="sm" onClick={shipPage >= shipTotalPages ? undefined : () => setShipPage((p) => p + 1)} className={shipPage >= shipTotalPages ? "opacity-60 pointer-events-none" : ""}>
+              <BounceButton
+                variant="ghost"
+                size="sm"
+                onClick={
+                  shipPage >= shipTotalPages
+                    ? undefined
+                    : () => {
+                        const next = shipPage + 1;
+                        setShipPage(next);
+                        syncUrl({ page: String(next) });
+                      }
+                }
+                className={shipPage >= shipTotalPages ? "opacity-60 pointer-events-none" : ""}
+              >
                 Next
               </BounceButton>
             </div>
@@ -2913,7 +3515,19 @@ export function AdminLogistics() {
                     {shipmentDetail?.shipment?.id ? `Shipment SH-${shipmentDetail.shipment.id}` : (shipmentLoading ? "Loading…" : "Shipment")}
                   </h2>
                   <p className="text-muted-foreground text-[0.8125rem]">
-                    ORD-{shipmentDetail?.shipment?.order_id || "—"} · {shipmentDetail?.shipment?.status || "—"}
+                    <button
+                      type="button"
+                      className="hover:text-foreground"
+                      onClick={() => {
+                        const oid = shipmentDetail?.shipment?.order_id;
+                        if (!oid) return;
+                        navigate(`/management/orders?q=${encodeURIComponent(`ORD-${oid}`)}`);
+                      }}
+                      title="Open order"
+                    >
+                      ORD-{shipmentDetail?.shipment?.order_id || "—"}
+                    </button>{" "}
+                    · {shipmentDetail?.shipment?.status || "—"}
                   </p>
                 </div>
                 <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setShipmentOpen(false)}>
@@ -2932,7 +3546,20 @@ export function AdminLogistics() {
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Tracking</div>
-                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || "—"}</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-[0.875rem] text-foreground/80 truncate">
+                          {shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || "—"}
+                        </div>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl hover:bg-muted/20 text-muted-foreground/60"
+                          onClick={() => void copyToClipboard(String(shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || ""), "Copied tracking.")}
+                          disabled={!(shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id)}
+                          title="Copy tracking"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
                     </div>
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Route</div>
@@ -2940,7 +3567,130 @@ export function AdminLogistics() {
                     </div>
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Buyer / Seller</div>
-                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.buyer?.label || "—"} · {shipmentDetail?.seller?.label || "—"}</div>
+                      <div className="text-[0.875rem] text-foreground/80 truncate">
+                        <button
+                          type="button"
+                          className="hover:text-foreground"
+                          title={shipmentDetail?.buyer?.email || shipmentDetail?.buyer?.phone || ""}
+                          onClick={() => {
+                            const key = shipmentDetail?.buyer?.email || shipmentDetail?.buyer?.phone || "";
+                            if (!key) return;
+                            navigate(`/users?q=${encodeURIComponent(key)}`);
+                          }}
+                        >
+                          {shipmentDetail?.buyer?.label || "—"}
+                        </button>{" "}
+                        ·{" "}
+                        <button
+                          type="button"
+                          className="hover:text-foreground"
+                          title={shipmentDetail?.seller?.email || shipmentDetail?.seller?.phone || ""}
+                          onClick={() => {
+                            const key = shipmentDetail?.seller?.email || shipmentDetail?.seller?.phone || "";
+                            if (!key) return;
+                            navigate(`/users?q=${encodeURIComponent(key)}`);
+                          }}
+                        >
+                          {shipmentDetail?.seller?.label || "—"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="text-[0.75rem] text-muted-foreground/60">Actions</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 text-[0.75rem] text-muted-foreground/80 flex items-center gap-2"
+                          onClick={() => void copyToClipboard(String(shipmentDetail?.shipment?.id || ""), "Copied shipment id.")}
+                          disabled={!shipmentDetail?.shipment?.id}
+                          title="Copy shipment id"
+                        >
+                          <Hash size={14} />
+                          SH
+                        </button>
+                        <button
+                          type="button"
+                          className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 text-[0.75rem] text-muted-foreground/80 flex items-center gap-2"
+                          onClick={() => void copyToClipboard(String(shipmentDetail?.shipment?.order_id || ""), "Copied order id.")}
+                          disabled={!shipmentDetail?.shipment?.order_id}
+                          title="Copy order id"
+                        >
+                          <Hash size={14} />
+                          ORD
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-2">Tracking</div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <input
+                            value={editTracking}
+                            onChange={(e) => setEditTracking(e.target.value)}
+                            placeholder="Tracking #"
+                            className="px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                          />
+                          <input
+                            value={editCarrier}
+                            onChange={(e) => setEditCarrier(e.target.value)}
+                            placeholder="Carrier id (optional)"
+                            className="px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                          />
+                          <BounceButton variant="primary" size="sm" onClick={shipActionSaving ? undefined : setShipmentTracking} className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}>
+                            Set tracking #
+                          </BounceButton>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-2">Status</div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <select
+                            value={editStatus}
+                            onChange={(e) => setEditStatus(e.target.value)}
+                            className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+                          >
+                            <option value="label_created">Label created</option>
+                            <option value="picked_up">Picked up</option>
+                            <option value="in_transit">In transit</option>
+                            <option value="customs">Customs</option>
+                            <option value="out_for_delivery">Out for delivery</option>
+                            <option value="delivered">Delivered</option>
+                          </select>
+                          <div className="flex items-center gap-2">
+                            <BounceButton variant="ghost" size="sm" onClick={shipActionSaving ? undefined : setShipmentStatus} className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}>
+                              Update status
+                            </BounceButton>
+                            <BounceButton
+                              variant="primary"
+                              size="sm"
+                              onClick={shipActionSaving ? undefined : markShipmentDelivered}
+                              className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}
+                            >
+                              Mark delivered
+                            </BounceButton>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-2xl bg-card border border-border/30 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-2">ETA</div>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <input
+                          type="datetime-local"
+                          value={editEta}
+                          onChange={(e) => setEditEta(e.target.value)}
+                          className="px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all flex-1"
+                        />
+                        <BounceButton variant="ghost" size="sm" onClick={shipActionSaving ? undefined : setShipmentEta} className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}>
+                          Set ETA
+                        </BounceButton>
+                      </div>
                     </div>
                   </div>
 
@@ -2979,15 +3729,30 @@ export function AdminLogistics() {
 // ════════════════════════════════════════════════════════════
 
 export function AdminQuality() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
   const [trend, setTrend] = useState<any[]>([]);
   const [dist, setDist] = useState<any>(null);
+  const [trendMetric, setTrendMetric] = useState<"avg_score" | "count" | "pass_rate">("avg_score");
+  const [distMode, setDistMode] = useState<"percent" | "count">("percent");
   const [days, setDays] = useState<number>(30);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [q, setQ] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sellerId, setSellerId] = useState<string>("");
+  const [inspectorId, setInspectorId] = useState<string>("");
+  const [productId, setProductId] = useState<string>("");
+  const [sku, setSku] = useState<string>("");
+  const [scoreMin, setScoreMin] = useState<string>("");
+  const [scoreMax, setScoreMax] = useState<string>("");
+  const [inspectedFrom, setInspectedFrom] = useState<string>("");
+  const [inspectedTo, setInspectedTo] = useState<string>("");
+  const [failedOnly, setFailedOnly] = useState<boolean>(false);
+  const [pendingOnly, setPendingOnly] = useState<boolean>(false);
+  const [unassignedInspector, setUnassignedInspector] = useState<boolean>(false);
   const [page, setPage] = useState<number>(1);
   const pageSize = 10;
   const [inspections, setInspections] = useState<any[]>([]);
@@ -2997,9 +3762,132 @@ export function AdminQuality() {
   const [inspectionLoading, setInspectionLoading] = useState(false);
   const [inspectionSaving, setInspectionSaving] = useState(false);
   const [inspectionDetail, setInspectionDetail] = useState<any>(null);
+  const [inspectionAudit, setInspectionAudit] = useState<any[]>([]);
   const [editScore, setEditScore] = useState<string>("");
+  const [editInspectorId, setEditInspectorId] = useState<string>("");
+  const [assignInspectorQuery, setAssignInspectorQuery] = useState<string>("");
+  const [assignInspectorResults, setAssignInspectorResults] = useState<any[]>([]);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createSaving, setCreateSaving] = useState(false);
+  const [createError, setCreateError] = useState<string>("");
+  const [createForm, setCreateForm] = useState<any>({
+    product_id: "",
+    seller_id: "",
+    inspector_id: "",
+    inspector_name: "",
+    status: "in_progress",
+    score: "",
+    inspected_at: "",
+  });
+  const [createProductQuery, setCreateProductQuery] = useState<string>("");
+  const [createProductResults, setCreateProductResults] = useState<any[]>([]);
+  const [createSellerQuery, setCreateSellerQuery] = useState<string>("");
+  const [createSellerResults, setCreateSellerResults] = useState<any[]>([]);
+  const [createInspectorQuery, setCreateInspectorQuery] = useState<string>("");
+  const [createInspectorResults, setCreateInspectorResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+  const [success, setSuccess] = useState<string>("");
+
+  const copyToClipboard = useCallback(async (text: string, successMsg: string) => {
+    const t = (text || "").toString();
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      setSuccess(successMsg);
+      window.setTimeout(() => setSuccess(""), 2000);
+    } catch {
+      try {
+        window.prompt("Copy to clipboard:", t);
+      } catch {}
+    }
+  }, []);
+
+  const syncUrl = useCallback(
+    (next?: Partial<Record<string, string>>) => {
+      const params = new URLSearchParams(location.search || "");
+      const setOrDel = (k: string, v: string) => {
+        if (v) params.set(k, v);
+        else params.delete(k);
+      };
+
+      setOrDel("days", days && days !== 30 ? String(days) : "");
+      setOrDel("q", q.trim());
+      setOrDel("status", statusFilter && statusFilter !== "all" ? statusFilter : "");
+      setOrDel("seller_id", sellerId.trim());
+      setOrDel("inspector_id", inspectorId.trim());
+      setOrDel("product_id", productId.trim());
+      setOrDel("sku", sku.trim());
+      setOrDel("score_min", scoreMin.trim());
+      setOrDel("score_max", scoreMax.trim());
+      setOrDel("inspected_from", inspectedFrom.trim());
+      setOrDel("inspected_to", inspectedTo.trim());
+      setOrDel("failed_only", failedOnly ? "1" : "");
+      setOrDel("pending_only", pendingOnly ? "1" : "");
+      setOrDel("unassigned_inspector", unassignedInspector ? "1" : "");
+      setOrDel("page", page && page !== 1 ? String(page) : "");
+
+      for (const [k, v] of Object.entries(next || {})) {
+        setOrDel(k, v);
+      }
+
+      navigate({ search: `?${params.toString()}` }, { replace: true });
+    },
+    [
+      location.search,
+      navigate,
+      days,
+      q,
+      statusFilter,
+      sellerId,
+      inspectorId,
+      productId,
+      sku,
+      scoreMin,
+      scoreMax,
+      inspectedFrom,
+      inspectedTo,
+      failedOnly,
+      pendingOnly,
+      unassignedInspector,
+      page,
+    ]
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const statusIn = (params.get("status") || "").trim();
+    const qIn = params.get("q");
+    const daysIn = Number(params.get("days") || "");
+    const pageIn = Number(params.get("page") || "1");
+    const sellerIdIn = params.get("seller_id");
+    const inspectorIdIn = params.get("inspector_id");
+    const productIdIn = params.get("product_id");
+    const skuIn = params.get("sku");
+    const scoreMinIn = params.get("score_min");
+    const scoreMaxIn = params.get("score_max");
+    const inspectedFromIn = params.get("inspected_from");
+    const inspectedToIn = params.get("inspected_to");
+    const failedOnlyIn = (params.get("failed_only") || "").trim().toLowerCase();
+    const pendingOnlyIn = (params.get("pending_only") || "").trim().toLowerCase();
+    const unassignedIn = (params.get("unassigned_inspector") || "").trim().toLowerCase();
+    if (qIn != null) setQ(qIn);
+    if (statusIn) setStatusFilter(statusIn);
+    else setStatusFilter("all");
+    if (Number.isFinite(daysIn) && daysIn >= 2) setDays(Math.floor(daysIn));
+    if (Number.isFinite(pageIn) && pageIn >= 1) setPage(Math.floor(pageIn));
+    if (sellerIdIn != null) setSellerId(sellerIdIn);
+    if (inspectorIdIn != null) setInspectorId(inspectorIdIn);
+    if (productIdIn != null) setProductId(productIdIn);
+    if (skuIn != null) setSku(skuIn);
+    if (scoreMinIn != null) setScoreMin(scoreMinIn);
+    if (scoreMaxIn != null) setScoreMax(scoreMaxIn);
+    if (inspectedFromIn != null) setInspectedFrom(inspectedFromIn);
+    if (inspectedToIn != null) setInspectedTo(inspectedToIn);
+    setFailedOnly(failedOnlyIn === "1" || failedOnlyIn === "true" || failedOnlyIn === "yes");
+    setPendingOnly(pendingOnlyIn === "1" || pendingOnlyIn === "true" || pendingOnlyIn === "yes");
+    setUnassignedInspector(unassignedIn === "1" || unassignedIn === "true" || unassignedIn === "yes");
+  }, [location.search]);
 
   const fmtPct = (p: any) => {
     const n = Number(p);
@@ -3020,6 +3908,53 @@ export function AdminQuality() {
     return `${sign}${Math.round(n)}`;
   };
 
+  const trendKey = useMemo(() => {
+    if (trendMetric === "count") return "count";
+    if (trendMetric === "pass_rate") return "pass_rate";
+    return "score";
+  }, [trendMetric]);
+
+  const trendLabel = useMemo(() => {
+    if (trendMetric === "count") return "Inspections Trend";
+    if (trendMetric === "pass_rate") return "Pass Rate Trend";
+    return "Quality Score Trend";
+  }, [trendMetric]);
+
+  const trendSubtitle = useMemo(() => {
+    if (trendMetric === "count") return "Inspections created over time";
+    if (trendMetric === "pass_rate") return "Pass rate over time";
+    return "Average inspection score over time";
+  }, [trendMetric]);
+
+  const trendHasData = useMemo(() => {
+    if (!Array.isArray(trend) || trend.length === 0) return false;
+    if (trendMetric === "count") return trend.some((r) => Number(r?.count || 0) > 0);
+    return trend.some((r) => Number(r?.completed || 0) > 0);
+  }, [trend, trendMetric]);
+
+  const trendYDomain = useMemo(() => {
+    if (!Array.isArray(trend) || trend.length === 0) return undefined;
+    if (trendMetric === "count") return undefined;
+    const vals = trend
+      .filter((r) => Number(r?.completed || 0) > 0)
+      .map((r) => Number(r?.[trendKey] || 0))
+      .filter((v) => Number.isFinite(v));
+    if (vals.length === 0) return undefined;
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const pad = Math.max(3, Math.round((max - min) * 0.2));
+    const lo = Math.max(0, Math.floor(min - pad));
+    const hi = Math.min(100, Math.ceil(max + pad));
+    if (hi <= lo) return [Math.max(0, lo - 1), Math.min(100, hi + 1)] as [number, number];
+    return [lo, hi] as [number, number];
+  }, [trend, trendKey, trendMetric]);
+
+  const trendYFormatter = useMemo(() => {
+    if (trendMetric === "count") return (v: number) => Number(v || 0).toLocaleString();
+    if (trendMetric === "pass_rate") return (v: number) => `${Math.round(Number(v || 0))}%`;
+    return (v: number) => String(Math.round(Number(v || 0)));
+  }, [trendMetric]);
+
   const formatDate = (iso: any) => {
     if (!iso) return "—";
     const dt = new Date(iso);
@@ -3027,15 +3962,31 @@ export function AdminQuality() {
     return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
   };
 
+  const formatDateTime = (iso: any) => {
+    if (!iso) return "—";
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return "—";
+    return dt.toLocaleString(undefined, { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  };
+
   const openInspection = async (id: number) => {
     if (!id) return;
     setInspectionOpen(true);
     setInspectionLoading(true);
     setInspectionDetail(null);
+    setInspectionAudit([]);
     try {
-      const data = await fetchJson(`/api/v1/admin/quality/${id}/`);
+      const [data, auditResp] = await Promise.all([
+        fetchJson(`/api/v1/admin/quality/${id}/`),
+        fetchJson(`/api/v1/admin/quality/${id}/audit/?limit=15`).catch(() => null),
+      ]);
       setInspectionDetail(data);
       setEditScore(data?.score != null ? String(data.score) : "");
+      setEditInspectorId(data?.inspector_id != null ? String(data.inspector_id) : "");
+      setAssignInspectorQuery("");
+      setAssignInspectorResults([]);
+      const rows = Array.isArray(auditResp?.results) ? auditResp.results : [];
+      setInspectionAudit(rows);
     } catch (e: any) {
       setInspectionDetail(null);
       setError(e?.message || "Failed to load inspection.");
@@ -3045,7 +3996,86 @@ export function AdminQuality() {
     }
   };
 
-  const setInspection = async (patch: { status?: string; score?: number }) => {
+  const openCreateInspection = () => {
+    setCreateError("");
+    setCreateForm({
+      product_id: productId || "",
+      seller_id: sellerId || "",
+      inspector_id: inspectorId || "",
+      inspector_name: "",
+      status: pendingOnly ? "in_progress" : failedOnly ? "failed" : statusFilter && statusFilter !== "all" ? statusFilter : "in_progress",
+      score: "",
+      inspected_at: "",
+    });
+    setCreateProductQuery("");
+    setCreateProductResults([]);
+    setCreateSellerQuery("");
+    setCreateSellerResults([]);
+    setCreateInspectorQuery("");
+    setCreateInspectorResults([]);
+    setCreateOpen(true);
+  };
+
+  const createInspection = async () => {
+    setCreateError("");
+    const product_id = Number(String(createForm?.product_id || "").trim());
+    const seller_id = Number(String(createForm?.seller_id || "").trim());
+    if (!Number.isFinite(product_id) || product_id <= 0) {
+      setCreateError("Product id is required.");
+      return;
+    }
+    if (!Number.isFinite(seller_id) || seller_id <= 0) {
+      setCreateError("Seller id is required.");
+      return;
+    }
+    const inspector_id_raw = String(createForm?.inspector_id || "").trim();
+    const inspector_id = inspector_id_raw ? Number(inspector_id_raw) : null;
+    const statusVal = String(createForm?.status || "in_progress").trim();
+    const scoreRaw = String(createForm?.score || "").trim();
+    const scoreVal = scoreRaw ? Number(scoreRaw) : null;
+    const inspectedAtRaw = String(createForm?.inspected_at || "").trim();
+    const inspected_at = inspectedAtRaw ? new Date(inspectedAtRaw).toISOString() : null;
+
+    const payload: any = { product_id, seller_id, status: statusVal };
+    if (inspector_id_raw) {
+      if (!Number.isFinite(inspector_id as any) || (inspector_id as any) <= 0) {
+        setCreateError("Inspector id must be a positive integer.");
+        return;
+      }
+      payload.inspector_id = inspector_id;
+    }
+    if (String(createForm?.inspector_name || "").trim()) payload.inspector_name = String(createForm.inspector_name).trim();
+    if (scoreRaw) {
+      if (!Number.isFinite(scoreVal as any) || (scoreVal as any) < 0 || (scoreVal as any) > 100) {
+        setCreateError("Score must be 0-100.");
+        return;
+      }
+      payload.score = Math.round(scoreVal as any);
+    }
+    if (inspected_at) payload.inspected_at = inspected_at;
+
+    setCreateSaving(true);
+    try {
+      const data = await fetchJson("/api/v1/admin/quality/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setCreateOpen(false);
+      setSuccess("Inspection created.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      setRefreshNonce((n) => n + 1);
+      if (data?.id) {
+        await openInspection(Number(data.id));
+      }
+    } catch (e: any) {
+      setCreateError(e?.message || "Failed to create inspection.");
+    } finally {
+      setCreateSaving(false);
+    }
+  };
+
+  const setInspection = async (patch: { status?: string; score?: number; inspector_id?: number | null; inspector_name?: string }) => {
     const id = Number(inspectionDetail?.id || 0);
     if (!id) return;
     setInspectionSaving(true);
@@ -3058,6 +4088,7 @@ export function AdminQuality() {
       });
       setInspectionDetail(data);
       setEditScore(data?.score != null ? String(data.score) : "");
+      setEditInspectorId(data?.inspector_id != null ? String(data.inspector_id) : "");
       setRefreshNonce((n) => n + 1);
     } catch (e: any) {
       setError(e?.message || "Failed to update inspection.");
@@ -3065,6 +4096,111 @@ export function AdminQuality() {
       setInspectionSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const qv = (createProductQuery || "").trim();
+    if (qv.length < 2) {
+      setCreateProductResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const resp = await fetchJson(`/api/v1/admin/products/?page=1&page_size=8&q=${encodeURIComponent(qv)}`);
+        if (cancelled) return;
+        const rows = Array.isArray(resp?.results) ? resp.results : [];
+        setCreateProductResults(rows.slice(0, 8));
+      } catch {
+        if (!cancelled) setCreateProductResults([]);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [createOpen, createProductQuery]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const qv = (createSellerQuery || "").trim();
+    if (qv.length < 2) {
+      setCreateSellerResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const resp = await fetchJson(`/api/v1/admin/users/?page=1&page_size=10&q=${encodeURIComponent(qv)}`);
+        if (cancelled) return;
+        const rows = Array.isArray(resp?.results) ? resp.results : [];
+        const sellers = rows.filter((u: any) => String(u?.role || "").toLowerCase() === "seller" || String(u?.account_type || "").toLowerCase() === "seller");
+        setCreateSellerResults(sellers.slice(0, 8));
+      } catch {
+        if (!cancelled) setCreateSellerResults([]);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [createOpen, createSellerQuery]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const qv = (createInspectorQuery || "").trim();
+    if (qv.length < 2) {
+      setCreateInspectorResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const resp = await fetchJson(`/api/v1/admin/users/?page=1&page_size=10&q=${encodeURIComponent(qv)}`);
+        if (cancelled) return;
+        const rows = Array.isArray(resp?.results) ? resp.results : [];
+        const inspectors = rows.filter(
+          (u: any) =>
+            String(u?.admin_role || "").toLowerCase() === "inspector" || String(u?.role || "").toLowerCase() === "admin"
+        );
+        setCreateInspectorResults(inspectors.slice(0, 8));
+      } catch {
+        if (!cancelled) setCreateInspectorResults([]);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [createOpen, createInspectorQuery]);
+
+  useEffect(() => {
+    if (!inspectionOpen) return;
+    const qv = (assignInspectorQuery || "").trim();
+    if (qv.length < 2) {
+      setAssignInspectorResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const resp = await fetchJson(`/api/v1/admin/users/?page=1&page_size=10&q=${encodeURIComponent(qv)}`);
+        if (cancelled) return;
+        const rows = Array.isArray(resp?.results) ? resp.results : [];
+        const inspectors = rows.filter(
+          (u: any) =>
+            String(u?.admin_role || "").toLowerCase() === "inspector" || String(u?.role || "").toLowerCase() === "admin"
+        );
+        setAssignInspectorResults(inspectors.slice(0, 8));
+      } catch {
+        if (!cancelled) setAssignInspectorResults([]);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [inspectionOpen, assignInspectorQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3076,12 +4212,23 @@ export function AdminQuality() {
         params.set("page", String(page));
         params.set("page_size", String(pageSize));
         if (q.trim()) params.set("q", q.trim());
-        if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+        if (failedOnly) params.set("failed_only", "1");
+        if (pendingOnly) params.set("pending_only", "1");
+        if (unassignedInspector) params.set("unassigned_inspector", "1");
+        if (!failedOnly && !pendingOnly && statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+        if (sellerId.trim()) params.set("seller_id", sellerId.trim());
+        if (inspectorId.trim()) params.set("inspector_id", inspectorId.trim());
+        if (productId.trim()) params.set("product_id", productId.trim());
+        if (sku.trim()) params.set("sku", sku.trim());
+        if (scoreMin.trim()) params.set("score_min", scoreMin.trim());
+        if (scoreMax.trim()) params.set("score_max", scoreMax.trim());
+        if (inspectedFrom.trim()) params.set("inspected_from", inspectedFrom.trim());
+        if (inspectedTo.trim()) params.set("inspected_to", inspectedTo.trim());
         params.set("days", String(days));
 
         const [s, t, d, listResp] = await Promise.all([
           fetchJson(`/api/v1/admin/quality/stats/?days=${days}`),
-          fetchJson(`/api/v1/admin/quality/trend/?days=${Math.min(31, days)}`),
+          fetchJson(`/api/v1/admin/quality/trend/?days=${Math.min(31, days)}&metric=${encodeURIComponent(trendMetric)}`),
           fetchJson(`/api/v1/admin/quality/distribution/?days=${days}`),
           fetchJson(`/api/v1/admin/quality/?${params.toString()}`),
         ]);
@@ -3103,7 +4250,17 @@ export function AdminQuality() {
     return () => {
       cancelled = true;
     };
-  }, [days, page, q, statusFilter, refreshNonce]);
+  }, [days, page, q, statusFilter, sellerId, inspectorId, productId, sku, scoreMin, scoreMax, inspectedFrom, inspectedTo, failedOnly, pendingOnly, unassignedInspector, refreshNonce, trendMetric]);
+
+  const showGlobalEmpty = useMemo(() => {
+    if (loading) return false;
+    if (inspections.length > 0) return false;
+    const avg = Number(stats?.avg_quality_score || 0) || 0;
+    const pr = Number(stats?.pass_rate || 0) || 0;
+    const pend = Number(stats?.pending || 0) || 0;
+    const failed = Number(stats?.failed || 0) || 0;
+    return avg === 0 && pr === 0 && pend === 0 && failed === 0;
+  }, [loading, inspections.length, stats]);
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
@@ -3116,8 +4273,10 @@ export function AdminQuality() {
           <select
             value={String(days)}
             onChange={(e) => {
-              setDays(Number(e.target.value) || 30);
+              const nextDays = Number(e.target.value) || 30;
+              setDays(nextDays);
               setPage(1);
+              syncUrl({ days: nextDays === 30 ? "" : String(nextDays), page: "" });
             }}
             className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
           >
@@ -3134,6 +4293,11 @@ export function AdminQuality() {
       {error && (
         <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
           {error}
+        </motion.div>
+      )}
+      {success && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#30A46C]/8 text-[#1f7a4a] text-[0.8125rem]">
+          {success}
         </motion.div>
       )}
 
@@ -3179,21 +4343,97 @@ export function AdminQuality() {
 
       <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-5 gap-5">
         <SectionCard className="lg:col-span-3">
-          <h2 className="text-foreground text-[0.9375rem] mb-1">Quality Score Trend</h2>
-          <p className="text-muted-foreground/50 text-[0.75rem] mb-4">Average inspection score over time</p>
-          <CustomAreaChart data={trend} xKey="month" series={[{ dataKey: "score", color: "#0171E3" }]} height={180} yDomain={[70, 100]} />
+          <div className="flex items-start justify-between gap-3 mb-1">
+            <h2 className="text-foreground text-[0.9375rem]">{trendLabel}</h2>
+            <select
+              value={trendMetric}
+              onChange={(e) => setTrendMetric(e.target.value as any)}
+              className="px-3 py-2 rounded-2xl text-[0.75rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+            >
+              <option value="avg_score">Avg score</option>
+              <option value="count"># inspections</option>
+              <option value="pass_rate">Pass rate</option>
+            </select>
+          </div>
+          <p className="text-muted-foreground/50 text-[0.75rem] mb-4">{trendSubtitle}</p>
+          {!trendHasData ? (
+            <div className="h-[180px] rounded-2xl bg-muted/10 border border-border/20 flex flex-col items-center justify-center text-center px-6">
+              <div className="text-[0.8125rem] text-muted-foreground/70">No data in selected period.</div>
+              {showGlobalEmpty && (
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  <BounceButton variant="primary" size="sm" onClick={openCreateInspection}>
+                    Create inspection
+                  </BounceButton>
+                  <BounceButton variant="ghost" size="sm" onClick={() => navigate("/products?admin_status=pending")}>
+                    Open products needing review
+                  </BounceButton>
+                </div>
+              )}
+            </div>
+          ) : (
+            <CustomAreaChart
+              data={trend}
+              xKey="month"
+              series={[
+                {
+                  dataKey: trendKey,
+                  color: "#0171E3",
+                  label: trendMetric === "count" ? "Inspections" : trendMetric === "pass_rate" ? "Pass rate" : "Avg score",
+                },
+              ]}
+              height={180}
+              yDomain={trendYDomain as any}
+              yFormatter={trendYFormatter as any}
+            />
+          )}
         </SectionCard>
         <SectionCard className="lg:col-span-2">
-          <h2 className="text-foreground text-[0.9375rem] mb-4">Score Distribution</h2>
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <h2 className="text-foreground text-[0.9375rem]">Score Distribution</h2>
+            <select
+              value={distMode}
+              onChange={(e) => setDistMode(e.target.value as any)}
+              className="px-3 py-2 rounded-2xl text-[0.75rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+            >
+              <option value="percent">Percent</option>
+              <option value="count">Count</option>
+            </select>
+          </div>
           <HorizontalBarList
             data={[
-              { label: "Excellent (90+)", value: Number(dist?.excellent) || 0, color: "#30A46C" },
-              { label: "Good (80-89)", value: Number(dist?.good) || 0, color: "#3B82F6" },
-              { label: "Fair (70-79)", value: Number(dist?.fair) || 0, color: "#FFB224" },
-              { label: "Poor (<70)", value: Number(dist?.poor) || 0, color: "#E5484D" },
+              {
+                label: "Excellent (90+)",
+                value: distMode === "count" ? Number(dist?.excellent_count) || 0 : Number(dist?.excellent) || 0,
+                color: "#30A46C",
+              },
+              {
+                label: "Good (80-89)",
+                value: distMode === "count" ? Number(dist?.good_count) || 0 : Number(dist?.good) || 0,
+                color: "#3B82F6",
+              },
+              {
+                label: "Fair (70-79)",
+                value: distMode === "count" ? Number(dist?.fair_count) || 0 : Number(dist?.fair) || 0,
+                color: "#FFB224",
+              },
+              {
+                label: "Poor (<70)",
+                value: distMode === "count" ? Number(dist?.poor_count) || 0 : Number(dist?.poor) || 0,
+                color: "#E5484D",
+              },
             ]}
-            maxValue={100}
-            valueFormatter={v => `${v}%`}
+            maxValue={
+              distMode === "count"
+                ? Math.max(
+                    Number(dist?.excellent_count) || 0,
+                    Number(dist?.good_count) || 0,
+                    Number(dist?.fair_count) || 0,
+                    Number(dist?.poor_count) || 0,
+                    1
+                  )
+                : 100
+            }
+            valueFormatter={(v) => (distMode === "count" ? Number(v || 0).toLocaleString() : `${v}%`)}
           />
         </SectionCard>
       </motion.div>
@@ -3213,6 +4453,7 @@ export function AdminQuality() {
                   onChange={(e) => {
                     setQ(e.target.value);
                     setPage(1);
+                    syncUrl({ q: e.target.value, page: "" });
                   }}
                   placeholder="Search product, seller, inspector…"
                   className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
@@ -3222,7 +4463,10 @@ export function AdminQuality() {
                 value={statusFilter}
                 onChange={(e) => {
                   setStatusFilter(e.target.value);
+                  setFailedOnly(false);
+                  setPendingOnly(false);
                   setPage(1);
+                  syncUrl({ status: e.target.value === "all" ? "" : e.target.value, failed_only: "", pending_only: "", page: "" });
                 }}
                 className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
               >
@@ -3231,6 +4475,140 @@ export function AdminQuality() {
                 <option value="passed">Passed</option>
                 <option value="failed">Failed</option>
               </select>
+              <input
+                value={sellerId}
+                onChange={(e) => {
+                  setSellerId(e.target.value);
+                  setPage(1);
+                  syncUrl({ seller_id: e.target.value, page: "" });
+                }}
+                placeholder="Seller id"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[140px]"
+              />
+              <input
+                value={inspectorId}
+                onChange={(e) => {
+                  setInspectorId(e.target.value);
+                  setPage(1);
+                  syncUrl({ inspector_id: e.target.value, page: "" });
+                }}
+                placeholder="Inspector id"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[150px]"
+              />
+              <input
+                value={productId}
+                onChange={(e) => {
+                  setProductId(e.target.value);
+                  setPage(1);
+                  syncUrl({ product_id: e.target.value, page: "" });
+                }}
+                placeholder="Product id"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[140px]"
+              />
+              <input
+                value={sku}
+                onChange={(e) => {
+                  setSku(e.target.value);
+                  setPage(1);
+                  syncUrl({ sku: e.target.value, page: "" });
+                }}
+                placeholder="SKU"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[160px]"
+              />
+              <input
+                value={scoreMin}
+                onChange={(e) => {
+                  setScoreMin(e.target.value);
+                  setPage(1);
+                  syncUrl({ score_min: e.target.value, page: "" });
+                }}
+                placeholder="Score min"
+                inputMode="numeric"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[140px]"
+              />
+              <input
+                value={scoreMax}
+                onChange={(e) => {
+                  setScoreMax(e.target.value);
+                  setPage(1);
+                  syncUrl({ score_max: e.target.value, page: "" });
+                }}
+                placeholder="Score max"
+                inputMode="numeric"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[140px]"
+              />
+              <input
+                type="date"
+                value={inspectedFrom}
+                onChange={(e) => {
+                  setInspectedFrom(e.target.value);
+                  setPage(1);
+                  syncUrl({ inspected_from: e.target.value, page: "" });
+                }}
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+              />
+              <input
+                type="date"
+                value={inspectedTo}
+                onChange={(e) => {
+                  setInspectedTo(e.target.value);
+                  setPage(1);
+                  syncUrl({ inspected_to: e.target.value, page: "" });
+                }}
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !failedOnly;
+                  setFailedOnly(next);
+                  if (next) {
+                    setPendingOnly(false);
+                    setStatusFilter("all");
+                  }
+                  setPage(1);
+                  if (next) syncUrl({ failed_only: "1", pending_only: "", status: "", page: "" });
+                  else syncUrl({ failed_only: "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  failedOnly ? "bg-[#E5484D]/10 text-[#E5484D]/80" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Failed only
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !pendingOnly;
+                  setPendingOnly(next);
+                  if (next) {
+                    setFailedOnly(false);
+                    setStatusFilter("all");
+                  }
+                  setPage(1);
+                  if (next) syncUrl({ pending_only: "1", failed_only: "", status: "", page: "" });
+                  else syncUrl({ pending_only: "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  pendingOnly ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Pending only
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !unassignedInspector;
+                  setUnassignedInspector(next);
+                  setPage(1);
+                  syncUrl({ unassigned_inspector: next ? "1" : "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  unassignedInspector ? "bg-[#FFB224]/12 text-[#D97706]" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Unassigned
+              </button>
             </div>
           </div>
           <div className="space-y-2">
@@ -3241,7 +4619,15 @@ export function AdminQuality() {
             )}
             {!loading && inspections.length === 0 && (
               <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
-                No inspections yet.
+                <div>No inspections yet.</div>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  <BounceButton variant="primary" size="sm" onClick={openCreateInspection}>
+                    Create inspection
+                  </BounceButton>
+                  <BounceButton variant="ghost" size="sm" onClick={() => navigate("/products?admin_status=pending")}>
+                    Open products needing review
+                  </BounceButton>
+                </div>
               </div>
             )}
             {inspections.map((qi, i) => (
@@ -3253,8 +4639,58 @@ export function AdminQuality() {
                   <span className="text-[0.875rem]" style={{ color: qi.score >= 90 ? "#30A46C" : qi.score >= 70 ? "#D97706" : "#E5484D" }}>{qi.score}</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[0.875rem] text-foreground block truncate">{qi.product_name || "—"}</span>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{qi.seller_name || "—"} · {qi.inspector_display || "—"}</span>
+                  <button
+                    type="button"
+                    className="text-[0.875rem] text-foreground block truncate hover:text-foreground/90 text-left"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const qv = (qi?.product_sku || qi?.product_name || "").toString().trim();
+                      if (!qv) return;
+                      navigate(`/products?q=${encodeURIComponent(qv)}`);
+                    }}
+                    title="Open product"
+                  >
+                    {qi.product_name || "—"}
+                  </button>
+                  <span className="text-[0.75rem] text-muted-foreground/50 truncate">
+                    <button
+                      type="button"
+                      className="hover:text-foreground"
+                      title={qi?.seller_contact?.email || qi?.seller_contact?.phone || ""}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const key = qi?.seller_contact?.email || qi?.seller_contact?.phone || "";
+                        if (!key) return;
+                        navigate(`/users?q=${encodeURIComponent(key)}`);
+                      }}
+                    >
+                      {qi.seller_label || qi.seller_name || "—"}
+                    </button>
+                    {!!(qi?.seller_contact?.email || qi?.seller_contact?.phone) && (
+                      <span className="text-[0.6875rem] text-muted-foreground/40" title={qi?.seller_contact?.email || qi?.seller_contact?.phone || ""}>
+                        {" "}
+                        ({qi?.seller_contact?.phone || qi?.seller_contact?.email})
+                      </span>
+                    )}{" "}
+                    ·{" "}
+                    <button
+                      type="button"
+                      className="hover:text-foreground"
+                      title={qi?.inspector_contact?.email || qi?.inspector_contact?.phone || ""}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const key =
+                          qi?.inspector_contact?.email ||
+                          qi?.inspector_contact?.phone ||
+                          (qi?.inspector_id ? String(qi.inspector_id) : "") ||
+                          (qi?.inspector_display || "");
+                        if (!key) return;
+                        navigate(`/users?q=${encodeURIComponent(key)}`);
+                      }}
+                    >
+                      {qi.inspector_display || "—"}
+                    </button>
+                  </span>
                 </div>
                 <span className="text-[0.75rem] text-muted-foreground/40 hidden sm:block">{formatDate(qi.inspected_at || qi.created_at)}</span>
                 <StatusPill
@@ -3271,10 +4707,36 @@ export function AdminQuality() {
               {count ? `Showing ${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, count)} of ${count}` : "—"}
             </div>
             <div className="flex items-center gap-2">
-              <BounceButton variant="ghost" size="sm" onClick={page <= 1 ? undefined : () => setPage((p) => Math.max(1, p - 1))} className={page <= 1 ? "opacity-60 pointer-events-none" : ""}>
+              <BounceButton
+                variant="ghost"
+                size="sm"
+                onClick={
+                  page <= 1
+                    ? undefined
+                    : () => {
+                        const next = Math.max(1, page - 1);
+                        setPage(next);
+                        syncUrl({ page: next === 1 ? "" : String(next) });
+                      }
+                }
+                className={page <= 1 ? "opacity-60 pointer-events-none" : ""}
+              >
                 Prev
               </BounceButton>
-              <BounceButton variant="ghost" size="sm" onClick={page >= totalPages ? undefined : () => setPage((p) => p + 1)} className={page >= totalPages ? "opacity-60 pointer-events-none" : ""}>
+              <BounceButton
+                variant="ghost"
+                size="sm"
+                onClick={
+                  page >= totalPages
+                    ? undefined
+                    : () => {
+                        const next = page + 1;
+                        setPage(next);
+                        syncUrl({ page: String(next) });
+                      }
+                }
+                className={page >= totalPages ? "opacity-60 pointer-events-none" : ""}
+              >
                 Next
               </BounceButton>
             </div>
@@ -3302,10 +4764,53 @@ export function AdminQuality() {
               <div className="flex items-start justify-between gap-4 mb-6">
                 <div className="min-w-0">
                   <h2 className="text-foreground tracking-tight mb-1 truncate">
-                    {inspectionDetail?.product_name || (inspectionLoading ? "Loading…" : "Inspection")}
+                    {inspectionDetail?.product_name ? (
+                      <button
+                        type="button"
+                        className="hover:text-foreground/90 text-left truncate"
+                        onClick={() => {
+                          const qv = (inspectionDetail?.product_sku || inspectionDetail?.product_name || "").toString().trim();
+                          if (!qv) return;
+                          navigate(`/products?q=${encodeURIComponent(qv)}`);
+                        }}
+                        title="Open product"
+                      >
+                        {inspectionDetail?.product_name}
+                      </button>
+                    ) : (
+                      inspectionLoading ? "Loading…" : "Inspection"
+                    )}
                   </h2>
                   <p className="text-muted-foreground text-[0.8125rem]">
-                    {inspectionDetail?.seller_name || "—"} · {inspectionDetail?.inspector_display || "—"}
+                    <button
+                      type="button"
+                      className="hover:text-foreground"
+                      title={inspectionDetail?.seller_contact?.email || inspectionDetail?.seller_contact?.phone || ""}
+                      onClick={() => {
+                        const key = inspectionDetail?.seller_contact?.email || inspectionDetail?.seller_contact?.phone || "";
+                        if (!key) return;
+                        navigate(`/users?q=${encodeURIComponent(key)}`);
+                      }}
+                    >
+                      {inspectionDetail?.seller_label || inspectionDetail?.seller_name || "—"}
+                    </button>{" "}
+                    ·{" "}
+                    <button
+                      type="button"
+                      className="hover:text-foreground"
+                      title={inspectionDetail?.inspector_contact?.email || inspectionDetail?.inspector_contact?.phone || ""}
+                      onClick={() => {
+                        const key =
+                          inspectionDetail?.inspector_contact?.email ||
+                          inspectionDetail?.inspector_contact?.phone ||
+                          (inspectionDetail?.inspector_id ? String(inspectionDetail.inspector_id) : "") ||
+                          (inspectionDetail?.inspector_display || "");
+                        if (!key) return;
+                        navigate(`/users?q=${encodeURIComponent(key)}`);
+                      }}
+                    >
+                      {inspectionDetail?.inspector_display || "—"}
+                    </button>
                   </p>
                 </div>
                 <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setInspectionOpen(false)}>
@@ -3324,7 +4829,18 @@ export function AdminQuality() {
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Inspection ID</div>
-                      <div className="text-[0.875rem] text-foreground/80">{inspectionDetail?.id}</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-[0.875rem] text-foreground/80 truncate">{inspectionDetail?.id}</div>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl hover:bg-muted/20 text-muted-foreground/60"
+                          onClick={() => void copyToClipboard(String(inspectionDetail?.id || ""), "Copied inspection id.")}
+                          disabled={!inspectionDetail?.id}
+                          title="Copy inspection id"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
                     </div>
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Status</div>
@@ -3333,6 +4849,90 @@ export function AdminQuality() {
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Score</div>
                       <div className="text-[0.875rem] text-foreground/80">{fmtScore(inspectionDetail?.score)}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Product</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          className="text-[0.875rem] text-foreground/80 truncate hover:text-foreground/90 text-left"
+                          onClick={() => {
+                            const qv = (inspectionDetail?.product_sku || inspectionDetail?.product_name || "").toString().trim();
+                            if (!qv) return;
+                            navigate(`/products?q=${encodeURIComponent(qv)}`);
+                          }}
+                          title="Open product"
+                        >
+                          #{inspectionDetail?.product || "—"}{inspectionDetail?.product_sku ? ` · ${inspectionDetail.product_sku}` : ""}
+                        </button>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl hover:bg-muted/20 text-muted-foreground/60"
+                          onClick={() => void copyToClipboard(String(inspectionDetail?.product || ""), "Copied product id.")}
+                          disabled={!inspectionDetail?.product}
+                          title="Copy product id"
+                        >
+                          <Hash size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Seller</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          className="text-[0.875rem] text-foreground/80 truncate hover:text-foreground/90 text-left"
+                          onClick={() => {
+                            const key = inspectionDetail?.seller_contact?.email || inspectionDetail?.seller_contact?.phone || String(inspectionDetail?.seller_id || "");
+                            if (!key) return;
+                            navigate(`/users?q=${encodeURIComponent(key)}`);
+                          }}
+                          title="Open seller"
+                        >
+                          #{inspectionDetail?.seller_id || "—"}
+                        </button>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl hover:bg-muted/20 text-muted-foreground/60"
+                          onClick={() => void copyToClipboard(String(inspectionDetail?.seller_id || ""), "Copied seller id.")}
+                          disabled={!inspectionDetail?.seller_id}
+                          title="Copy seller id"
+                        >
+                          <Hash size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Inspector</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          className="text-[0.875rem] text-foreground/80 truncate hover:text-foreground/90 text-left"
+                          onClick={() => {
+                            const key =
+                              inspectionDetail?.inspector_contact?.email ||
+                              inspectionDetail?.inspector_contact?.phone ||
+                              String(inspectionDetail?.inspector_id || "");
+                            if (!key) return;
+                            navigate(`/users?q=${encodeURIComponent(key)}`);
+                          }}
+                          title="Open inspector"
+                        >
+                          #{inspectionDetail?.inspector_id || "—"}
+                        </button>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl hover:bg-muted/20 text-muted-foreground/60"
+                          onClick={() => void copyToClipboard(String(inspectionDetail?.inspector_id || ""), "Copied inspector id.")}
+                          disabled={!inspectionDetail?.inspector_id}
+                          title="Copy inspector id"
+                        >
+                          <Hash size={14} />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -3384,16 +4984,351 @@ export function AdminQuality() {
                         Fail
                       </BounceButton>
                     </div>
+
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <input
+                        value={editInspectorId}
+                        onChange={(e) => setEditInspectorId(e.target.value)}
+                        placeholder="Inspector id"
+                        inputMode="numeric"
+                        className="sm:col-span-1 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                      />
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        onClick={
+                          inspectionSaving
+                            ? undefined
+                            : () => {
+                                const n = Number(editInspectorId);
+                                if (!Number.isFinite(n) || n <= 0) return;
+                                setAssignInspectorQuery("");
+                                setAssignInspectorResults([]);
+                                void setInspection({ inspector_id: n });
+                              }
+                        }
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Assign inspector
+                      </BounceButton>
+                      <BounceButton
+                        variant="ghost"
+                        size="sm"
+                        onClick={inspectionSaving ? undefined : () => void setInspection({ inspector_id: null })}
+                        className={inspectionSaving ? "opacity-70 pointer-events-none" : ""}
+                      >
+                        Clear
+                      </BounceButton>
+                    </div>
+
+                    <div className="mt-3">
+                      <input
+                        value={assignInspectorQuery}
+                        onChange={(e) => setAssignInspectorQuery(e.target.value)}
+                        placeholder="Search inspector (name / email / phone)…"
+                        className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                      />
+                      {assignInspectorResults.length > 0 && (
+                        <div className="mt-2 rounded-2xl bg-muted/10 border border-border/20 overflow-hidden">
+                          {assignInspectorResults.map((u: any) => (
+                            <button
+                              key={u.id}
+                              type="button"
+                              className="w-full px-4 py-3 text-left hover:bg-muted/20 flex items-center justify-between gap-3"
+                              onClick={() => {
+                                setEditInspectorId(String(u.id));
+                                setAssignInspectorQuery("");
+                                setAssignInspectorResults([]);
+                                void setInspection({ inspector_id: Number(u.id) });
+                              }}
+                              title={u.email || u.phone || ""}
+                            >
+                              <span className="text-[0.8125rem] text-foreground/90 truncate">{u.display_name || u.email || u.phone || `user:${u.id}`}</span>
+                              <span className="text-[0.75rem] text-muted-foreground/60 shrink-0">
+                                #{u.id}
+                                {u.admin_role ? ` · ${String(u.admin_role).replaceAll("_", " ")}` : ""}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
                     <div className="text-[0.75rem] text-muted-foreground/60 mb-2">Dates</div>
-                    <div className="text-[0.8125rem] text-foreground/80">
-                      Inspected: {formatDate(inspectionDetail?.inspected_at)} · Created: {formatDate(inspectionDetail?.created_at)}
+                    <div className="text-[0.8125rem] text-foreground/80 flex flex-col gap-1">
+                      <div>Created: {formatDateTime(inspectionDetail?.created_at)}</div>
+                      <div>Inspected: {formatDateTime(inspectionDetail?.inspected_at)}</div>
                     </div>
                   </div>
+
+                  {inspectionAudit.length > 0 && (
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Activity</div>
+                      <div className="space-y-2">
+                        {inspectionAudit.map((ev: any) => {
+                          const actorLabel = ev?.actor?.label || "System";
+                          const fields = Array.isArray(ev?.payload?.fields) ? ev.payload.fields : [];
+                          const fieldsText = fields.length ? ` · ${fields.join(", ")}` : "";
+                          const action = String(ev?.action || "");
+                          const actionLabel =
+                            action === "admin_quality_inspection_created"
+                              ? "Created"
+                              : action === "admin_quality_inspection_updated"
+                                ? "Updated"
+                                : action.replaceAll("_", " ");
+                          return (
+                            <div key={ev?.id} className="flex items-start justify-between gap-4">
+                              <div className="min-w-0">
+                                <div className="text-[0.8125rem] text-foreground/85 truncate">
+                                  {actionLabel}
+                                  <span className="text-muted-foreground/60">{fieldsText}</span>
+                                </div>
+                                <div className="text-[0.75rem] text-muted-foreground/60 truncate">
+                                  {actorLabel}
+                                </div>
+                              </div>
+                              <div className="text-[0.75rem] text-muted-foreground/50 shrink-0">
+                                {formatDateTime(ev?.occurred_at)}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {Array.isArray(inspectionDetail?.recent_sample_requests) && inspectionDetail.recent_sample_requests.length > 0 && (
+                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                      <div className="flex items-center justify-between gap-4 mb-3">
+                        <div className="text-[0.75rem] text-muted-foreground/60">Recent buyers requesting samples</div>
+                        <div className="text-[0.75rem] text-muted-foreground/40">
+                          {Number(inspectionDetail?.recent_sample_requests_count || inspectionDetail.recent_sample_requests.length || 0).toLocaleString()} total
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {inspectionDetail.recent_sample_requests.map((sr: any) => {
+                          const label = sr?.buyer_label || "—";
+                          const key = sr?.buyer_contact?.email || sr?.buyer_contact?.phone || (sr?.buyer_id ? String(sr.buyer_id) : "");
+                          return (
+                            <div key={sr?.sample_request_id || `${sr?.buyer_id}-${sr?.requested_at || ""}`} className="flex items-start justify-between gap-4">
+                              <div className="min-w-0">
+                                <button
+                                  type="button"
+                                  className="text-[0.8125rem] text-foreground/85 truncate hover:text-foreground"
+                                  title={sr?.buyer_contact?.email || sr?.buyer_contact?.phone || ""}
+                                  onClick={() => {
+                                    if (!key) return;
+                                    navigate(`/users?q=${encodeURIComponent(key)}`);
+                                  }}
+                                >
+                                  {label}
+                                </button>
+                                <div className="text-[0.75rem] text-muted-foreground/60 truncate">
+                                  {(sr?.status || "").toString().replaceAll("_", " ")}
+                                  {sr?.buyer_id ? ` · #${sr.buyer_id}` : ""}
+                                </div>
+                              </div>
+                              <div className="text-[0.75rem] text-muted-foreground/50 shrink-0">
+                                {formatDateTime(sr?.requested_at)}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {createOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setCreateOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Create inspection</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">Create a new quality inspection record.</p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setCreateOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {createError && (
+                <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
+                  {createError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <input
+                    value={createProductQuery}
+                    onChange={(e) => setCreateProductQuery(e.target.value)}
+                    placeholder="Search product (name / SKU)…"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                  {createProductResults.length > 0 && (
+                    <div className="mt-2 rounded-2xl bg-muted/10 border border-border/20 overflow-hidden">
+                      {createProductResults.map((p: any) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="w-full px-4 py-3 text-left hover:bg-muted/20 flex items-center justify-between gap-3"
+                          onClick={() => {
+                            setCreateForm((prev: any) => ({ ...prev, product_id: String(p.id) }));
+                            setCreateProductQuery("");
+                            setCreateProductResults([]);
+                          }}
+                          title={p.sku || ""}
+                        >
+                          <span className="text-[0.8125rem] text-foreground/90 truncate">{p.name || `product:${p.id}`}</span>
+                          <span className="text-[0.75rem] text-muted-foreground/60 shrink-0">
+                            #{p.id}
+                            {p.sku ? ` · ${p.sku}` : ""}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input
+                  value={createForm.product_id}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, product_id: e.target.value }))}
+                  placeholder="Product id"
+                  inputMode="numeric"
+                  className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <div>
+                  <input
+                    value={createSellerQuery}
+                    onChange={(e) => setCreateSellerQuery(e.target.value)}
+                    placeholder="Search seller (name / email / phone)…"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                  {createSellerResults.length > 0 && (
+                    <div className="mt-2 rounded-2xl bg-muted/10 border border-border/20 overflow-hidden">
+                      {createSellerResults.map((u: any) => (
+                        <button
+                          key={u.id}
+                          type="button"
+                          className="w-full px-4 py-3 text-left hover:bg-muted/20 flex items-center justify-between gap-3"
+                          onClick={() => {
+                            setCreateForm((prev: any) => ({ ...prev, seller_id: String(u.id) }));
+                            setCreateSellerQuery("");
+                            setCreateSellerResults([]);
+                          }}
+                          title={u.email || u.phone || ""}
+                        >
+                          <span className="text-[0.8125rem] text-foreground/90 truncate">{u.display_name || u.email || u.phone || `user:${u.id}`}</span>
+                          <span className="text-[0.75rem] text-muted-foreground/60 shrink-0">#{u.id}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input
+                  value={createForm.seller_id}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, seller_id: e.target.value }))}
+                  placeholder="Seller id"
+                  inputMode="numeric"
+                  className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <div>
+                  <input
+                    value={createInspectorQuery}
+                    onChange={(e) => setCreateInspectorQuery(e.target.value)}
+                    placeholder="Search inspector (name / email / phone)…"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                  {createInspectorResults.length > 0 && (
+                    <div className="mt-2 rounded-2xl bg-muted/10 border border-border/20 overflow-hidden">
+                      {createInspectorResults.map((u: any) => (
+                        <button
+                          key={u.id}
+                          type="button"
+                          className="w-full px-4 py-3 text-left hover:bg-muted/20 flex items-center justify-between gap-3"
+                          onClick={() => {
+                            setCreateForm((prev: any) => ({ ...prev, inspector_id: String(u.id), inspector_name: "" }));
+                            setCreateInspectorQuery("");
+                            setCreateInspectorResults([]);
+                          }}
+                          title={u.email || u.phone || ""}
+                        >
+                          <span className="text-[0.8125rem] text-foreground/90 truncate">{u.display_name || u.email || u.phone || `user:${u.id}`}</span>
+                          <span className="text-[0.75rem] text-muted-foreground/60 shrink-0">
+                            #{u.id}
+                            {u.admin_role ? ` · ${String(u.admin_role).replaceAll("_", " ")}` : ""}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input
+                  value={createForm.inspector_id}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, inspector_id: e.target.value }))}
+                  placeholder="Inspector id (optional)"
+                  inputMode="numeric"
+                  className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  value={createForm.inspector_name}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, inspector_name: e.target.value }))}
+                  placeholder="Inspector name (optional)"
+                  className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <select
+                  value={createForm.status}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, status: e.target.value }))}
+                  className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+                >
+                  <option value="in_progress">Pending</option>
+                  <option value="passed">Passed</option>
+                  <option value="failed">Failed</option>
+                </select>
+                <input
+                  value={createForm.score}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, score: e.target.value }))}
+                  placeholder="Score (0-100, optional)"
+                  inputMode="numeric"
+                  className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+                <input
+                  type="datetime-local"
+                  value={createForm.inspected_at}
+                  onChange={(e) => setCreateForm((p: any) => ({ ...p, inspected_at: e.target.value }))}
+                  className="sm:col-span-2 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
+
+              <div className="mt-6 flex items-center justify-end gap-2">
+                <BounceButton variant="ghost" size="sm" onClick={createSaving ? undefined : () => setCreateOpen(false)} className={createSaving ? "opacity-70 pointer-events-none" : ""}>
+                  Cancel
+                </BounceButton>
+                <BounceButton variant="primary" size="sm" onClick={createSaving ? undefined : createInspection} className={createSaving ? "opacity-70 pointer-events-none" : ""}>
+                  Create
+                </BounceButton>
+              </div>
             </motion.div>
           </motion.div>
         )}

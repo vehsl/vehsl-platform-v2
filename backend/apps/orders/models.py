@@ -166,6 +166,9 @@ class Shipment(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["order", "status"]),
+            models.Index(fields=["status", "created_at"], name="ord_shp_sc_idx"),
+            models.Index(fields=["deleted_at", "created_at"], name="ord_shp_dc_idx"),
+            models.Index(fields=["estimated_delivery_at"], name="ord_shp_eta_idx"),
             models.Index(fields=["tracking_number"]),
         ]
 

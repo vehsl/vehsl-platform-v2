@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.conf import settings as django_settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import CharField, Count, DecimalField, Q, Sum
@@ -27,10 +28,11 @@ from django.core.files.storage import default_storage
 from django.contrib.auth.hashers import make_password, check_password
 
 from apps.catalog.models import ListingRequest, Product, ProductMedia, Warehouse, WarehouseStock
+from apps.catalog.serializers import ProductMediaSerializer
 from apps.orders.models import Order, OrderItem, Shipment, WishlistItem, WarehouseRelease, Review
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
-from django.db.models import Avg, Case, Count, F, IntegerField, Prefetch, Q, Subquery, OuterRef, Value, When
+from django.db.models import Avg, Case, Count, F, IntegerField, Min, Prefetch, Q, Subquery, OuterRef, Value, When
 from django.db.models.functions import Coalesce, TruncDay, TruncHour, TruncMonth, TruncWeek
 
 from .models import (
@@ -501,6 +503,44 @@ class AdminPlatformOverviewView(APIView):
     def get(self, request):
         now = timezone.now()
         period = (request.query_params.get("period") or "7d").strip().lower()
+        activity_page_raw = (request.query_params.get("activity_page") or "").strip()
+        activity_page_size_raw = (request.query_params.get("activity_page_size") or "").strip()
+        alerts_page_raw = (request.query_params.get("alerts_page") or "").strip()
+        alerts_page_size_raw = (request.query_params.get("alerts_page_size") or "").strip()
+
+        try:
+            activity_page = max(1, int(activity_page_raw or "1"))
+        except Exception:
+            activity_page = 1
+        try:
+            activity_page_size = max(10, min(200, int(activity_page_size_raw or "80")))
+        except Exception:
+            activity_page_size = 80
+        try:
+            alerts_page = max(1, int(alerts_page_raw or "1"))
+        except Exception:
+            alerts_page = 1
+        try:
+            alerts_page_size = max(5, min(50, int(alerts_page_size_raw or "20")))
+        except Exception:
+            alerts_page_size = 20
+
+        ttl = 45
+        try:
+            ttl = int(getattr(django_settings, "ADMIN_OVERVIEW_CACHE_TTL", 45) or 45)
+        except Exception:
+            ttl = 45
+        ttl = max(5, min(300, ttl))
+
+        cache_key = (
+            f"admin_overview:v3:"
+            f"period={period}:"
+            f"ap={activity_page}:aps={activity_page_size}:"
+            f"lp={alerts_page}:lps={alerts_page_size}"
+        )
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and cached:
+            return Response(cached)
         delta = self._delta(period)
         start = now - delta
         prev_start = start - delta
@@ -516,6 +556,11 @@ class AdminPlatformOverviewView(APIView):
             Order = None
             Shipment = None
         try:
+            from apps.orders.models import Dispute, ReleaseCondition
+        except Exception:
+            Dispute = None
+            ReleaseCondition = None
+        try:
             from apps.inventory.models import QualityInspection
         except Exception:
             QualityInspection = None
@@ -530,6 +575,7 @@ class AdminPlatformOverviewView(APIView):
         revenue_change_pct = 0.0
         revenue_points: list[dict] = []
 
+        used_payments_for_revenue = False
         if Payment is not None:
             payments_base = Payment.objects.filter(deleted_at__isnull=True).select_related("order", "order__buyer")
             payments_curr = payments_base.filter(
@@ -543,25 +589,10 @@ class AdminPlatformOverviewView(APIView):
                 status__in=[Payment.Status.HELD, Payment.Status.RELEASED],
             )
 
-            curr_agg = payments_curr.aggregate(
-                total=Coalesce(Sum("amount"), dec0),
-                b2b=Coalesce(Sum(Case(b2b_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))), dec0),
-                b2c=Coalesce(Sum(Case(b2c_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))), dec0),
-            )
-            prev_agg = payments_prev.aggregate(
-                total=Coalesce(Sum("amount"), dec0),
-            )
-
-            revenue_total = float(curr_agg["total"] or 0)
-            revenue_b2b = float(curr_agg["b2b"] or 0)
-            revenue_b2c = float(curr_agg["b2c"] or 0)
-            revenue_change_pct = self._pct_change(float(curr_agg["total"] or 0), float(prev_agg["total"] or 0))
-
-            trunc, kind = self._bucket_trunc(period)
-            series = (
-                payments_curr.annotate(bucket=trunc)
-                .values("bucket")
-                .annotate(
+            if payments_curr.exists() or payments_prev.exists():
+                used_payments_for_revenue = True
+                curr_agg = payments_curr.aggregate(
+                    total=Coalesce(Sum("amount"), dec0),
                     b2b=Coalesce(
                         Sum(Case(b2b_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))),
                         dec0,
@@ -571,14 +602,92 @@ class AdminPlatformOverviewView(APIView):
                         dec0,
                     ),
                 )
+                prev_agg = payments_prev.aggregate(
+                    total=Coalesce(Sum("amount"), dec0),
+                )
+
+                revenue_total = float(curr_agg["total"] or 0)
+                revenue_b2b = float(curr_agg["b2b"] or 0)
+                revenue_b2c = float(curr_agg["b2c"] or 0)
+                revenue_change_pct = self._pct_change(float(curr_agg["total"] or 0), float(prev_agg["total"] or 0))
+
+                trunc, kind = self._bucket_trunc(period)
+                series = (
+                    payments_curr.annotate(bucket=trunc)
+                    .values("bucket")
+                    .annotate(
+                        b2b=Coalesce(
+                            Sum(Case(b2b_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))),
+                            dec0,
+                        ),
+                        b2c=Coalesce(
+                            Sum(Case(b2c_when, default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))),
+                            dec0,
+                        ),
+                    )
+                    .order_by("bucket")
+                )
+                revenue_points = [
+                    {
+                        "label": self._label_bucket(row.get("bucket"), kind),
+                        "b2b": float(row.get("b2b") or 0),
+                        "b2c": float(row.get("b2c") or 0),
+                    }
+                    for row in series
+                ]
+                revenue_points = self._downsample(revenue_points, max_points=7) or [{"label": "", "b2b": 0.0, "b2c": 0.0}]
+
+        if not used_payments_for_revenue and Order is not None:
+            orders_base = (
+                Order.objects.filter(deleted_at__isnull=True)
+                .select_related("buyer", "buyer__buyer_profile", "buyer__profile")
+                .exclude(status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+                .exclude(payment_status=Order.PaymentStatus.UNPAID)
+            )
+            orders_curr = orders_base.filter(created_at__gte=start, created_at__lt=now)
+            orders_prev = orders_base.filter(created_at__gte=prev_start, created_at__lt=prev_end)
+
+            b2b_ord_when = When(order__buyer__buyer_profile__business_type__gt="", then=F("amount"))
+            b2c_ord_when = When(
+                Q(order__buyer__buyer_profile__business_type="") | Q(order__buyer__buyer_profile__business_type__isnull=True),
+                then=F("amount"),
+            )
+
+            curr_agg = orders_curr.aggregate(
+                total=Coalesce(Sum("total_amount"), dec0),
+                b2b=Coalesce(
+                    Sum(Case(When(buyer__buyer_profile__business_type__gt="", then=F("total_amount")), default=dec0, output_field=DecimalField(max_digits=14, decimal_places=2))),
+                    dec0,
+                ),
+            )
+            prev_agg = orders_prev.aggregate(total=Coalesce(Sum("total_amount"), dec0))
+
+            revenue_total = float(curr_agg["total"] or 0)
+            revenue_b2b = float(curr_agg["b2b"] or 0)
+            revenue_b2c = max(revenue_total - revenue_b2b, 0.0)
+            revenue_change_pct = self._pct_change(float(curr_agg["total"] or 0), float(prev_agg["total"] or 0))
+
+            trunc, kind = self._bucket_trunc(period)
+            series = (
+                orders_curr.annotate(bucket=trunc)
+                .values("bucket")
+                .annotate(
+                    b2b=Coalesce(
+                        Sum(
+                            Case(
+                                When(buyer__buyer_profile__business_type__gt="", then=F("total_amount")),
+                                default=dec0,
+                                output_field=DecimalField(max_digits=14, decimal_places=2),
+                            )
+                        ),
+                        dec0,
+                    ),
+                    total=Coalesce(Sum("total_amount"), dec0),
+                )
                 .order_by("bucket")
             )
             revenue_points = [
-                {
-                    "label": self._label_bucket(row.get("bucket"), kind),
-                    "b2b": float(row.get("b2b") or 0),
-                    "b2c": float(row.get("b2c") or 0),
-                }
+                {"label": self._label_bucket(row.get("bucket"), kind), "b2b": float(row.get("b2b") or 0), "b2c": max(float(row.get("total") or 0) - float(row.get("b2b") or 0), 0.0)}
                 for row in series
             ]
             revenue_points = self._downsample(revenue_points, max_points=7) or [{"label": "", "b2b": 0.0, "b2c": 0.0}]
@@ -588,6 +697,9 @@ class AdminPlatformOverviewView(APIView):
         active_orders_b2c = 0
         active_orders_change_pct = 0.0
         orders_sparkline: list[float] = []
+        active_orders_snapshot_total = 0
+        active_orders_snapshot_b2b = 0
+        active_orders_snapshot_b2c = 0
 
         if Order is not None:
             active_status_exclude = [
@@ -596,19 +708,29 @@ class AdminPlatformOverviewView(APIView):
                 Order.Status.CANCELLED,
                 Order.Status.REJECTED,
             ]
-            orders_active_now = Order.objects.filter(deleted_at__isnull=True).exclude(status__in=active_status_exclude)
-            orders_active_prev = Order.objects.filter(deleted_at__isnull=True, created_at__lt=start).exclude(status__in=active_status_exclude)
+            orders_active_snapshot = Order.objects.filter(deleted_at__isnull=True).exclude(status__in=active_status_exclude)
+            active_orders_snapshot_total = orders_active_snapshot.count()
+            active_orders_snapshot_b2b = orders_active_snapshot.filter(buyer__buyer_profile__business_type__gt="").count()
+            active_orders_snapshot_b2c = max(active_orders_snapshot_total - active_orders_snapshot_b2b, 0)
 
-            active_orders_total = orders_active_now.count()
+            orders_active_curr = (
+                Order.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now)
+                .exclude(status__in=active_status_exclude)
+            )
+            orders_active_prev = (
+                Order.objects.filter(deleted_at__isnull=True, created_at__gte=prev_start, created_at__lt=prev_end)
+                .exclude(status__in=active_status_exclude)
+            )
+
+            active_orders_total = orders_active_curr.count()
             active_orders_change_pct = self._pct_change(active_orders_total, orders_active_prev.count())
 
-            active_orders_b2b = orders_active_now.filter(buyer__buyer_profile__business_type__gt="").count()
+            active_orders_b2b = orders_active_curr.filter(buyer__buyer_profile__business_type__gt="").count()
             active_orders_b2c = max(active_orders_total - active_orders_b2b, 0)
 
             trunc, kind = self._bucket_trunc(period)
             order_series = (
-                Order.objects.filter(deleted_at__isnull=True, created_at__gte=start, created_at__lt=now)
-                .annotate(bucket=trunc)
+                orders_active_curr.annotate(bucket=trunc)
                 .values("bucket")
                 .annotate(total=Count("id"))
                 .order_by("bucket")
@@ -623,18 +745,32 @@ class AdminPlatformOverviewView(APIView):
         users_online_workers = 0
         users_online_change_abs = 0
         users_sparkline: list[float] = []
+        users_online_snapshot_total = 0
+        users_online_snapshot_buyers = 0
+        users_online_snapshot_sellers = 0
+        users_online_snapshot_workers = 0
+
+        active_users_curr = User.objects.filter(last_login__isnull=False, last_login__gte=start, last_login__lt=now)
+        active_users_prev = User.objects.filter(last_login__isnull=False, last_login__gte=prev_start, last_login__lt=prev_end)
+
+        users_online_total = active_users_curr.count()
+        users_online_change_abs = users_online_total - active_users_prev.count()
+        users_online_buyers = active_users_curr.filter(Q(account_type=User.AccountType.BUYER) | Q(role=User.Role.BUYER)).count()
+        users_online_sellers = active_users_curr.filter(Q(account_type=User.AccountType.SELLER) | Q(role=User.Role.SELLER)).count()
+        users_online_workers = active_users_curr.filter(
+            (Q(role=User.Role.ADMIN) | Q(is_staff=True))
+            & Q(admin_profile__admin_role__in=[AdminProfile.AdminRole.LOGISTICS, AdminProfile.AdminRole.INSPECTOR])
+        ).count()
 
         online_window = now - timedelta(minutes=15)
-        prev_online_window_end = prev_end
-        prev_online_window_start = prev_end - timedelta(minutes=15)
-        online_qs = User.objects.filter(last_login__gte=online_window)
-        prev_online_qs = User.objects.filter(last_login__gte=prev_online_window_start, last_login__lt=prev_online_window_end)
-
-        users_online_total = online_qs.count()
-        users_online_change_abs = users_online_total - prev_online_qs.count()
-        users_online_buyers = online_qs.filter(role=User.Role.BUYER).count()
-        users_online_sellers = online_qs.filter(role=User.Role.SELLER).count()
-        users_online_workers = online_qs.filter(role=User.Role.ADMIN, admin_profile__admin_role__in=[AdminProfile.AdminRole.LOGISTICS, AdminProfile.AdminRole.INSPECTOR]).count()
+        online_now_qs = User.objects.filter(last_login__gte=online_window)
+        users_online_snapshot_total = online_now_qs.count()
+        users_online_snapshot_buyers = online_now_qs.filter(Q(account_type=User.AccountType.BUYER) | Q(role=User.Role.BUYER)).count()
+        users_online_snapshot_sellers = online_now_qs.filter(Q(account_type=User.AccountType.SELLER) | Q(role=User.Role.SELLER)).count()
+        users_online_snapshot_workers = online_now_qs.filter(
+            (Q(role=User.Role.ADMIN) | Q(is_staff=True))
+            & Q(admin_profile__admin_role__in=[AdminProfile.AdminRole.LOGISTICS, AdminProfile.AdminRole.INSPECTOR])
+        ).count()
 
         try:
             trunc, kind = self._bucket_trunc(period)
@@ -676,6 +812,42 @@ class AdminPlatformOverviewView(APIView):
             q_points = [{"label": self._label_bucket(r.get("bucket"), kind), "v": float(r.get("avg") or 0)} for r in q_series]
             q_points = self._downsample(q_points, max_points=7)
             quality_sparkline = [float(p["v"]) for p in q_points] or [0.0]
+
+        if (QualityInspection is None or quality_inspections == 0) and Order is not None:
+            rated_curr = 0
+            rated_prev = 0
+            avg_curr = 0.0
+            avg_prev = 0.0
+            try:
+                lr_base = ListingRequest.objects.filter(rating__isnull=False)
+                lr_curr = lr_base.filter(updated_at__gte=start, updated_at__lt=now)
+                lr_prev = lr_base.filter(updated_at__gte=prev_start, updated_at__lt=prev_end)
+                rated_curr = lr_curr.count()
+                rated_prev = lr_prev.count()
+                avg_curr = float(lr_curr.aggregate(avg=Coalesce(Avg("rating"), Value(0.0)))["avg"] or 0.0)
+                avg_prev = float(lr_prev.aggregate(avg=Coalesce(Avg("rating"), Value(0.0)))["avg"] or 0.0)
+            except Exception:
+                rated_curr = 0
+
+            if rated_curr == 0:
+                try:
+                    prod_base = Product.objects.filter(deleted_at__isnull=True, vehsl_rating__isnull=False)
+                    prod_curr = prod_base.filter(updated_at__gte=start, updated_at__lt=now)
+                    prod_prev = prod_base.filter(updated_at__gte=prev_start, updated_at__lt=prev_end)
+                    rated_curr = prod_curr.count()
+                    rated_prev = prod_prev.count()
+                    avg_curr = float(prod_curr.aggregate(avg=Coalesce(Avg("vehsl_rating"), Value(0.0)))["avg"] or 0.0)
+                    avg_prev = float(prod_prev.aggregate(avg=Coalesce(Avg("vehsl_rating"), Value(0.0)))["avg"] or 0.0)
+                except Exception:
+                    rated_curr = 0
+                    avg_curr = 0.0
+                    avg_prev = 0.0
+
+            quality_inspections = int(rated_curr or 0)
+            quality_score = max(0.0, min(100.0, (avg_curr / 5.0) * 100.0)) if rated_curr else 0.0
+            prev_score = max(0.0, min(100.0, (avg_prev / 5.0) * 100.0)) if rated_prev else 0.0
+            quality_change_pct = self._pct_change(quality_score, prev_score)
+            quality_sparkline = quality_sparkline or [quality_score]
 
         health_systems: list[dict] = []
         health_score = 100.0
@@ -810,98 +982,646 @@ class AdminPlatformOverviewView(APIView):
                     "occurred_at": now,
                 }
             )
-        alerts = alerts[:20]
 
-        activities: list[dict] = []
         try:
-            newest_orders = []
-            newest_payments = []
-            newest_inspections = []
-            newest_docs = []
-            newest_users = []
-
-            if Order is not None:
-                newest_orders = list(Order.objects.filter(deleted_at__isnull=True).select_related("buyer").order_by("-created_at")[:25])
-                for o in newest_orders:
-                    activities.append(
-                        {
-                            "occurred_at": o.created_at,
-                            "user": o.buyer,
-                            "action": "placed order",
-                            "target": f"Order #{o.id}",
-                            "path": "/admin/logistics",
-                        }
-                    )
-            if Payment is not None:
-                newest_payments = list(
-                    Payment.objects.filter(deleted_at__isnull=True, status__in=[Payment.Status.HELD, Payment.Status.RELEASED])
-                    .select_related("order", "order__buyer")
-                    .order_by("-created_at")[:25]
-                )
-                for p in newest_payments:
-                    activities.append(
-                        {
-                            "occurred_at": p.created_at,
-                            "user": getattr(p.order, "buyer", None),
-                            "action": "payment processed",
-                            "target": f"Order #{p.order_id}",
-                            "path": "/admin/logistics",
-                        }
-                    )
-            if QualityInspection is not None:
-                newest_inspections = list(
-                    QualityInspection.objects.filter(deleted_at__isnull=True)
-                    .select_related("inspector", "product")
-                    .order_by("-created_at")[:25]
-                )
-                for qi in newest_inspections:
-                    activities.append(
-                        {
-                            "occurred_at": qi.created_at,
-                            "user": qi.inspector,
-                            "action": "updated inspection",
-                            "target": f"Inspection #{qi.id}",
-                            "path": "/admin/quality",
-                        }
-                    )
-            newest_docs = list(KycDocument.objects.select_related("user").order_by("-uploaded_at")[:25])
-            for d in newest_docs:
-                activities.append(
-                    {
-                        "occurred_at": d.uploaded_at,
-                        "user": d.user,
-                        "action": "uploaded document",
-                        "target": d.get_kind_display(),
-                        "path": "/admin/verification",
-                    }
-                )
-            newest_users = list(User.objects.order_by("-date_joined")[:25])
-            for u in newest_users:
-                activities.append(
-                    {
-                        "occurred_at": u.date_joined,
-                        "user": u,
-                        "action": "joined platform",
-                        "target": (u.email or u.phone or f"User #{u.id}"),
-                        "path": "/admin/users",
-                    }
-                )
+            pending_products = Product.objects.filter(deleted_at__isnull=True, status=Product.Status.PENDING).count()
         except Exception:
-            activities = []
+            pending_products = 0
+        if pending_products:
+            alerts.append(
+                {
+                    "type": "warning",
+                    "message": f"{pending_products} products pending approval",
+                    "action": "Review listings",
+                    "path": "/admin/management/listings?status=pending",
+                    "occurred_at": now,
+                }
+            )
 
-        activities.sort(key=lambda x: x.get("occurred_at") or now, reverse=True)
-        activities = activities[:30]
-        activities_out = [
-            {
-                "user": (f"{(a.get('user').first_name or '').strip()} {(a.get('user').last_name or '').strip()}".strip() if a.get("user") else "System") or "System",
-                "action": a.get("action") or "",
-                "target": a.get("target") or "",
-                "avatar": self._avatar(a.get("user")),
-                "occurred_at": a.get("occurred_at"),
-                "path": a.get("path") or "/admin",
+        try:
+            rejected_products = Product.objects.filter(deleted_at__isnull=True, status=Product.Status.REJECTED).count()
+        except Exception:
+            rejected_products = 0
+        try:
+            rejected_with_reason = Product.objects.filter(
+                deleted_at__isnull=True, status=Product.Status.REJECTED, detail_config__review__rejection_reason__gt=""
+            ).count()
+        except Exception:
+            rejected_with_reason = 0
+        if rejected_products:
+            suffix = f" ({rejected_with_reason} w/ reason)" if rejected_with_reason else ""
+            alerts.append(
+                {
+                    "type": "info",
+                    "message": f"{rejected_products} rejected listings need seller action{suffix}",
+                    "action": "View rejected",
+                    "path": "/admin/management/listings?status=rejected",
+                    "occurred_at": now,
+                }
+            )
+
+        if Shipment is not None:
+            try:
+                base = Shipment.objects.filter(deleted_at__isnull=True).exclude(status=Shipment.Status.DELIVERED)
+                late_shipments = base.filter(estimated_delivery_at__isnull=False, estimated_delivery_at__lt=now).count()
+                late_shipments_recent = base.filter(
+                    estimated_delivery_at__isnull=False,
+                    estimated_delivery_at__lt=now,
+                    estimated_delivery_at__gte=start,
+                ).count()
+            except Exception:
+                late_shipments = 0
+                late_shipments_recent = 0
+            try:
+                base = Shipment.objects.filter(deleted_at__isnull=True).exclude(status=Shipment.Status.DELIVERED)
+                no_tracking = base.filter(Q(tracking_number="") | Q(tracking_number__isnull=True)).count()
+                no_tracking_recent = base.filter(created_at__gte=start, created_at__lt=now).filter(
+                    Q(tracking_number="") | Q(tracking_number__isnull=True)
+                ).count()
+            except Exception:
+                no_tracking = 0
+                no_tracking_recent = 0
+            if late_shipments:
+                extra = f" ({late_shipments_recent} became late this period)" if int(late_shipments_recent or 0) else ""
+                alerts.append(
+                    {
+                        "type": "warning",
+                        "message": f"{late_shipments} shipments are late (ETA passed){extra}",
+                        "action": "Investigate",
+                        "path": "/admin/logistics",
+                        "occurred_at": now,
+                    }
+                )
+            if no_tracking:
+                extra = f" ({no_tracking_recent} created this period)" if int(no_tracking_recent or 0) else ""
+                alerts.append(
+                    {
+                        "type": "warning",
+                        "message": f"{no_tracking} in-flight shipments missing tracking numbers{extra}",
+                        "action": "Fix tracking",
+                        "path": "/admin/logistics",
+                        "occurred_at": now,
+                    }
+                )
+
+        if Payment is not None:
+            try:
+                failed_payments = Payment.objects.filter(deleted_at__isnull=True, status=Payment.Status.FAILED).count()
+            except Exception:
+                failed_payments = 0
+            if failed_payments:
+                try:
+                    failed_recent = Payment.objects.filter(
+                        deleted_at__isnull=True,
+                        status=Payment.Status.FAILED,
+                        created_at__gte=start,
+                        created_at__lt=now,
+                    ).count()
+                except Exception:
+                    failed_recent = 0
+                extra = f" ({failed_recent} failed this period)" if int(failed_recent or 0) else ""
+                alerts.append(
+                    {
+                        "type": "warning",
+                        "message": f"{failed_payments} payments failed{extra}",
+                        "action": "Review",
+                        "path": f"/admin/management/costs?period={period}",
+                        "occurred_at": now,
+                    }
+                )
+
+        if Dispute is not None:
+            try:
+                open_states = [Dispute.Status.OPEN, Dispute.Status.MEDIATION, Dispute.Status.ESCALATED]
+                open_disputes = Dispute.objects.filter(deleted_at__isnull=True, status__in=open_states).count()
+                opened_recent = Dispute.objects.filter(
+                    deleted_at__isnull=True,
+                    status__in=open_states,
+                    opened_at__gte=start,
+                    opened_at__lt=now,
+                ).count()
+            except Exception:
+                open_disputes = 0
+                opened_recent = 0
+            if open_disputes:
+                extra = f" ({opened_recent} opened this period)" if int(opened_recent or 0) else ""
+                alerts.append(
+                    {
+                        "type": "warning",
+                        "message": f"{open_disputes} disputes need attention{extra}",
+                        "action": "Open disputes",
+                        "path": "/admin/legal/disputes",
+                        "occurred_at": now,
+                    }
+                )
+
+        try:
+            from apps.catalog.models import Category, ComplianceRule
+        except Exception:
+            Category = None
+            ComplianceRule = None
+
+        if Category is not None:
+            try:
+                categories_total = Category.objects.filter(deleted_at__isnull=True).count()
+            except Exception:
+                categories_total = 0
+            if categories_total == 0:
+                alerts.append(
+                    {
+                        "type": "warning",
+                        "message": "No categories found (catalog is empty)",
+                        "action": "Add categories",
+                        "path": "/admin/products",
+                        "occurred_at": now,
+                    }
+                )
+            else:
+                if ComplianceRule is not None:
+                    try:
+                        top_ids = list(
+                            Category.objects.filter(deleted_at__isnull=True).order_by("id").values_list("id", flat=True)[:5]
+                        )
+                        rules_count = ComplianceRule.objects.filter(deleted_at__isnull=True, category_id__in=top_ids).count() if top_ids else 0
+                        if top_ids and rules_count == 0:
+                            alerts.append(
+                                {
+                                    "type": "info",
+                                    "message": "No compliance rules configured for top categories",
+                                    "action": "Configure",
+                                    "path": "/admin/legal/trade-compliance",
+                                    "occurred_at": now,
+                                }
+                            )
+                    except Exception:
+                        pass
+
+        try:
+            no_images_products = (
+                Product.objects.filter(deleted_at__isnull=True)
+                .exclude(status=Product.Status.ARCHIVED)
+                .annotate(
+                    img_count=Count(
+                        "media",
+                        filter=Q(media__deleted_at__isnull=True, media__media_type=ProductMedia.MediaType.IMAGE),
+                        distinct=True,
+                    )
+                )
+                .filter(img_count=0)
+                .count()
+            )
+        except Exception:
+            no_images_products = 0
+        if no_images_products:
+            alerts.append(
+                {
+                    "type": "info",
+                    "message": f"{no_images_products} products have no images",
+                    "action": "Fix media",
+                    "path": "/admin/management/listings",
+                    "occurred_at": now,
+                }
+            )
+
+        if not alerts:
+            alerts.append(
+                {
+                    "type": "info",
+                    "message": "No urgent alerts right now. Review listing pipeline and ship status for early signals.",
+                    "action": "Open dashboard",
+                    "path": "/admin/management/listings",
+                    "occurred_at": now,
+                }
+            )
+        alerts_total = len(alerts)
+        a_start = (alerts_page - 1) * alerts_page_size
+        a_end = a_start + alerts_page_size
+        alerts_has_more = a_end < alerts_total
+        alerts = alerts[a_start:a_end]
+
+        setup_guidance: list[dict] = []
+        payments_total = 0
+        if Payment is not None:
+            try:
+                payments_total = int(Payment.objects.filter(deleted_at__isnull=True).count())
+            except Exception:
+                payments_total = 0
+        if Payment is None or payments_total == 0:
+            setup_guidance.append(
+                {
+                    "key": "no_payments",
+                    "title": "No payments found",
+                    "message": "Payments integration not configured.",
+                    "action": "Open settings",
+                    "path": "/admin/settings",
+                    "occurred_at": now,
+                }
+            )
+
+        inspections_total = 0
+        if QualityInspection is not None:
+            try:
+                inspections_total = int(QualityInspection.objects.filter(deleted_at__isnull=True).count())
+            except Exception:
+                inspections_total = 0
+        if QualityInspection is None or inspections_total == 0:
+            setup_guidance.append(
+                {
+                    "key": "no_inspections",
+                    "title": "No inspections yet",
+                    "message": "Create your first inspection workflow to start measuring quality.",
+                    "action": "Open quality",
+                    "path": "/admin/quality",
+                    "occurred_at": now,
+                }
+            )
+
+        products_total = 0
+        try:
+            products_total = int(Product.objects.filter(deleted_at__isnull=True).count())
+        except Exception:
+            products_total = 0
+        if products_total == 0:
+            setup_guidance.append(
+                {
+                    "key": "no_products",
+                    "title": "No products found",
+                    "message": "Seed your catalog to make the dashboard operational.",
+                    "action": "Open catalog",
+                    "path": "/admin/products",
+                    "occurred_at": now,
+                }
+            )
+        elif int(pending_products or 0) == 0 and products_total < 20:
+            setup_guidance.append(
+                {
+                    "key": "no_products_pending",
+                    "title": "No products pending review",
+                    "message": "If the platform is new, seed the catalog or move listings to pending for approval.",
+                    "action": "View listings",
+                    "path": "/admin/management/listings?status=pending",
+                    "occurred_at": now,
+                }
+            )
+
+        activities_out: list[dict] = []
+        activity_has_more = False
+        try:
+            off = (activity_page - 1) * activity_page_size
+            logs_qs = (
+                AuditLog.objects.select_related("actor")
+                .filter(occurred_at__gte=start)
+                .order_by("-occurred_at", "-id")
+            )
+            logs = list(logs_qs[off : off + activity_page_size + 1])
+            if len(logs) > activity_page_size:
+                activity_has_more = True
+                logs = logs[:activity_page_size]
+
+            user_target_ids: set[int] = set()
+            product_ids: set[int] = set()
+            listing_request_ids: set[int] = set()
+            shipment_ids: set[int] = set()
+            dispute_ids: set[int] = set()
+
+            def _to_int(v: str) -> int:
+                try:
+                    return int(str(v or "").strip())
+                except Exception:
+                    return 0
+
+            for lg in logs:
+                t = (lg.target_type or "").strip().lower()
+                tid = (lg.target_id or "").strip()
+                if t == "user":
+                    n = _to_int(tid)
+                    if n:
+                        user_target_ids.add(n)
+                if t == "product":
+                    n = _to_int(tid)
+                    if n:
+                        product_ids.add(n)
+                if t == "listing_request":
+                    n = _to_int(tid)
+                    if n:
+                        listing_request_ids.add(n)
+                if t == "shipment":
+                    n = _to_int(tid)
+                    if n:
+                        shipment_ids.add(n)
+                if t == "dispute":
+                    n = _to_int(tid)
+                    if n:
+                        dispute_ids.add(n)
+
+            user_map: dict[int, User] = {u.id: u for u in User.objects.filter(id__in=list(user_target_ids))}
+            product_name_map: dict[int, str] = {
+                r["id"]: (r.get("name") or "").strip()
+                for r in Product.objects.filter(id__in=list(product_ids)).values("id", "name")
             }
-            for a in activities
-        ]
+            lr_name_map: dict[int, str] = {
+                r["id"]: (r.get("product_name") or "").strip()
+                for r in ListingRequest.objects.filter(id__in=list(listing_request_ids)).values("id", "product_name")
+            }
+            shipment_map: dict[int, dict] = {}
+            if shipment_ids:
+                shipment_map = {
+                    r["id"]: r
+                    for r in Shipment.objects.filter(id__in=list(shipment_ids)).values("id", "order_id", "status", "tracking_number")
+                }
+            dispute_map: dict[int, dict] = {}
+            if Dispute is not None and dispute_ids:
+                dispute_map = {
+                    r["id"]: r
+                    for r in Dispute.objects.filter(id__in=list(dispute_ids)).values("id", "order_id", "status")
+                }
+
+            def _display_user(u: User | None) -> str:
+                if not u:
+                    return "System"
+                full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
+                return full or (u.email or u.phone or f"User #{u.id}")
+
+            def _path_for(action: str, target_type: str) -> str:
+                a = (action or "").strip().lower()
+                t = (target_type or "").strip().lower()
+                if t in {"shipment", "order"} or a.startswith("shipment_") or a.startswith("order_"):
+                    return "/admin/logistics"
+                if t in {"dispute"} or a.startswith("dispute_"):
+                    return "/admin/legal/disputes"
+                if t in {"listing_request", "product"} or "product" in a or "listing" in a:
+                    return "/admin/management/listings"
+                if "verification" in a or "kyc" in a:
+                    return "/admin/verification"
+                if "quality" in a or t == "quality_inspection":
+                    return "/admin/quality"
+                if "category" in a:
+                    return "/admin/products"
+                if "compliance" in a:
+                    return "/admin/legal/trade-compliance"
+                if t == "user":
+                    return "/admin/users"
+                return "/admin"
+
+            def _action_label(action: str) -> str:
+                a = (action or "").strip()
+                m = {
+                    "order_created": "placed order",
+                    "order_status_changed": "updated order status",
+                    "shipment_status_changed": "updated shipment status",
+                    "shipment_tracking_updated": "updated tracking",
+                    "dispute_opened": "opened dispute",
+                    "dispute_resolved": "resolved dispute",
+                    "dispute_status_changed": "updated dispute",
+                    "seller_listing_request_submitted": "submitted listing request",
+                    "seller_listing_request_stage_updated": "updated listing stage",
+                    "seller_listing_request_published": "published listing",
+                    "seller_product_created": "created product",
+                    "seller_verification_approved": "approved seller verification",
+                    "seller_verification_rejected": "rejected seller verification",
+                    "admin_product_approved": "approved product",
+                    "admin_product_rejected": "rejected product",
+                    "admin_product_activated": "activated product",
+                    "admin_product_updated": "updated product",
+                    "admin_quality_inspection_created": "created inspection",
+                }
+                if a in m:
+                    return m[a]
+                return a.replace("_", " ").replace("-", " ").strip() or "updated"
+
+            def _target_label(lg: AuditLog) -> str:
+                t = (lg.target_type or "").strip().lower()
+                tid = (lg.target_id or "").strip()
+                payload = lg.payload if isinstance(lg.payload, dict) else {}
+                if t == "order":
+                    return f"Order #{tid}" if tid else "Order"
+                if t == "shipment":
+                    sid = _to_int(tid)
+                    sh = shipment_map.get(sid) if sid else None
+                    tr = (sh.get("tracking_number") if sh else "") or ""
+                    return (f"Shipment #{tid}" + (f" ({tr})" if tr else "")).strip()
+                if t == "dispute":
+                    did = _to_int(tid)
+                    dp = dispute_map.get(did) if did else None
+                    oid = str((dp or {}).get("order_id") or "")
+                    if oid:
+                        return f"Order #{oid}"
+                    return f"Dispute #{tid}" if tid else "Dispute"
+                if t == "product":
+                    pid = _to_int(tid)
+                    name = (payload.get("product_name") or "") or (product_name_map.get(pid) if pid else "")
+                    name = (name or "").strip()
+                    return name or (f"Product #{tid}" if tid else "Product")
+                if t == "listing_request":
+                    lid = _to_int(tid)
+                    name = (payload.get("product_name") or "") or (lr_name_map.get(lid) if lid else "")
+                    name = (name or "").strip()
+                    return name or (f"Listing Request #{tid}" if tid else "Listing Request")
+                if t == "user":
+                    uid = _to_int(tid)
+                    u = user_map.get(uid) if uid else None
+                    return _display_user(u) if u else (f"User #{tid}" if tid else "User")
+                if t == "category":
+                    name = str(payload.get("name") or "").strip()
+                    return name or (f"Category #{tid}" if tid else "Category")
+                if t == "compliance_rule":
+                    return f"Compliance Rule #{tid}" if tid else "Compliance Rule"
+                if t == "quality_inspection":
+                    return f"Inspection #{tid}" if tid else "Inspection"
+                return f"{(lg.target_type or '').strip() or 'Item'} #{tid}".strip()
+
+            out = []
+            for lg in logs[:60]:
+                actor = getattr(lg, "actor", None)
+                out.append(
+                    {
+                        "id": f"audit-{lg.id}",
+                        "user": _display_user(actor),
+                        "action": _action_label(lg.action),
+                        "target": _target_label(lg),
+                        "avatar": self._avatar(actor),
+                        "occurred_at": lg.occurred_at,
+                        "path": _path_for(lg.action, lg.target_type),
+                    }
+                )
+            activities_out = out
+        except Exception:
+            activities_out = []
+
+        pipelines: dict = {}
+        if Order is not None:
+            base_orders = Order.objects.filter(deleted_at__isnull=True)
+            status_rows = list(base_orders.values("status").annotate(count=Count("id")).order_by())
+            status_map = {r.get("status"): int(r.get("count") or 0) for r in status_rows}
+
+            active_exclude = {Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED}
+            active_orders = base_orders.exclude(status__in=list(active_exclude))
+            overdue = active_orders.filter(deadline_at__isnull=False, deadline_at__lt=now).count()
+            disputed = base_orders.filter(status=Order.Status.DISPUTED).count()
+            avg_age_hours = 0.0
+            try:
+                createds = list(active_orders.values_list("created_at", flat=True)[:2000])
+                if createds:
+                    avg_age_hours = sum((now - dt).total_seconds() for dt in createds if dt) / float(len(createds)) / 3600.0
+            except Exception:
+                avg_age_hours = 0.0
+
+            aging = {}
+            for s in [Order.Status.CREATED, Order.Status.ACCEPTED, Order.Status.SHIPPED, Order.Status.DISPUTED]:
+                qs = base_orders.filter(status=s)
+                oldest = qs.aggregate(v=Min("created_at")).get("v")
+                if oldest:
+                    aging[s] = round((now - oldest).total_seconds() / 86400.0, 2)
+                else:
+                    aging[s] = 0.0
+
+            pipelines["orders"] = {
+                "counts": {k: status_map.get(k, 0) for k, _ in Order.Status.choices},
+                "active_total": active_orders.count(),
+                "overdue_deadline": int(overdue),
+                "disputed_total": int(disputed),
+                "avg_age_hours_active": round(float(avg_age_hours), 2),
+                "oldest_days_by_status": aging,
+            }
+
+        pipelines["sellers"] = {
+            "pending_verifications": int(SellerProfile.objects.filter(verification_status=SellerProfile.VerificationStatus.PENDING).count()),
+            "rejected_verifications": int(SellerProfile.objects.filter(verification_status=SellerProfile.VerificationStatus.REJECTED).count()),
+            "pending_kyc_docs": int(
+                KycDocument.objects.filter(review_status__in=[KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW]).count()
+            ),
+            "expiring_docs_30d": int(
+                KycDocument.objects.filter(
+                    kind=KycDocument.Kind.DRIVING_LICENSE,
+                    expires_at__isnull=False,
+                    expires_at__lte=(now + timedelta(days=30)).date(),
+                ).count()
+            ),
+        }
+
+        try:
+            products_base = Product.objects.filter(deleted_at__isnull=True).exclude(status=Product.Status.ARCHIVED)
+            pending_products = products_base.filter(status=Product.Status.PENDING).count()
+            rejected_products = products_base.filter(status=Product.Status.REJECTED).count()
+            rejected_with_reason = 0
+            try:
+                rejected_with_reason = products_base.filter(
+                    status=Product.Status.REJECTED, detail_config__review__rejection_reason__gt=""
+                ).count()
+            except Exception:
+                rejected_with_reason = 0
+
+            missing_hs_code = products_base.filter(Q(hs_code="") | Q(hs_code__isnull=True)).count()
+            missing_images = (
+                products_base.annotate(
+                    img_count=Count(
+                        "media",
+                        filter=Q(media__deleted_at__isnull=True, media__media_type=ProductMedia.MediaType.IMAGE),
+                        distinct=True,
+                    )
+                )
+                .filter(img_count=0)
+                .count()
+            )
+            missing_docs = (
+                products_base.annotate(
+                    doc_count=Count(
+                        "media",
+                        filter=Q(media__deleted_at__isnull=True, media__media_type=ProductMedia.MediaType.DOCUMENT),
+                        distinct=True,
+                    )
+                )
+                .filter(doc_count=0)
+                .count()
+            )
+        except Exception:
+            pending_products = 0
+            rejected_products = 0
+            rejected_with_reason = 0
+            missing_hs_code = 0
+            missing_images = 0
+            missing_docs = 0
+
+        pipelines["listings"] = {
+            "pending_products": int(pending_products),
+            "rejected_products": int(rejected_products),
+            "rejected_with_reason": int(rejected_with_reason),
+            "missing_hs_code": int(missing_hs_code),
+            "missing_images": int(missing_images),
+            "missing_documents": int(missing_docs),
+        }
+
+        if Shipment is not None:
+            ship_base = Shipment.objects.filter(deleted_at__isnull=True)
+            not_delivered = ship_base.exclude(status=Shipment.Status.DELIVERED)
+            late = not_delivered.filter(estimated_delivery_at__isnull=False, estimated_delivery_at__lt=now).count()
+            no_tracking = not_delivered.filter(Q(tracking_number="") | Q(tracking_number__isnull=True)).count()
+            stuck = not_delivered.filter(created_at__lt=(now - timedelta(days=7))).count()
+            in_transit = not_delivered.filter(
+                status__in=[
+                    Shipment.Status.LABEL_CREATED,
+                    Shipment.Status.PICKED_UP,
+                    Shipment.Status.IN_TRANSIT,
+                    Shipment.Status.CUSTOMS,
+                    Shipment.Status.OUT_FOR_DELIVERY,
+                ]
+            ).count()
+            pipelines["logistics"] = {
+                "in_transit": int(in_transit),
+                "late_deliveries": int(late),
+                "no_tracking_number": int(no_tracking),
+                "stuck_7d": int(stuck),
+            }
+
+        if Payment is not None:
+            pay_base = Payment.objects.filter(deleted_at__isnull=True)
+            status_rows = list(pay_base.values("status").annotate(count=Count("id")).order_by())
+            status_map = {r.get("status"): int(r.get("count") or 0) for r in status_rows}
+            held_amount = float(
+                pay_base.filter(status=Payment.Status.HELD).aggregate(total=Coalesce(Sum("amount"), dec0)).get("total") or 0
+            )
+            released_amount = float(
+                pay_base.filter(status=Payment.Status.RELEASED).aggregate(total=Coalesce(Sum("amount"), dec0)).get("total") or 0
+            )
+            failed_count = int(status_map.get(Payment.Status.FAILED, 0))
+        else:
+            status_map = {}
+            held_amount = 0.0
+            released_amount = 0.0
+            failed_count = 0
+
+        disputes_open = 0
+        disputed_amount = 0.0
+        if Dispute is not None:
+            try:
+                open_qs = Dispute.objects.filter(deleted_at__isnull=True, status__in=[Dispute.Status.OPEN, Dispute.Status.MEDIATION, Dispute.Status.ESCALATED]).select_related("order")
+                disputes_open = open_qs.count()
+                disputed_amount = float(
+                    open_qs.aggregate(total=Coalesce(Sum("order__total_amount"), dec0)).get("total") or 0
+                )
+            except Exception:
+                disputes_open = 0
+                disputed_amount = 0.0
+
+        release_pending = 0
+        if ReleaseCondition is not None:
+            try:
+                release_pending = int(
+                    ReleaseCondition.objects.filter(status__in=[ReleaseCondition.Status.PENDING, ReleaseCondition.Status.IN_PROGRESS]).count()
+                )
+            except Exception:
+                release_pending = 0
+
+        pipelines["payments"] = {
+            "available": bool(Payment is not None),
+            "counts": status_map,
+            "held_amount": float(held_amount),
+            "released_amount": float(released_amount),
+            "failed_count": int(failed_count),
+            "open_disputes": int(disputes_open),
+            "disputed_amount": float(disputed_amount),
+            "release_conditions_pending": int(release_pending),
+        }
 
         payload = {
             "period": period,
@@ -912,27 +1632,39 @@ class AdminPlatformOverviewView(APIView):
                     "b2c": revenue_b2c,
                     "change_pct": revenue_change_pct,
                     "sparkline": [float(p.get("b2b", 0) + p.get("b2c", 0)) for p in revenue_points] if revenue_points else [0.0],
+                    "path": f"/admin/management/costs?period={period}",
                 },
                 "active_orders": {
                     "total": active_orders_total,
                     "b2b": active_orders_b2b,
                     "b2c": active_orders_b2c,
+                    "snapshot_total": active_orders_snapshot_total,
+                    "snapshot_b2b": active_orders_snapshot_b2b,
+                    "snapshot_b2c": active_orders_snapshot_b2c,
                     "change_pct": active_orders_change_pct,
                     "sparkline": orders_sparkline,
+                    "path": "/admin/logistics?status=label_created,picked_up,in_transit,customs,out_for_delivery",
                 },
                 "users_online": {
                     "total": users_online_total,
                     "buyers": users_online_buyers,
                     "sellers": users_online_sellers,
                     "workers": users_online_workers,
+                    "snapshot_window_minutes": 15,
+                    "snapshot_total": users_online_snapshot_total,
+                    "snapshot_buyers": users_online_snapshot_buyers,
+                    "snapshot_sellers": users_online_snapshot_sellers,
+                    "snapshot_workers": users_online_snapshot_workers,
                     "change_abs": users_online_change_abs,
                     "sparkline": users_sparkline,
+                    "path": f"/admin/users?active_period={period}",
                 },
                 "quality_score": {
                     "value": quality_score,
                     "inspections": quality_inspections,
                     "change_pct": quality_change_pct,
                     "sparkline": quality_sparkline,
+                    "path": "/admin/quality?status=in_progress,failed",
                 },
             },
             "revenue_flow": {
@@ -949,8 +1681,22 @@ class AdminPlatformOverviewView(APIView):
             "regions": region_points,
             "channels": channel_points,
             "alerts": alerts,
+            "alerts_pagination": {
+                "page": alerts_page,
+                "page_size": alerts_page_size,
+                "has_more": bool(alerts_has_more),
+                "total": int(alerts_total),
+            },
+            "setup_guidance": setup_guidance,
             "activity": activities_out,
+            "activity_pagination": {
+                "page": activity_page,
+                "page_size": activity_page_size,
+                "has_more": bool(activity_has_more),
+            },
+            "pipelines": pipelines,
         }
+        cache.set(cache_key, payload, timeout=ttl)
         return Response(payload)
 
 
@@ -2438,9 +3184,23 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             qs = qs.filter(role=role)
 
         active_now = (self.request.query_params.get("active_now") or "").strip().lower()
+        active_period = (self.request.query_params.get("active_period") or "").strip().lower()
         if active_now in {"1", "true", "yes"}:
             window = timezone.now() - timedelta(minutes=15)
             qs = qs.filter(last_login__gte=window)
+        elif active_period:
+            delta = None
+            if active_period == "24h":
+                delta = timedelta(hours=24)
+            elif active_period == "7d":
+                delta = timedelta(days=7)
+            elif active_period == "30d":
+                delta = timedelta(days=30)
+            elif active_period == "90d":
+                delta = timedelta(days=90)
+            if delta is not None:
+                window = timezone.now() - delta
+                qs = qs.filter(last_login__gte=window)
 
         admin_role = (self.request.query_params.get("admin_role") or "").strip().lower()
         if admin_role:
@@ -3386,7 +4146,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             if item and item.product:
                 media = item.product.media.filter(media_type="image", deleted_at__isnull=True).first()
                 if media:
-                    image_url = media.url
+                    image_url = (ProductMediaSerializer(media, context={"request": request}).data.get("public_url") or "").strip()
 
             latest_shipment = None
             try:
@@ -3453,9 +4213,241 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
         user = request.user
-        qs = Notification.objects.filter(user=user).exclude(status=Notification.Status.READ).order_by("-created_at")[:10]
-        ser = SellerActivitySerializer(qs, many=True)
-        return Response(ser.data)
+
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw) if limit_raw else 20
+        except Exception:
+            limit = 20
+        limit = max(5, min(50, limit))
+
+        def moment_label(dt) -> str:
+            if not dt:
+                return ""
+            now = timezone.now()
+            diff = now - dt
+            if diff.days > 0:
+                return f"{diff.days}d ago"
+            hours = diff.seconds // 3600
+            if hours > 0:
+                return f"{hours}h ago"
+            minutes = (diff.seconds % 3600) // 60
+            return f"{minutes}m ago"
+
+        items: list[dict] = []
+
+        notif_qs = Notification.objects.filter(user=user).order_by("-created_at", "-id")[:limit]
+        for n in notif_qs:
+            data = SellerActivitySerializer(n).data
+            data["_ts"] = n.created_at
+            items.append(data)
+
+        order_qs = (
+            Order.objects.filter(seller=user, deleted_at__isnull=True)
+            .select_related("buyer")
+            .prefetch_related("items", "items__product", "items__product__media", "shipments")
+            .order_by("-updated_at", "-id")[: min(25, limit * 2)]
+        )
+        for o in order_qs:
+            item = o.items.first()
+            prod = getattr(item, "product", None) if item else None
+            product_name = (getattr(prod, "name", "") or "").strip() or "Unknown product"
+            buyer_name = f"{getattr(o.buyer, 'first_name', '')} {getattr(o.buyer, 'last_name', '')}".strip() or "Buyer"
+            qty = 0
+            try:
+                qty = sum(int(i.quantity or 0) for i in o.items.all())
+            except Exception:
+                qty = 0
+            order_ref = f"#VH-{o.id}"
+
+            latest_shipment = None
+            try:
+                latest_shipment = o.shipments.filter(deleted_at__isnull=True).order_by("-created_at", "-id").first()
+            except Exception:
+                latest_shipment = None
+            tracking = (getattr(latest_shipment, "tracking_number", "") or "").strip() if latest_shipment else ""
+
+            if o.payment_status == Order.PaymentStatus.PAID and o.status in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+                items.append(
+                    {
+                        "id": f"order-{o.id}-payment",
+                        "kind": "payment",
+                        "sentence": "Payment released",
+                        "moment": moment_label(getattr(o, "updated_at", None) or getattr(o, "created_at", None)),
+                        "tint": "#2eaa57",
+                        "icon": "💸",
+                        "subtitle": product_name,
+                        "detail": f"Payment for {qty} units has cleared and will be deposited to your registered account.",
+                        "action_kind": "none",
+                        "action_label": "",
+                        "order_id": int(o.id),
+                        "order_ref": order_ref,
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": tracking,
+                        "_ts": getattr(o, "updated_at", None) or getattr(o, "created_at", None),
+                    }
+                )
+                continue
+
+            if o.status == Order.Status.SHIPPED or (latest_shipment and getattr(latest_shipment, "status", "") in {Shipment.Status.PICKED_UP, Shipment.Status.IN_TRANSIT, Shipment.Status.OUT_FOR_DELIVERY, Shipment.Status.CUSTOMS}):
+                items.append(
+                    {
+                        "id": f"order-{o.id}-pickup",
+                        "kind": "pickup_done",
+                        "sentence": "Order in transit",
+                        "moment": moment_label(getattr(o, "updated_at", None) or getattr(o, "created_at", None)),
+                        "tint": "rgba(26,26,26,0.6)",
+                        "icon": "🚚",
+                        "subtitle": product_name,
+                        "detail": f"{qty} units are on the way to the buyer. Tracking {tracking or '—'}.",
+                        "action_kind": "view",
+                        "action_label": "View",
+                        "order_id": int(o.id),
+                        "order_ref": order_ref,
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": tracking,
+                        "_ts": getattr(o, "updated_at", None) or getattr(o, "created_at", None),
+                    }
+                )
+                continue
+
+            if o.status == Order.Status.CREATED:
+                items.append(
+                    {
+                        "id": f"order-{o.id}-new",
+                        "kind": "platform_notice",
+                        "sentence": "New order pending approval",
+                        "moment": moment_label(getattr(o, "created_at", None)),
+                        "tint": "#0171E3",
+                        "icon": "📦",
+                        "subtitle": product_name,
+                        "detail": f"{buyer_name} placed an order for {qty} units. Review and accept to start production.",
+                        "action_kind": "view",
+                        "action_label": "View",
+                        "order_id": int(o.id),
+                        "order_ref": order_ref,
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": tracking,
+                        "_ts": getattr(o, "created_at", None),
+                    }
+                )
+
+        lr_qs = (
+            ListingRequest.objects.filter(seller=user)
+            .select_related("category")
+            .order_by("-updated_at", "-id")[: min(20, limit)]
+        )
+        for lr in lr_qs:
+            product_name = (getattr(lr, "product_name", "") or "").strip() or "Listing"
+            stage = (getattr(lr, "stage", "") or "").strip()
+            rating = getattr(lr, "rating", None)
+            if stage in {ListingRequest.Stage.LIVE, ListingRequest.Stage.DONE} and rating is not None:
+                items.append(
+                    {
+                        "id": f"listing-{lr.id}-inspection",
+                        "kind": "inspection_done",
+                        "sentence": "Inspection complete",
+                        "moment": moment_label(getattr(lr, "updated_at", None) or getattr(lr, "created_at", None)),
+                        "tint": "#2eaa57",
+                        "icon": "✅",
+                        "subtitle": product_name,
+                        "detail": f"Your listing is live with a verified rating of {rating}.",
+                        "action_kind": "none",
+                        "action_label": "",
+                        "order_id": None,
+                        "order_ref": "",
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": "",
+                        "_ts": getattr(lr, "updated_at", None) or getattr(lr, "created_at", None),
+                    }
+                )
+                continue
+
+            stage_label = {
+                ListingRequest.Stage.SAMPLES: "Samples",
+                ListingRequest.Stage.INSPECTION: "Inspection",
+                ListingRequest.Stage.LIVE: "Live",
+                ListingRequest.Stage.DONE: "Done",
+            }.get(stage, "Update")
+            items.append(
+                {
+                    "id": f"listing-{lr.id}",
+                    "kind": "platform_notice",
+                    "sentence": "Listing request update",
+                    "moment": moment_label(getattr(lr, "updated_at", None) or getattr(lr, "created_at", None)),
+                    "tint": "#0071e3",
+                    "icon": "📝",
+                    "subtitle": product_name,
+                    "detail": f"Stage: {stage_label}. We’ll notify you as we progress your verification.",
+                    "action_kind": "none",
+                    "action_label": "",
+                    "order_id": None,
+                    "order_ref": "",
+                    "product_name": product_name,
+                    "client_comment": "",
+                    "tracking_number": "",
+                    "_ts": getattr(lr, "updated_at", None) or getattr(lr, "created_at", None),
+                }
+            )
+
+        products_qs = (
+            Product.objects.filter(seller=user, deleted_at__isnull=True)
+            .filter(status__in=[Product.Status.PENDING, Product.Status.REJECTED])
+            .order_by("-updated_at", "-id")[: min(15, limit)]
+        )
+        for p in products_qs:
+            status_label = "Pending review" if p.status == Product.Status.PENDING else "Listing needs updates"
+            kind = "listing_rejected" if p.status == Product.Status.REJECTED else "platform_notice"
+            reason = ""
+            rejection_photos = []
+            improvement_suggestions = []
+            try:
+                cfg = p.detail_config if isinstance(p.detail_config, dict) else {}
+            except Exception:
+                cfg = {}
+            if isinstance(cfg, dict):
+                review = cfg.get("review") if isinstance(cfg.get("review"), dict) else {}
+                if isinstance(review, dict):
+                    reason = str(review.get("rejection_reason") or "").strip()
+                    rejection_photos = review.get("rejection_photos") if isinstance(review.get("rejection_photos"), list) else []
+                    improvement_suggestions = (
+                        review.get("improvement_suggestions") if isinstance(review.get("improvement_suggestions"), list) else []
+                    )
+            items.append(
+                {
+                    "id": f"product-{p.id}-{p.status}",
+                    "kind": kind,
+                    "sentence": status_label,
+                    "moment": moment_label(getattr(p, "updated_at", None) or getattr(p, "created_at", None)),
+                    "tint": "#e67e22" if p.status == Product.Status.REJECTED else "#0071e3",
+                    "icon": "🛡️" if p.status == Product.Status.REJECTED else "🕒",
+                    "subtitle": (p.name or "").strip() or "Product",
+                    "detail": (reason or "Update your listing details and resubmit for approval.") if p.status == Product.Status.REJECTED else "Your listing is being reviewed by the Vehsl team.",
+                    "action_kind": "resubmit" if p.status == Product.Status.REJECTED else "none",
+                    "action_label": "Fix & resubmit" if p.status == Product.Status.REJECTED else "",
+                    "rejection_reason": reason,
+                    "rejection_photos": rejection_photos,
+                    "improvement_suggestions": improvement_suggestions,
+                    "order_id": None,
+                    "order_ref": "",
+                    "product_name": (p.name or "").strip() or "",
+                    "client_comment": "",
+                    "tracking_number": "",
+                    "_ts": getattr(p, "updated_at", None) or getattr(p, "created_at", None),
+                }
+            )
+
+        items.sort(key=lambda r: (r.get("_ts") or timezone.now()), reverse=True)
+        out = []
+        for r in items[:limit]:
+            rr = dict(r)
+            rr.pop("_ts", None)
+            out.append(rr)
+        return Response(out)
 
     @action(detail=False, methods=["post"], url_path=r"activities/(?P<activity_id>[^/.]+)/dismiss")
     def dismiss_activity(self, request, activity_id=None):
@@ -3465,7 +4457,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         try:
             nid = int(activity_id)
         except Exception:
-            return Response({"detail": "Invalid activity id."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"dismissed": True})
 
         updated = (
             Notification.objects.filter(user=request.user, id=nid)
@@ -3480,20 +4472,23 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
 
-        try:
-            nid = int(activity_id)
-        except Exception:
-            return Response({"detail": "Invalid activity id."}, status=status.HTTP_400_BAD_REQUEST)
-
         content = str((request.data.get("content") if isinstance(request.data, dict) else "") or "").strip()
         if not content:
             return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        notif = Notification.objects.filter(user=request.user, id=nid).first()
-        if not notif:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            nid = int(activity_id)
+        except Exception:
+            nid = None
 
-        payload = notif.payload or {}
+        notif = None
+        payload = {}
+        if nid is not None:
+            notif = Notification.objects.filter(user=request.user, id=nid).first()
+            if not notif:
+                return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+            payload = notif.payload or {}
+
         order_id = payload.get("order_id") or payload.get("orderId") or (request.data.get("order_id") if isinstance(request.data, dict) else None)
         try:
             order_id = int(order_id)
@@ -3523,7 +4518,8 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         msg = ChatMessage.objects.create(thread=thread, sender=request.user, content=content, read_by=[uid])
         ChatThread.objects.filter(id=thread.id).update(updated_at=msg.sent_at)
 
-        Notification.objects.filter(user=request.user, id=nid).update(status=Notification.Status.READ)
+        if nid is not None:
+            Notification.objects.filter(user=request.user, id=nid).update(status=Notification.Status.READ)
 
         return Response(
             {
@@ -3553,7 +4549,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             if not item:
                 continue
             media = item.product.media.filter(media_type="image", deleted_at__isnull=True).first()
-            image_url = media.url if media else ""
+            image_url = (ProductMediaSerializer(media, context={"request": request}).data.get("public_url") or "").strip() if media else ""
             ship_addr = o.shipping_address or {}
             city = (ship_addr.get("city") or "").strip()
             country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
@@ -3593,10 +4589,10 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         for m in qs:
             p = m.product
             caption = (m.title or "").strip() or p.name
-            thumb = (m.url or "").strip()
+            thumb = (ProductMediaSerializer(m, context={"request": request}).data.get("public_url") or "").strip()
             if not thumb:
                 img = p.media.filter(media_type="image", deleted_at__isnull=True).first()
-                thumb = img.url if img else ""
+                thumb = (ProductMediaSerializer(img, context={"request": request}).data.get("public_url") or "").strip() if img else ""
             stats = (p.detail_config or {}).get("reels_stats") or {}
             s = stats.get(str(m.id)) if isinstance(stats, dict) else None
             if not isinstance(s, dict):
@@ -4611,3 +5607,107 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
         settings_obj.business = business
         settings_obj.save(update_fields=["business", "updated_at"])
         return Response({inventory_item_id: merged})
+
+
+class MarketingPromisesView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        def image_url_for(pid: str) -> str:
+            key = f"marketing/promises/{pid}.png"
+            try:
+                if not default_storage.exists(key):
+                    return ""
+            except Exception:
+                return ""
+            try:
+                url = default_storage.url(key)
+            except Exception:
+                url = f"/media/{key}"
+            if isinstance(url, str) and url.startswith("/") and request is not None:
+                try:
+                    return request.build_absolute_uri(url)
+                except Exception:
+                    return url
+            return url if isinstance(url, str) else ""
+
+        return Response(
+            {
+                "promises": [
+                    {
+                        "id": "sellers-verified",
+                        "image_url": image_url_for("sellers-verified"),
+                        "title_en": "100% Sellers verified.",
+                        "title_zh": "100% 卖家已认证。",
+                        "description_en": "Every seller on our Vehsl is fully KYC-verified, ensuring you buy directly and securely from only verified sellers, no exceptions.",
+                        "description_zh": "我们的 Vehsl 平台上的每位卖家都经过完整的 KYC 认证，确保您直接且安全地从经过验证的卖家处购买，绝无例外。",
+                    },
+                    {
+                        "id": "manufacturing-visit",
+                        "image_url": image_url_for("manufacturing-visit"),
+                        "title_en": "Each manufacturing unit is visited.",
+                        "title_zh": "实地探访每个制造工厂。",
+                        "description_en": "Every manufacturer on Vehsl is validated through in-person visits and careful review of their facility documents, ensuring credibility and transparency.",
+                        "description_zh": "通过实地走访以及对设施文件的仔细审查，来核实 Vehsl 上的每家制造商，确保信誉与透明度。",
+                    },
+                    {
+                        "id": "payment-protection",
+                        "image_url": image_url_for("payment-protection"),
+                        "title_en": "Each Payment and product is protected.",
+                        "title_zh": "每一笔付款与商品都受保护。",
+                        "description_en": "No payment moves without delivery, and no order is placed without secured funds.",
+                        "description_zh": "未交货不付款，资金未安全托管不发单。",
+                    },
+                    {
+                        "id": "customer-support",
+                        "image_url": image_url_for("customer-support"),
+                        "title_en": "Questions at midnight? No problem. Our team is always online.",
+                        "title_zh": "半夜有疑问？没问题。我们的团队始终在线。",
+                        "description_en": "Our global support team provides 24/7 assistance with orders, payments, listings, and more, expert help, wherever you are.",
+                        "description_zh": "我们的全球支持团队全天候 (24/7) 提供订单、付款、商品列表等方面的协助，无论您身在何处，都能获得专家帮助。",
+                    },
+                    {
+                        "id": "buyer-kyc-verified",
+                        "image_url": image_url_for("buyer-kyc-verified"),
+                        "title_en": "Buyer KYC Verified.",
+                        "title_zh": "买家 KYC 已验证。",
+                        "description_en": "Every buyer on our platform is verified through KYC to ensure secure and reliable marketplace.",
+                        "description_zh": "平台上的每位买家都经过 KYC 验证，以确保安全可靠的市场环境。",
+                    },
+                ]
+            }
+        )
+
+
+class MarketingAssetUploadView(APIView):
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        raw_key = str((request.data.get("key") or request.data.get("path") or "")).strip()
+        upload = request.FILES.get("file")
+        if not raw_key:
+            return Response({"detail": "key is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not upload:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        key = raw_key.lstrip("/").strip()
+        if ".." in key or "\\" in key:
+            return Response({"detail": "Invalid key."}, status=status.HTTP_400_BAD_REQUEST)
+        if not key.startswith("marketing/"):
+            return Response({"detail": "key must start with marketing/."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            saved = default_storage.save(key, upload)
+        except Exception:
+            return Response({"detail": "Upload failed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            url = default_storage.url(saved)
+        except Exception:
+            url = f"/media/{saved}"
+        if isinstance(url, str) and url.startswith("/"):
+            try:
+                url = request.build_absolute_uri(url)
+            except Exception:
+                pass
+        return Response({"storage_key": saved, "url": url}, status=status.HTTP_201_CREATED)

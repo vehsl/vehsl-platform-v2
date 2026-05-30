@@ -24,7 +24,7 @@ import paymentSvgPaths from './imports/svg-bdwoyeteyk';
 import { authedFetch } from '@/lib/api';
 import { safeJsonParse } from "@/lib/utils";
 import {
-    FONT, EASE, GLASS, GLASS_ELEVATED, useBounce, fmt, PRODUCTS,
+    FONT, EASE, GLASS, GLASS_ELEVATED, useBounce, fmt,
     ACTIVITY_ICONS, ACTION_BUTTON_STYLES,
     greet,
 } from './seller-dashboard-data';
@@ -101,7 +101,7 @@ export function SellerDashboard() {
             const mappedProducts = (rows || []).map((p: any) => ({
                 id: p.id,
                 name: p.name,
-                image: p.image || PRODUCTS.headphones,
+                image: p.image || "",
                 price: Number(p.price),
                 status: p.status,
                 sold: p.sold,
@@ -147,7 +147,7 @@ export function SellerDashboard() {
                 const mappedOrders = data.map((o: any) => ({
                     id: o.id,
                     product: o.product,
-                    image: o.image || PRODUCTS.vase, // fallback
+                    image: o.image || "",
                     type: o.type as ActionType,
                     deadline: o.deadline,
                     deadlineUrgent: o.deadline_urgent,
@@ -179,6 +179,9 @@ export function SellerDashboard() {
                         productName: a.product_name || '',
                         clientComment: a.client_comment || '',
                         trackingNumber: a.tracking_number || '',
+                        rejectionReason: a.rejection_reason || a.rejectionReason || '',
+                        rejectionPhotos: a.rejection_photos || a.rejectionPhotos || undefined,
+                        improvementSuggestions: a.improvement_suggestions || a.improvementSuggestions || undefined,
                         actionKind: (a.action_kind || (a.kind === 'sample_feedback' ? 'reply' : a.kind === 'sample_report' ? 'download' : 'none')) as any,
                         actionLabel: a.action_label || '',
                         tint: a.tint,
@@ -4225,7 +4228,7 @@ export function SellerDashboard() {
                                         setProducts(prev => [...prev, {
                                             id: `p${Date.now()}`,
                                             name: 'New Product',
-                                            image: PRODUCTS.vase,
+                                            image: "",
                                             price: 0,
                                             status: 'review' as const,
                                             sold: 0,

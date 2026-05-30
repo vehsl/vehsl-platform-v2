@@ -1,11 +1,6 @@
-import imgSellersVerified from "../../../assets/sellers-verified.png";
-import imgManufacturingVisit from "../../../assets/manufacturing-visit.png";
-import imgPaymentProtection from "../../../assets/payment-protection.png";
-import imgCustomerSupport from "../../../assets/customer-support.png";
-import imgBuyerKycVerified from "../../../assets/buyer-kyc-verified.png";
-
 export interface PromiseItem {
-  image: string | { src: string };
+  id: string;
+  imageUrl: string;
   titleEn: string;
   titleZh: string;
   descriptionEn: string;
@@ -14,7 +9,8 @@ export interface PromiseItem {
 
 export const promisesData: PromiseItem[] = [
   {
-    image: imgSellersVerified,
+    id: "sellers-verified",
+    imageUrl: "",
     titleEn: "100% Sellers verified.",
     titleZh: "100% 卖家已认证。",
     descriptionEn:
@@ -24,7 +20,8 @@ export const promisesData: PromiseItem[] = [
   },
 
   {
-    image: imgManufacturingVisit,
+    id: "manufacturing-visit",
+    imageUrl: "",
     titleEn: "Each manufacturing unit is visited.",
     titleZh: "实地探访每个制造工厂。",
     descriptionEn:
@@ -34,7 +31,8 @@ export const promisesData: PromiseItem[] = [
   },
 
   {
-    image: imgPaymentProtection,
+    id: "payment-protection",
+    imageUrl: "",
     titleEn: "Each Payment and product is protected.",
     titleZh: "每一笔付款与商品都受保护。",
     descriptionEn:
@@ -44,7 +42,8 @@ export const promisesData: PromiseItem[] = [
   },
 
   {
-    image: imgCustomerSupport,
+    id: "customer-support",
+    imageUrl: "",
     titleEn: "Questions at midnight? No problem. Our team is always online.",
     titleZh: "半夜有疑问？没问题。我们的团队始终在线。",
     descriptionEn:
@@ -54,7 +53,8 @@ export const promisesData: PromiseItem[] = [
   },
 
   {
-    image: imgBuyerKycVerified,
+    id: "buyer-kyc-verified",
+    imageUrl: "",
     titleEn: "Buyer KYC Verified.",
     titleZh: "买家 KYC 已验证。",
     descriptionEn:

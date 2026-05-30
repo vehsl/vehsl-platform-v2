@@ -31,8 +31,13 @@ class SampleRequestSerializer(serializers.ModelSerializer):
 
 class AdminQualityInspectionListSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
+    product_sku = serializers.CharField(source="product.sku", read_only=True)
     seller_name = serializers.SerializerMethodField()
+    seller_label = serializers.SerializerMethodField()
+    seller_contact = serializers.SerializerMethodField()
     inspector_display = serializers.SerializerMethodField()
+    inspector_id = serializers.IntegerField(source="inspector_id", read_only=True)
+    inspector_contact = serializers.SerializerMethodField()
 
     class Meta:
         model = QualityInspection
@@ -40,20 +45,40 @@ class AdminQualityInspectionListSerializer(serializers.ModelSerializer):
             "id",
             "product",
             "product_name",
+            "product_sku",
             "seller_name",
+            "seller_label",
+            "seller_contact",
             "inspector_display",
+            "inspector_id",
+            "inspector_contact",
             "status",
             "score",
             "inspected_at",
             "created_at",
         ]
 
-    def get_seller_name(self, obj: QualityInspection):
-        seller = getattr(obj, "seller", None)
+    def _seller_label_from_user(self, seller):
         if not seller:
             return "—"
+        prof = getattr(seller, "seller_profile", None)
+        biz = (getattr(prof, "business_name", "") or "").strip() if prof else ""
+        if biz:
+            return biz
         full = f"{(getattr(seller, 'first_name', '') or '').strip()} {(getattr(seller, 'last_name', '') or '').strip()}".strip()
-        return full or getattr(seller, "email", None) or getattr(seller, "phone", None) or "—"
+        return full or (getattr(seller, "email", None) or getattr(seller, "phone", None) or "—")
+
+    def get_seller_name(self, obj: QualityInspection):
+        return self.get_seller_label(obj)
+
+    def get_seller_label(self, obj: QualityInspection):
+        return self._seller_label_from_user(getattr(obj, "seller", None))
+
+    def get_seller_contact(self, obj: QualityInspection):
+        seller = getattr(obj, "seller", None)
+        if not seller:
+            return {"email": "", "phone": ""}
+        return {"email": (getattr(seller, "email", "") or "").strip(), "phone": (getattr(seller, "phone", "") or "").strip()}
 
     def get_inspector_display(self, obj: QualityInspection):
         if (obj.inspector_name or "").strip():
@@ -64,13 +89,23 @@ class AdminQualityInspectionListSerializer(serializers.ModelSerializer):
             return full or getattr(ins, "email", None) or getattr(ins, "phone", None) or "—"
         return "—"
 
+    def get_inspector_contact(self, obj: QualityInspection):
+        ins = getattr(obj, "inspector", None)
+        if not ins:
+            return {"email": "", "phone": ""}
+        return {"email": (getattr(ins, "email", "") or "").strip(), "phone": (getattr(ins, "phone", "") or "").strip()}
+
 
 class AdminQualityInspectionDetailSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
+    product_sku = serializers.CharField(source="product.sku", read_only=True)
     seller_id = serializers.IntegerField(source="seller_id", read_only=True)
     inspector_id = serializers.IntegerField(source="inspector_id", read_only=True)
     seller_name = serializers.SerializerMethodField()
+    seller_label = serializers.SerializerMethodField()
+    seller_contact = serializers.SerializerMethodField()
     inspector_display = serializers.SerializerMethodField()
+    inspector_contact = serializers.SerializerMethodField()
 
     class Meta:
         model = QualityInspection
@@ -78,11 +113,15 @@ class AdminQualityInspectionDetailSerializer(serializers.ModelSerializer):
             "id",
             "product",
             "product_name",
+            "product_sku",
             "seller_id",
             "seller_name",
+            "seller_label",
+            "seller_contact",
             "inspector_id",
             "inspector_name",
             "inspector_display",
+            "inspector_contact",
             "status",
             "score",
             "inspected_at",
@@ -92,8 +131,17 @@ class AdminQualityInspectionDetailSerializer(serializers.ModelSerializer):
     def get_seller_name(self, obj: QualityInspection):
         return AdminQualityInspectionListSerializer().get_seller_name(obj)
 
+    def get_seller_label(self, obj: QualityInspection):
+        return AdminQualityInspectionListSerializer().get_seller_label(obj)
+
+    def get_seller_contact(self, obj: QualityInspection):
+        return AdminQualityInspectionListSerializer().get_seller_contact(obj)
+
     def get_inspector_display(self, obj: QualityInspection):
         return AdminQualityInspectionListSerializer().get_inspector_display(obj)
+
+    def get_inspector_contact(self, obj: QualityInspection):
+        return AdminQualityInspectionListSerializer().get_inspector_contact(obj)
 
 
 class AdminQualityInspectionWriteSerializer(serializers.Serializer):

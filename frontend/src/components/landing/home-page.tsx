@@ -1,7 +1,7 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import Link from "next/link";
 import {
@@ -21,8 +21,8 @@ import { SectionReveal } from "./section-reveal";
 import { ProductCard } from "./product-card";
 import { CategoryNav } from "./category-nav";
 import { SearchDropdown } from "./search-dropdown";
-import { categories as categoryData } from "./category-data";
 import { ProfileDropdown } from "./profile-dropdown";
+import { fetchJsonAuthed } from "@/lib/api";
 import List from "./imports/List/List";
 import List2 from "./imports/List-1/List-42170-461";
 import Group419 from "./imports/Group419/Group419";
@@ -43,20 +43,6 @@ const imgImageBlur = "/figma/4e89248f6eb96b8a036324fe6c4416f8c4b7b240.png";
 import svgPaths from "./imports/LandingVehicle-2/svg-1nu26zbkv0";
 
 // ─── Data ────────────────────────────────────────────────────────────────
-
-const suggestedProducts = [
-  { name: "Deltalight Lamp", price: "$74", rating: 4.7, image: imgGroup34 },
-  { name: "AirPods Pro", price: "$249", rating: 4.9, image: imgGroup34 },
-  { name: "Ring Camera", price: "$78", rating: 4.8, image: imgGroup34 },
-  { name: "Alex USB-C Wire", price: "$8", rating: 4.5, image: imgGroup34 },
-];
-
-const weeklyProducts = [
-  { name: "Deltalight Lamp", price: "$74", rating: 4.7, image: imgGroup34 },
-  { name: "AirPods Pro", price: "$249", rating: 4.9, image: imgGroup34 },
-  { name: "Ring Camera", price: "$78", rating: 4.8, image: imgGroup34 },
-  { name: "Alex USB-C Wire", price: "$8", rating: 4.5, image: imgGroup34 },
-];
 
 const trustSteps = [
   {
@@ -93,6 +79,27 @@ function Navbar({
   onSubcategorySelect: (catId: string, subId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mobileCategories, setMobileCategories] = useState<Array<{ id: string; label: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/categories/explore/")
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.categories) ? (data as any).categories : [];
+        const mapped = rows
+          .map((c: any) => ({ id: String(c?.slug || c?.id || ""), label: String(c?.name || "").trim() }))
+          .filter((c: any) => c.id && c.label);
+        setMobileCategories(mapped);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMobileCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <>
@@ -149,7 +156,7 @@ function Navbar({
             className="fixed top-20 left-4 right-4 z-50 bg-white/90 backdrop-blur-2xl rounded-3xl p-6 shadow-[0_20px_60px_rgba(0,0,0,0.1)] border border-white/80 lg:hidden"
           >
             <div className="grid grid-cols-3 gap-3">
-              {categoryData.map((cat) => (
+              {mobileCategories.map((cat) => (
                 <button
                   key={cat.id}
                   onClick={() => {
@@ -238,6 +245,37 @@ function HeroSection() {
 // ─── Suggested Products ──────────────────────────────────────────────────
 
 function SuggestedProducts() {
+  const [products, setProducts] = useState<any[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams();
+    params.set("page_size", "8");
+    params.set("ordering", "-created_at");
+    fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+        setProducts(rows);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProducts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const cards = useMemo(() => {
+    return (products || []).slice(0, 8).map((p: any) => ({
+      id: Number(p?.id || 0),
+      name: String(p?.name || p?.title || "").trim(),
+      price: `${String(p?.currency || "USD")} ${String(p?.price || "").trim()}`.trim(),
+      rating: Number(p?.average_rating || 0),
+      image: String(p?.hero_image_url || ""),
+    })).filter((x: any) => x.id && x.name);
+  }, [products]);
+
   return (
     <section className="px-6 py-24 md:py-32 max-w-[1200px] mx-auto">
       <SectionReveal>
@@ -253,15 +291,11 @@ function SuggestedProducts() {
       </SectionReveal>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-        {suggestedProducts.map((product, i) => (
-          <SectionReveal key={`${product.name}-${i}`} delay={i + 1}>
-            <ProductCard
-              name={product.name}
-              price={product.price}
-              rating={product.rating}
-              image={product.image}
-              index={i}
-            />
+        {cards.map((product: any, i: number) => (
+          <SectionReveal key={`suggested-${product.id}-${i}`} delay={i + 1}>
+            <Link href={`/products/${product.id}`}>
+              <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i} />
+            </Link>
           </SectionReveal>
         ))}
       </div>
@@ -553,6 +587,37 @@ function QualitySection() {
 // ─── Weekly Top Products ────────────────────────────────────────────────
 
 function WeeklyProducts() {
+  const [products, setProducts] = useState<any[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams();
+    params.set("page_size", "4");
+    params.set("ordering", "-created_at");
+    fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+        setProducts(rows);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProducts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const cards = useMemo(() => {
+    return (products || []).slice(0, 4).map((p: any) => ({
+      id: Number(p?.id || 0),
+      name: String(p?.name || p?.title || "").trim(),
+      price: `${String(p?.currency || "USD")} ${String(p?.price || "").trim()}`.trim(),
+      rating: Number(p?.average_rating || 0),
+      image: String(p?.hero_image_url || ""),
+    })).filter((x: any) => x.id && x.name);
+  }, [products]);
+
   return (
     <section className="px-6 py-24 md:py-32 max-w-[1200px] mx-auto">
       <SectionReveal>
@@ -568,15 +633,11 @@ function WeeklyProducts() {
       </SectionReveal>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-        {weeklyProducts.map((product, i) => (
-          <SectionReveal key={`weekly-${product.name}-${i}`} delay={i + 1}>
-            <ProductCard
-              name={product.name}
-              price={product.price}
-              rating={product.rating}
-              image={product.image}
-              index={i + 4}
-            />
+        {cards.map((product: any, i: number) => (
+          <SectionReveal key={`weekly-${product.id}-${i}`} delay={i + 1}>
+            <Link href={`/products/${product.id}`}>
+              <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i + 4} />
+            </Link>
           </SectionReveal>
         ))}
       </div>

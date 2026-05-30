@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { AliveElement } from "@/components/landing/alive-element";
-import { promisesData } from "@/components/marketplace/data/promisesData";
+import { promisesData, type PromiseItem } from "@/components/marketplace/data/promisesData";
 import { useLanguage } from "@/context/language";
+import { fetchJsonAuthed } from "@/lib/api";
 
 export function PromisesSection() {
   const { language } = useLanguage();
@@ -11,6 +12,7 @@ export function PromisesSection() {
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
   const [needsScroll, setNeedsScroll] = useState(false);
+  const [items, setItems] = useState<PromiseItem[]>(promisesData);
 
   const updateScrollState = () => {
     const el = scrollRef.current;
@@ -30,6 +32,33 @@ export function PromisesSection() {
     return () => ro.disconnect();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/marketing/promises/")
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.promises) ? (data as any).promises : Array.isArray(data) ? data : [];
+        const mapped: PromiseItem[] = rows
+          .map((r: any) => {
+            const id = String(r?.id || "").trim();
+            return {
+              id,
+              imageUrl: String(r?.image_url || r?.imageUrl || "").trim(),
+              titleEn: String(r?.title_en || r?.titleEn || "").trim(),
+              titleZh: String(r?.title_zh || r?.titleZh || "").trim(),
+              descriptionEn: String(r?.description_en || r?.descriptionEn || "").trim(),
+              descriptionZh: String(r?.description_zh || r?.descriptionZh || "").trim(),
+            };
+          })
+          .filter((x: PromiseItem) => x.id && x.titleEn);
+        if (mapped.length > 0) setItems(mapped);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const scroll = (dir: 'left' | 'right') => {
     const el = scrollRef.current;
     if (!el) return;
@@ -44,12 +73,16 @@ export function PromisesSection() {
       <div className="max-w-[1200px] mx-auto">
         <div ref={scrollRef} onScroll={updateScrollState} className="-mx-6 overflow-x-scroll [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
           <div className={`flex items-start px-6${needsScroll ? '' : ' justify-center'}`} style={{ gap: "16px", paddingBottom: "8px" }}>
-            {promisesData.map((promise, i) => (
-              <div key={promise.titleEn} className="flex-shrink-0">
+            {items.map((promise, i) => (
+              <div key={promise.id} className="flex-shrink-0">
                 <AliveElement delay={i} sensitivity={0.5}>
                   <div>
                     <div className="mb-4 overflow-hidden shadow-[0_2px_12px_rgba(0,0,0,0.06)] hover:shadow-[0_6px_24px_rgba(0,0,0,0.1)] transition-shadow duration-300" style={{ width: "clamp(140px, 16vw, 260px)", height: "clamp(224px, 25.56vw, 415.36px)", borderRadius: "clamp(18px, 2.2vw, 35.83px)", background: i === 3 ? "linear-gradient(180deg, #F6F6F6 0%, #DEDEDE 100%)" : "#FFF" }}>
-                      <img src={typeof promise.image === "string" ? promise.image : promise.image.src} alt={t(promise.titleEn, promise.titleZh)} className="w-full h-full object-cover" style={{ borderRadius: "clamp(18px, 2.2vw, 35.83px)", display: "block" }} />
+                      {promise.imageUrl ? (
+                        <img src={promise.imageUrl} alt={t(promise.titleEn, promise.titleZh)} className="w-full h-full object-cover" style={{ borderRadius: "clamp(18px, 2.2vw, 35.83px)", display: "block" }} />
+                      ) : (
+                        <div className="w-full h-full" />
+                      )}
                     </div>
                     <div className="flex flex-col" style={{ width: "clamp(130px, 14.1vw, 230px)", minHeight: "clamp(52px, 5.2vw, 84px)" }}>
                       <p className="font-['Urbanist',sans-serif] text-[clamp(12px,1.5vw,16.564px)] font-semibold leading-[1.3]">
