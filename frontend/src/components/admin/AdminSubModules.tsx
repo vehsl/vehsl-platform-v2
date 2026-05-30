@@ -3,7 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useLocation } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import {
   Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
   Package, Eye, Edit3, Trash2, CheckCircle2, XCircle, Clock,
@@ -2705,6 +2705,7 @@ const vehicleStatusColor: Record<string, string> = {
 
 export function AdminLogistics() {
   const location = useLocation();
+  const navigate = useNavigate();
   const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
@@ -2714,7 +2715,13 @@ export function AdminLogistics() {
   const [fleetStatus, setFleetStatus] = useState<string>("all");
   const [shipments, setShipments] = useState<any[]>([]);
   const [shipQ, setShipQ] = useState<string>("");
+  const [shipSeller, setShipSeller] = useState<string>("");
+  const [shipBuyer, setShipBuyer] = useState<string>("");
+  const [shipRoute, setShipRoute] = useState<string>("");
   const [shipStatus, setShipStatus] = useState<string>("all");
+  const [trackingFilter, setTrackingFilter] = useState<"all" | "has" | "missing">("all");
+  const [lateOnly, setLateOnly] = useState<boolean>(false);
+  const [deliveredOnly, setDeliveredOnly] = useState<boolean>(false);
   const [shipPage, setShipPage] = useState<number>(1);
   const [shipTotalPages, setShipTotalPages] = useState<number>(1);
   const [shipCount, setShipCount] = useState<number>(0);
@@ -2722,18 +2729,80 @@ export function AdminLogistics() {
   const [shipmentOpen, setShipmentOpen] = useState(false);
   const [shipmentLoading, setShipmentLoading] = useState(false);
   const [shipmentDetail, setShipmentDetail] = useState<any>(null);
+  const [flowMode, setFlowMode] = useState<"outgoing" | "incoming" | "late">("outgoing");
+  const [shipActionSaving, setShipActionSaving] = useState(false);
+  const [editTracking, setEditTracking] = useState("");
+  const [editCarrier, setEditCarrier] = useState("");
+  const [editEta, setEditEta] = useState("");
+  const [editStatus, setEditStatus] = useState("");
   const [error, setError] = useState<string>("");
+  const [success, setSuccess] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const copyToClipboard = useCallback(async (text: string, successMsg: string) => {
+    const t = (text || "").toString();
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      setSuccess(successMsg);
+      window.setTimeout(() => setSuccess(""), 2000);
+    } catch {
+      try {
+        window.prompt("Copy to clipboard:", t);
+      } catch {}
+    }
+  }, []);
+
+  const syncUrl = useCallback(
+    (next?: Partial<Record<string, string>>) => {
+      const params = new URLSearchParams(location.search || "");
+      const setOrDel = (k: string, v: string) => {
+        if (v) params.set(k, v);
+        else params.delete(k);
+      };
+
+      setOrDel("status", shipStatus !== "all" ? shipStatus : "");
+      setOrDel("q", shipQ.trim());
+      setOrDel("seller", shipSeller.trim());
+      setOrDel("buyer", shipBuyer.trim());
+      setOrDel("route", shipRoute.trim());
+      setOrDel("has_tracking", trackingFilter === "has" ? "1" : trackingFilter === "missing" ? "0" : "");
+      setOrDel("late_only", lateOnly ? "1" : "");
+      setOrDel("delivered_only", deliveredOnly ? "1" : "");
+      setOrDel("page", shipPage && shipPage !== 1 ? String(shipPage) : "");
+
+      for (const [k, v] of Object.entries(next || {})) {
+        setOrDel(k, v);
+      }
+
+      navigate({ search: `?${params.toString()}` }, { replace: true });
+    },
+    [location.search, navigate, shipBuyer, shipPage, shipQ, shipRoute, shipSeller, shipStatus, trackingFilter, lateOnly, deliveredOnly]
+  );
 
   useEffect(() => {
     const params = new URLSearchParams(location.search || "");
     const statusIn = (params.get("status") || "").trim();
     const qIn = params.get("q");
+    const sellerIn = params.get("seller");
+    const buyerIn = params.get("buyer");
+    const routeIn = params.get("route");
+    const trackingIn = (params.get("has_tracking") || "").trim();
+    const lateIn = (params.get("late_only") || "").trim();
+    const deliveredIn = (params.get("delivered_only") || "").trim();
     const pageIn = Number(params.get("page") || "1");
     if (qIn != null) setShipQ(qIn);
+    if (sellerIn != null) setShipSeller(sellerIn);
+    if (buyerIn != null) setShipBuyer(buyerIn);
+    if (routeIn != null) setShipRoute(routeIn);
     if (statusIn) setShipStatus(statusIn);
     else setShipStatus("all");
+    if (trackingIn === "1") setTrackingFilter("has");
+    else if (trackingIn === "0") setTrackingFilter("missing");
+    else setTrackingFilter("all");
+    setLateOnly(lateIn === "1" || lateIn === "true" || lateIn === "yes");
+    setDeliveredOnly(deliveredIn === "1" || deliveredIn === "true" || deliveredIn === "yes");
     if (Number.isFinite(pageIn) && pageIn >= 1) setShipPage(Math.floor(pageIn));
   }, [location.search]);
 
@@ -2773,6 +2842,7 @@ export function AdminLogistics() {
   useEffect(() => {
     let cancelled = false;
     setError("");
+    setSuccess("");
     setLoading(true);
     (async () => {
       try {
@@ -2784,7 +2854,14 @@ export function AdminLogistics() {
         shipParams.set("page", String(shipPage));
         shipParams.set("page_size", "10");
         if (shipQ.trim()) shipParams.set("q", shipQ.trim());
+        if (shipSeller.trim()) shipParams.set("seller", shipSeller.trim());
+        if (shipBuyer.trim()) shipParams.set("buyer", shipBuyer.trim());
+        if (shipRoute.trim()) shipParams.set("route", shipRoute.trim());
         if (shipStatus && shipStatus !== "all") shipParams.set("status", shipStatus);
+        if (trackingFilter === "has") shipParams.set("has_tracking", "1");
+        if (trackingFilter === "missing") shipParams.set("has_tracking", "0");
+        if (lateOnly) shipParams.set("late_only", "1");
+        if (deliveredOnly) shipParams.set("delivered_only", "1");
 
         const [s, f, fl] = await Promise.all([
           fetchJson(`/api/v1/admin/logistics/stats/?days=${days}`),
@@ -2814,7 +2891,7 @@ export function AdminLogistics() {
     return () => {
       cancelled = true;
     };
-  }, [days, fleetStatus, shipPage, shipQ, shipStatus, refreshNonce]);
+  }, [days, fleetStatus, shipPage, shipQ, shipSeller, shipBuyer, shipRoute, shipStatus, trackingFilter, lateOnly, deliveredOnly, refreshNonce]);
 
   const openShipment = async (shipmentId: number) => {
     if (!shipmentId) return;
@@ -2824,12 +2901,139 @@ export function AdminLogistics() {
     try {
       const d = await fetchJson(`/api/v1/admin/logistics/shipment-detail/?id=${shipmentId}`);
       setShipmentDetail(d);
+      const sh = d?.shipment || {};
+      setEditTracking((sh?.tracking_number || "").toString());
+      setEditCarrier((sh?.carrier_id || "").toString());
+      setEditStatus((sh?.status || "").toString());
+      const etaIso = (sh?.estimated_delivery_at || "").toString();
+      if (etaIso) {
+        const dt = new Date(etaIso);
+        const pad = (n: number) => String(n).padStart(2, "0");
+        if (!isNaN(dt.getTime())) {
+          const local = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+          setEditEta(local);
+        } else {
+          setEditEta("");
+        }
+      } else {
+        setEditEta("");
+      }
     } catch (e: any) {
       setShipmentDetail(null);
       setError(e?.message || "Failed to load shipment.");
       setShipmentOpen(false);
     } finally {
       setShipmentLoading(false);
+    }
+  };
+
+  const refreshAfterShipmentAction = async (shipmentId: number) => {
+    setRefreshNonce((n) => n + 1);
+    await openShipment(shipmentId);
+  };
+
+  const setShipmentTracking = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    const tracking_number = (editTracking || "").trim();
+    const carrier_id = (editCarrier || "").trim();
+    if (!tracking_number && !carrier_id) {
+      setError("Enter a tracking number or carrier id.");
+      return;
+    }
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/set-tracking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId, tracking_number, carrier_id }),
+      });
+      setSuccess("Tracking updated.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update tracking.");
+    } finally {
+      setShipActionSaving(false);
+    }
+  };
+
+  const setShipmentStatus = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    const statusVal = (editStatus || "").trim();
+    if (!statusVal) {
+      setError("Select a status.");
+      return;
+    }
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/set-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId, status: statusVal }),
+      });
+      setSuccess("Status updated.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update status.");
+    } finally {
+      setShipActionSaving(false);
+    }
+  };
+
+  const setShipmentEta = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    const raw = (editEta || "").trim();
+    if (!raw) {
+      setError("Select an ETA.");
+      return;
+    }
+    const dt = new Date(raw);
+    if (Number.isNaN(dt.getTime())) {
+      setError("Invalid ETA.");
+      return;
+    }
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/set-eta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId, estimated_delivery_at: dt.toISOString() }),
+      });
+      setSuccess("ETA updated.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to set ETA.");
+    } finally {
+      setShipActionSaving(false);
+    }
+  };
+
+  const markShipmentDelivered = async () => {
+    const shipmentId = Number(shipmentDetail?.shipment?.id || 0);
+    if (!shipmentId) return;
+    setShipActionSaving(true);
+    try {
+      setError("");
+      await fetchJson("/api/v1/admin/logistics/shipments/mark-delivered", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipment_id: shipmentId }),
+      });
+      setSuccess("Marked delivered.");
+      window.setTimeout(() => setSuccess(""), 2000);
+      await refreshAfterShipmentAction(shipmentId);
+    } catch (e: any) {
+      setError(e?.message || "Failed to mark delivered.");
+    } finally {
+      setShipActionSaving(false);
     }
   };
 
@@ -2859,6 +3063,11 @@ export function AdminLogistics() {
       {error && (
         <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
           {error}
+        </motion.div>
+      )}
+      {success && (
+        <motion.div variants={stagger.item} className="px-4 py-3 rounded-2xl bg-[#30A46C]/8 text-[#1f7a4a] text-[0.8125rem]">
+          {success}
         </motion.div>
       )}
 
@@ -2906,16 +3115,30 @@ export function AdminLogistics() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-foreground text-[0.9375rem] mb-1">Shipment Flow — This Week</h2>
-              <p className="text-muted-foreground/50 text-[0.75rem]">Incoming vs outgoing parcels</p>
+              <p className="text-muted-foreground/50 text-[0.75rem]">
+                {flowMode === "outgoing" ? "Created shipments" : flowMode === "incoming" ? "Delivered shipments" : "Late shipments"}
+              </p>
             </div>
+            <select
+              value={flowMode}
+              onChange={(e) => setFlowMode(e.target.value as any)}
+              className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+            >
+              <option value="outgoing">Created</option>
+              <option value="incoming">Delivered</option>
+              <option value="late">Late</option>
+            </select>
           </div>
           <CustomAreaChart
             data={flow}
             xKey="month"
-            series={[
-              { dataKey: "incoming", color: "#3B82F6", label: "Incoming" },
-              { dataKey: "outgoing", color: "#30A46C", label: "Outgoing" },
-            ]}
+            series={
+              flowMode === "incoming"
+                ? [{ dataKey: "incoming", color: "#3B82F6", label: "Delivered" }]
+                : flowMode === "late"
+                  ? [{ dataKey: "late", color: "#E5484D", label: "Late" }]
+                  : [{ dataKey: "outgoing", color: "#30A46C", label: "Created" }]
+            }
             height={200}
           />
         </SectionCard>
@@ -2925,7 +3148,7 @@ export function AdminLogistics() {
       <motion.div variants={stagger.item}>
         <SectionCard>
           <div className="flex items-center justify-between gap-3 mb-6">
-            <h2 className="text-foreground text-[0.9375rem]">Fleet Status</h2>
+            <h2 className="text-foreground text-[0.9375rem]">Shipment Watchlist</h2>
             <select
               value={fleetStatus}
               onChange={(e) => setFleetStatus(e.target.value)}
@@ -2945,11 +3168,11 @@ export function AdminLogistics() {
             )}
             {!loading && fleet.length === 0 && (
               <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
-                No fleet activity yet.
+                No shipments to watch yet.
               </div>
             )}
             {fleet.map((v, i) => (
-              <motion.div key={v.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
+              <motion.div key={v.shipment_id || i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                 className="flex items-center gap-4 px-5 py-4 rounded-2xl hover:bg-muted/20 transition-colors cursor-pointer"
                 onClick={() => openShipment(Number(v.shipment_id || 0))}
               >
@@ -2958,17 +3181,23 @@ export function AdminLogistics() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[0.875rem] text-foreground">{v.driver}</span>
-                    <span className="text-[0.6875rem] text-muted-foreground/40">{v.id} · {v.plate}</span>
+                    <span className="text-[0.875rem] text-foreground/90 truncate">
+                      SH-{v.shipment_id} · ORD-{v.order_id || "—"}
+                    </span>
+                    <span className="text-[0.6875rem] text-muted-foreground/40 truncate">
+                      {v.tracking_number || v.carrier_id || "No tracking"}
+                    </span>
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{v.currentTask}</span>
+                  <div className="text-[0.75rem] text-muted-foreground/55 truncate">
+                    {(v.seller?.label || "—")} → {(v.buyer?.label || "—")}
+                  </div>
+                  <div className="text-[0.75rem] text-muted-foreground/45 truncate">
+                    {(v.origin || "—")} → {(v.destination || "—")}
+                  </div>
                 </div>
                 <div className="hidden sm:flex items-center gap-4">
                   <div className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground/50">
-                    <MapPin size={12} />{v.location}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[0.75rem]" style={{ color: v.fuel < 40 ? "#E5484D" : "#30A46C" }}>
-                    <Fuel size={12} />{v.fuel}%
+                    <MapPin size={12} />{v.last_location || "—"}
                   </div>
                 </div>
                 <StatusPill
@@ -2997,16 +3226,48 @@ export function AdminLogistics() {
                   onChange={(e) => {
                     setShipQ(e.target.value);
                     setShipPage(1);
+                    syncUrl({ q: e.target.value, page: "" });
                   }}
                   placeholder="Search tracking, order, email…"
                   className="pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[260px]"
                 />
               </div>
+              <input
+                value={shipSeller}
+                onChange={(e) => {
+                  setShipSeller(e.target.value);
+                  setShipPage(1);
+                  syncUrl({ seller: e.target.value, page: "" });
+                }}
+                placeholder="Seller (id/email/name)"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[220px]"
+              />
+              <input
+                value={shipBuyer}
+                onChange={(e) => {
+                  setShipBuyer(e.target.value);
+                  setShipPage(1);
+                  syncUrl({ buyer: e.target.value, page: "" });
+                }}
+                placeholder="Buyer (id/email/name)"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[220px]"
+              />
+              <input
+                value={shipRoute}
+                onChange={(e) => {
+                  setShipRoute(e.target.value);
+                  setShipPage(1);
+                  syncUrl({ route: e.target.value, page: "" });
+                }}
+                placeholder="Route (origin/dest)"
+                className="px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all w-[200px]"
+              />
               <select
                 value={shipStatus}
                 onChange={(e) => {
                   setShipStatus(e.target.value);
                   setShipPage(1);
+                  syncUrl({ status: e.target.value === "all" ? "" : e.target.value, page: "" });
                 }}
                 className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
               >
@@ -3018,6 +3279,48 @@ export function AdminLogistics() {
                 <option value="out_for_delivery">Out for delivery</option>
                 <option value="delivered">Delivered</option>
               </select>
+              <select
+                value={trackingFilter}
+                onChange={(e) => {
+                  const v = e.target.value as any;
+                  setTrackingFilter(v);
+                  setShipPage(1);
+                  syncUrl({ has_tracking: v === "has" ? "1" : v === "missing" ? "0" : "", page: "" });
+                }}
+                className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="all">Tracking: all</option>
+                <option value="has">Has tracking</option>
+                <option value="missing">Missing tracking</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !lateOnly;
+                  setLateOnly(next);
+                  setShipPage(1);
+                  syncUrl({ late_only: next ? "1" : "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  lateOnly ? "bg-[#E5484D]/10 text-[#E5484D]/80" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Late only
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !deliveredOnly;
+                  setDeliveredOnly(next);
+                  setShipPage(1);
+                  syncUrl({ delivered_only: next ? "1" : "", page: "" });
+                }}
+                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
+                  deliveredOnly ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Delivered only
+              </button>
             </div>
           </div>
 
@@ -3029,12 +3332,39 @@ export function AdminLogistics() {
 
           {!shipLoading && shipments.length === 0 && (
             <div className="px-5 py-10 rounded-2xl bg-muted/10 text-center text-[0.8125rem] text-muted-foreground/60">
-              No shipments found.
+              <div>No shipments found.</div>
+              <div className="mt-3 flex items-center justify-center">
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate("/management/orders")}
+                >
+                  Open orders
+                </BounceButton>
+              </div>
             </div>
           )}
 
           {!shipLoading && shipments.length > 0 && (
             <div className="space-y-2">
+              {trackingFilter === "all" &&
+                shipments.length > 0 &&
+                shipments.every((s: any) => !String(s?.tracking_number || s?.carrier_id || "").trim()) && (
+                  <div className="px-5 py-4 rounded-2xl bg-[#FFB224]/8 border border-[#FFB224]/15 text-[0.8125rem] text-foreground/70 flex items-center justify-between gap-3">
+                    <span>No tracking numbers found. Connect carrier integration or enter tracking.</span>
+                    <BounceButton
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setTrackingFilter("missing");
+                        setShipPage(1);
+                        syncUrl({ has_tracking: "0", page: "" });
+                      }}
+                    >
+                      Show missing
+                    </BounceButton>
+                  </div>
+                )}
               {shipments.map((s, i) => (
                 <motion.div
                   key={s.id}
@@ -3047,11 +3377,62 @@ export function AdminLogistics() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-[0.875rem] text-foreground/80 truncate">SH-{s.id}</span>
-                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">ORD-{s.order_id || "—"}</span>
-                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate">{s.tracking_number || s.carrier_id || "—"}</span>
+                      <button
+                        type="button"
+                        className="text-[0.6875rem] text-muted-foreground/55 hover:text-foreground truncate"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const oid = s.order_id || "";
+                          if (!oid) return;
+                          navigate(`/management/orders?q=${encodeURIComponent(`ORD-${oid}`)}`);
+                        }}
+                        title="Open order"
+                      >
+                        ORD-{s.order_id || "—"}
+                      </button>
+                      <span className="text-[0.6875rem] text-muted-foreground/40 truncate" title={s.tracking_number || s.carrier_id || ""}>
+                        {s.tracking_number || s.carrier_id || "—"}
+                      </span>
                     </div>
                     <div className="text-[0.75rem] text-muted-foreground/50 truncate">
-                      {s.origin || "—"} → {s.destination || "—"} · {s.seller || "—"} → {s.buyer || "—"}
+                      {s.origin || "—"} → {s.destination || "—"} ·{" "}
+                      <button
+                        type="button"
+                        className="hover:text-foreground"
+                        title={s?.seller_contact?.email || s?.seller_contact?.phone || ""}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const key = s?.seller_contact?.email || s?.seller_contact?.phone || s?.seller || "";
+                          if (!key) return;
+                          navigate(`/users?q=${encodeURIComponent(key)}`);
+                        }}
+                      >
+                        {s.seller || "—"}
+                      </button>{" "}
+                      {!!(s?.seller_contact?.email || s?.seller_contact?.phone) && (
+                        <span className="text-[0.6875rem] text-muted-foreground/40" title={s?.seller_contact?.email || s?.seller_contact?.phone || ""}>
+                          ({s?.seller_contact?.phone || s?.seller_contact?.email})
+                        </span>
+                      )}{" "}
+                      →{" "}
+                      <button
+                        type="button"
+                        className="hover:text-foreground"
+                        title={s?.buyer_contact?.email || s?.buyer_contact?.phone || ""}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const key = s?.buyer_contact?.email || s?.buyer_contact?.phone || s?.buyer || "";
+                          if (!key) return;
+                          navigate(`/users?q=${encodeURIComponent(key)}`);
+                        }}
+                      >
+                        {s.buyer || "—"}
+                      </button>
+                      {!!(s?.buyer_contact?.email || s?.buyer_contact?.phone) && (
+                        <span className="text-[0.6875rem] text-muted-foreground/40" title={s?.buyer_contact?.email || s?.buyer_contact?.phone || ""}>
+                          ({s?.buyer_contact?.phone || s?.buyer_contact?.email})
+                        </span>
+                      )}
                     </div>
                   </div>
                   <StatusPill
@@ -3074,10 +3455,36 @@ export function AdminLogistics() {
               {shipCount ? `Showing ${(shipPage - 1) * 10 + 1}-${Math.min(shipPage * 10, shipCount)} of ${shipCount}` : "—"}
             </div>
             <div className="flex items-center gap-2">
-              <BounceButton variant="ghost" size="sm" onClick={shipPage <= 1 ? undefined : () => setShipPage((p) => Math.max(1, p - 1))} className={shipPage <= 1 ? "opacity-60 pointer-events-none" : ""}>
+              <BounceButton
+                variant="ghost"
+                size="sm"
+                onClick={
+                  shipPage <= 1
+                    ? undefined
+                    : () => {
+                        const next = Math.max(1, shipPage - 1);
+                        setShipPage(next);
+                        syncUrl({ page: next === 1 ? "" : String(next) });
+                      }
+                }
+                className={shipPage <= 1 ? "opacity-60 pointer-events-none" : ""}
+              >
                 Prev
               </BounceButton>
-              <BounceButton variant="ghost" size="sm" onClick={shipPage >= shipTotalPages ? undefined : () => setShipPage((p) => p + 1)} className={shipPage >= shipTotalPages ? "opacity-60 pointer-events-none" : ""}>
+              <BounceButton
+                variant="ghost"
+                size="sm"
+                onClick={
+                  shipPage >= shipTotalPages
+                    ? undefined
+                    : () => {
+                        const next = shipPage + 1;
+                        setShipPage(next);
+                        syncUrl({ page: String(next) });
+                      }
+                }
+                className={shipPage >= shipTotalPages ? "opacity-60 pointer-events-none" : ""}
+              >
                 Next
               </BounceButton>
             </div>
@@ -3108,7 +3515,19 @@ export function AdminLogistics() {
                     {shipmentDetail?.shipment?.id ? `Shipment SH-${shipmentDetail.shipment.id}` : (shipmentLoading ? "Loading…" : "Shipment")}
                   </h2>
                   <p className="text-muted-foreground text-[0.8125rem]">
-                    ORD-{shipmentDetail?.shipment?.order_id || "—"} · {shipmentDetail?.shipment?.status || "—"}
+                    <button
+                      type="button"
+                      className="hover:text-foreground"
+                      onClick={() => {
+                        const oid = shipmentDetail?.shipment?.order_id;
+                        if (!oid) return;
+                        navigate(`/management/orders?q=${encodeURIComponent(`ORD-${oid}`)}`);
+                      }}
+                      title="Open order"
+                    >
+                      ORD-{shipmentDetail?.shipment?.order_id || "—"}
+                    </button>{" "}
+                    · {shipmentDetail?.shipment?.status || "—"}
                   </p>
                 </div>
                 <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setShipmentOpen(false)}>
@@ -3127,7 +3546,20 @@ export function AdminLogistics() {
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Tracking</div>
-                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || "—"}</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-[0.875rem] text-foreground/80 truncate">
+                          {shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || "—"}
+                        </div>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl hover:bg-muted/20 text-muted-foreground/60"
+                          onClick={() => void copyToClipboard(String(shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id || ""), "Copied tracking.")}
+                          disabled={!(shipmentDetail?.shipment?.tracking_number || shipmentDetail?.shipment?.carrier_id)}
+                          title="Copy tracking"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
                     </div>
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Route</div>
@@ -3135,7 +3567,130 @@ export function AdminLogistics() {
                     </div>
                     <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
                       <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Buyer / Seller</div>
-                      <div className="text-[0.875rem] text-foreground/80">{shipmentDetail?.buyer?.label || "—"} · {shipmentDetail?.seller?.label || "—"}</div>
+                      <div className="text-[0.875rem] text-foreground/80 truncate">
+                        <button
+                          type="button"
+                          className="hover:text-foreground"
+                          title={shipmentDetail?.buyer?.email || shipmentDetail?.buyer?.phone || ""}
+                          onClick={() => {
+                            const key = shipmentDetail?.buyer?.email || shipmentDetail?.buyer?.phone || "";
+                            if (!key) return;
+                            navigate(`/users?q=${encodeURIComponent(key)}`);
+                          }}
+                        >
+                          {shipmentDetail?.buyer?.label || "—"}
+                        </button>{" "}
+                        ·{" "}
+                        <button
+                          type="button"
+                          className="hover:text-foreground"
+                          title={shipmentDetail?.seller?.email || shipmentDetail?.seller?.phone || ""}
+                          onClick={() => {
+                            const key = shipmentDetail?.seller?.email || shipmentDetail?.seller?.phone || "";
+                            if (!key) return;
+                            navigate(`/users?q=${encodeURIComponent(key)}`);
+                          }}
+                        >
+                          {shipmentDetail?.seller?.label || "—"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="text-[0.75rem] text-muted-foreground/60">Actions</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 text-[0.75rem] text-muted-foreground/80 flex items-center gap-2"
+                          onClick={() => void copyToClipboard(String(shipmentDetail?.shipment?.id || ""), "Copied shipment id.")}
+                          disabled={!shipmentDetail?.shipment?.id}
+                          title="Copy shipment id"
+                        >
+                          <Hash size={14} />
+                          SH
+                        </button>
+                        <button
+                          type="button"
+                          className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 text-[0.75rem] text-muted-foreground/80 flex items-center gap-2"
+                          onClick={() => void copyToClipboard(String(shipmentDetail?.shipment?.order_id || ""), "Copied order id.")}
+                          disabled={!shipmentDetail?.shipment?.order_id}
+                          title="Copy order id"
+                        >
+                          <Hash size={14} />
+                          ORD
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-2">Tracking</div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <input
+                            value={editTracking}
+                            onChange={(e) => setEditTracking(e.target.value)}
+                            placeholder="Tracking #"
+                            className="px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                          />
+                          <input
+                            value={editCarrier}
+                            onChange={(e) => setEditCarrier(e.target.value)}
+                            placeholder="Carrier id (optional)"
+                            className="px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                          />
+                          <BounceButton variant="primary" size="sm" onClick={shipActionSaving ? undefined : setShipmentTracking} className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}>
+                            Set tracking #
+                          </BounceButton>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-card border border-border/30 p-4">
+                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-2">Status</div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <select
+                            value={editStatus}
+                            onChange={(e) => setEditStatus(e.target.value)}
+                            className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none cursor-pointer"
+                          >
+                            <option value="label_created">Label created</option>
+                            <option value="picked_up">Picked up</option>
+                            <option value="in_transit">In transit</option>
+                            <option value="customs">Customs</option>
+                            <option value="out_for_delivery">Out for delivery</option>
+                            <option value="delivered">Delivered</option>
+                          </select>
+                          <div className="flex items-center gap-2">
+                            <BounceButton variant="ghost" size="sm" onClick={shipActionSaving ? undefined : setShipmentStatus} className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}>
+                              Update status
+                            </BounceButton>
+                            <BounceButton
+                              variant="primary"
+                              size="sm"
+                              onClick={shipActionSaving ? undefined : markShipmentDelivered}
+                              className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}
+                            >
+                              Mark delivered
+                            </BounceButton>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-2xl bg-card border border-border/30 p-4">
+                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-2">ETA</div>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <input
+                          type="datetime-local"
+                          value={editEta}
+                          onChange={(e) => setEditEta(e.target.value)}
+                          className="px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all flex-1"
+                        />
+                        <BounceButton variant="ghost" size="sm" onClick={shipActionSaving ? undefined : setShipmentEta} className={shipActionSaving ? "opacity-60 pointer-events-none" : ""}>
+                          Set ETA
+                        </BounceButton>
+                      </div>
                     </div>
                   </div>
 

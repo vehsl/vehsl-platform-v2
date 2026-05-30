@@ -2,12 +2,14 @@ import base64
 import hashlib
 import hmac
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, time as dt_time
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.core.cache import cache
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 from django.contrib.auth.hashers import check_password
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
@@ -31,6 +33,7 @@ from .models import (
     ReleaseConditionProof,
     Review,
     Shipment,
+    ShipmentEvent,
 )
 from .serializers import (
     CartSerializer,
@@ -833,9 +836,68 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             return "idle"
         return "idle"
 
+    def _user_label(self, u):
+        if not u:
+            return "—"
+        seller_prof = getattr(u, "seller_profile", None)
+        buyer_prof = getattr(u, "buyer_profile", None)
+        seller_name = (getattr(seller_prof, "business_name", "") or "").strip() if seller_prof else ""
+        buyer_name = (getattr(buyer_prof, "name", "") or "").strip() if buyer_prof else ""
+        return seller_name or buyer_name or (getattr(u, "email", "") or "").strip() or (getattr(u, "phone", "") or "").strip() or f"user:{getattr(u, 'id', '')}"
+
+    def _user_contact(self, u):
+        if not u:
+            return {"email": "", "phone": ""}
+        return {"email": (getattr(u, "email", "") or "").strip(), "phone": (getattr(u, "phone", "") or "").strip()}
+
+    def _parse_dt(self, raw):
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if not s:
+            return None
+        dt = parse_datetime(s)
+        if dt is None:
+            d = parse_date(s)
+            if d is None:
+                return None
+            dt = datetime.combine(d, dt_time.min)
+        if timezone.is_naive(dt):
+            try:
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            except Exception:
+                pass
+        return dt
+
+    def _parse_dt_end(self, raw):
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if not s:
+            return None
+        dt = parse_datetime(s)
+        if dt is None:
+            d = parse_date(s)
+            if d is None:
+                return None
+            dt = datetime.combine(d, dt_time.max)
+        if timezone.is_naive(dt):
+            try:
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            except Exception:
+                pass
+        return dt
+
+    def _tracking_exists_q(self):
+        return ~(Q(tracking_number__isnull=True) | Q(tracking_number="")) | ~(Q(carrier_id__isnull=True) | Q(carrier_id=""))
+
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         days = self._parse_days(request, default=7)
+        cache_key = f"admin_logistics_stats:{days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
         now = timezone.now()
         start_this = now - timedelta(days=days)
         start_prev = now - timedelta(days=days * 2)
@@ -879,22 +941,26 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
         on_time_prev_rate = (on_time_prev * 100.0 / on_time_prev_total) if on_time_prev_total else 0.0
         on_time_delta = on_time_rate - on_time_prev_rate
 
-        return Response(
-            {
-                "days": days,
-                "active_vehicles": active_vehicles,
-                "total_vehicles": total_vehicles,
-                "in_transit": in_transit,
-                "avg_delivery_hours": round(avg_hours_this, 2),
-                "avg_delivery_delta_minutes": avg_delta_minutes,
-                "on_time_rate": round(on_time_rate, 2),
-                "on_time_delta": round(on_time_delta, 2),
-            }
-        )
+        payload = {
+            "days": days,
+            "active_vehicles": active_vehicles,
+            "total_vehicles": total_vehicles,
+            "in_transit": in_transit,
+            "avg_delivery_hours": round(avg_hours_this, 2),
+            "avg_delivery_delta_minutes": avg_delta_minutes,
+            "on_time_rate": round(on_time_rate, 2),
+            "on_time_delta": round(on_time_delta, 2),
+        }
+        cache.set(cache_key, payload, timeout=60)
+        return Response(payload)
 
     @action(detail=False, methods=["get"], url_path="flow")
     def flow(self, request):
         days = self._parse_days(request, default=7)
+        cache_key = f"admin_logistics_flow:{days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
 
         dates = self._day_labels(days)
         start_date = dates[0]
@@ -925,6 +991,36 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             .values_list("d", "c")
         )
 
+        late_delivered = dict(
+            Shipment.objects.filter(
+                deleted_at__isnull=True,
+                actual_delivery_at__isnull=False,
+                estimated_delivery_at__isnull=False,
+                actual_delivery_at__date__gte=start_date,
+                actual_delivery_at__date__lte=end_date,
+                actual_delivery_at__gt=F("estimated_delivery_at"),
+            )
+            .annotate(d=TruncDate("actual_delivery_at"))
+            .values("d")
+            .annotate(c=Count("id"))
+            .values_list("d", "c")
+        )
+
+        late_open = dict(
+            Shipment.objects.filter(
+                deleted_at__isnull=True,
+                actual_delivery_at__isnull=True,
+                estimated_delivery_at__isnull=False,
+                estimated_delivery_at__date__gte=start_date,
+                estimated_delivery_at__date__lte=end_date,
+                estimated_delivery_at__lt=timezone.now(),
+            )
+            .annotate(d=TruncDate("estimated_delivery_at"))
+            .values("d")
+            .annotate(c=Count("id"))
+            .values_list("d", "c")
+        )
+
         data = []
         for d in dates:
             data.append(
@@ -932,8 +1028,10 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
                     "month": d.strftime("%a"),
                     "incoming": int(incoming.get(d, 0) or 0),
                     "outgoing": int(outgoing.get(d, 0) or 0),
+                    "late": int((late_delivered.get(d, 0) or 0) + (late_open.get(d, 0) or 0)),
                 }
             )
+        cache.set(cache_key, data, timeout=60)
         return Response(data)
 
     @action(detail=False, methods=["get"], url_path="fleet")
@@ -946,7 +1044,13 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
         status_filter = (request.query_params.get("status") or "").strip().lower()
 
         qs = (
-            Shipment.objects.select_related("order", "order__seller", "order__buyer")
+            Shipment.objects.select_related(
+                "order",
+                "order__seller",
+                "order__seller__seller_profile",
+                "order__buyer",
+                "order__buyer__buyer_profile",
+            )
             .prefetch_related("events")
             .filter(deleted_at__isnull=True)
             .order_by("-created_at")[:limit]
@@ -963,40 +1067,26 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             if status_filter and status_filter != "all" and status != status_filter:
                 continue
             order_id = getattr(sh, "order_id", None)
-            seller = getattr(getattr(sh, "order", None), "seller", None)
-            seller_name = (
-                f"{(getattr(seller, 'first_name', '') or '').strip()} {(getattr(seller, 'last_name', '') or '').strip()}".strip()
-                if seller
-                else ""
-            )
-            if not seller_name:
-                seller_name = getattr(seller, "email", None) or getattr(seller, "phone", None) or "Driver"
-
+            order = getattr(sh, "order", None)
+            seller = getattr(order, "seller", None) if order else None
+            buyer = getattr(order, "buyer", None) if order else None
             loc = (getattr(last_event, "location", "") or "").strip()
             if not loc:
                 loc = (getattr(sh, "origin", "") or "").strip() or (getattr(sh, "destination", "") or "").strip() or "—"
 
-            fuel = (int(sh.id or 0) * 37) % 71 + 29
-            plate = (sh.tracking_number or sh.carrier_id or f"ORD-{order_id or ''}").strip()
-
-            if status == "idle":
-                task = f"Completed delivery — ORD-{order_id}" if order_id else "Completed delivery"
-            elif status == "loading":
-                task = f"Preparing shipment — ORD-{order_id}" if order_id else "Preparing shipment"
-            else:
-                task = f"Delivering — ORD-{order_id}" if order_id else "Delivering"
-
             items.append(
                 {
-                    "id": f"SH-{sh.id}",
                     "shipment_id": sh.id,
-                    "driver": seller_name,
-                    "type": "Truck",
-                    "plate": plate,
                     "status": status,
-                    "location": loc,
-                    "fuel": fuel,
-                    "currentTask": task,
+                    "shipment_status": getattr(sh, "status", "") or "",
+                    "order_id": order_id,
+                    "origin": getattr(sh, "origin", "") or "",
+                    "destination": getattr(sh, "destination", "") or "",
+                    "tracking_number": getattr(sh, "tracking_number", "") or "",
+                    "carrier_id": getattr(sh, "carrier_id", "") or "",
+                    "last_location": loc,
+                    "seller": {"label": self._user_label(seller), **self._user_contact(seller)},
+                    "buyer": {"label": self._user_label(buyer), **self._user_contact(buyer)},
                 }
             )
 
@@ -1006,9 +1096,23 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
     def shipments(self, request):
         qs = (
             Shipment.objects.filter(deleted_at__isnull=True)
-            .select_related("order", "order__buyer", "order__seller")
+            .select_related(
+                "order",
+                "order__buyer",
+                "order__buyer__buyer_profile",
+                "order__seller",
+                "order__seller__seller_profile",
+            )
             .order_by("-created_at")
         )
+
+        seller_id_raw = (request.query_params.get("seller_id") or "").strip()
+        if seller_id_raw.isdigit():
+            qs = qs.filter(order__seller_id=int(seller_id_raw))
+
+        buyer_id_raw = (request.query_params.get("buyer_id") or "").strip()
+        if buyer_id_raw.isdigit():
+            qs = qs.filter(order__buyer_id=int(buyer_id_raw))
 
         status_filter = (request.query_params.get("status") or "").strip().lower()
         if status_filter:
@@ -1037,30 +1141,147 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
                     | Q(order__seller__email__icontains=q)
                 )
 
+        seller_q = (request.query_params.get("seller") or request.query_params.get("seller_q") or "").strip()
+        if seller_q:
+            sq = seller_q.strip()
+            if sq.isdigit():
+                qs = qs.filter(order__seller_id=int(sq))
+            else:
+                qs = qs.filter(
+                    Q(order__seller__email__icontains=sq)
+                    | Q(order__seller__phone__icontains=sq)
+                    | Q(order__seller__seller_profile__business_name__icontains=sq)
+                )
+
+        buyer_q = (request.query_params.get("buyer") or request.query_params.get("buyer_q") or "").strip()
+        if buyer_q:
+            bq = buyer_q.strip()
+            if bq.isdigit():
+                qs = qs.filter(order__buyer_id=int(bq))
+            else:
+                qs = qs.filter(
+                    Q(order__buyer__email__icontains=bq)
+                    | Q(order__buyer__phone__icontains=bq)
+                    | Q(order__buyer__buyer_profile__name__icontains=bq)
+                )
+
+        origin_contains = (request.query_params.get("origin_contains") or "").strip()
+        if origin_contains:
+            qs = qs.filter(origin__icontains=origin_contains)
+
+        destination_contains = (request.query_params.get("destination_contains") or "").strip()
+        if destination_contains:
+            qs = qs.filter(destination__icontains=destination_contains)
+
+        route_q = (request.query_params.get("route") or request.query_params.get("route_q") or "").strip()
+        if route_q:
+            rq = route_q.strip()
+            qs = qs.filter(Q(origin__icontains=rq) | Q(destination__icontains=rq))
+
+        has_tracking = (request.query_params.get("has_tracking") or "").strip().lower()
+        if has_tracking in {"1", "true", "yes", "y"}:
+            qs = qs.filter(self._tracking_exists_q())
+        elif has_tracking in {"0", "false", "no", "n"}:
+            qs = qs.exclude(self._tracking_exists_q())
+
+        late = (request.query_params.get("late") or "").strip().lower()
+        if late in {"1", "true", "yes", "y"}:
+            now = timezone.now()
+            qs = qs.exclude(status=Shipment.Status.DELIVERED).filter(actual_delivery_at__isnull=True).filter(estimated_delivery_at__isnull=False, estimated_delivery_at__lt=now)
+
+        created_from = self._parse_dt(request.query_params.get("created_from"))
+        if created_from is not None:
+            qs = qs.filter(created_at__gte=created_from)
+
+        created_to = self._parse_dt_end(request.query_params.get("created_to"))
+        if created_to is not None:
+            qs = qs.filter(created_at__lte=created_to)
+
+        days_raw = (request.query_params.get("days") or "").strip()
+        if days_raw.isdigit():
+            try:
+                days = max(1, min(365, int(days_raw)))
+                qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=days))
+            except Exception:
+                pass
+
+        delivered_only = (request.query_params.get("delivered_only") or "").strip().lower()
+        if delivered_only in {"1", "true", "yes", "y"}:
+            qs = qs.filter(status=Shipment.Status.DELIVERED)
+
+        late_only = (request.query_params.get("late_only") or "").strip().lower()
+        if late_only in {"1", "true", "yes", "y"}:
+            now = timezone.now()
+            qs = qs.filter(estimated_delivery_at__isnull=False).filter(
+                Q(actual_delivery_at__isnull=True, estimated_delivery_at__lt=now)
+                | Q(actual_delivery_at__isnull=False, actual_delivery_at__gt=F("estimated_delivery_at"))
+            )
+
         page = self.paginate_queryset(qs)
         rows = page if page is not None else list(qs[:50])
 
         out = []
+        now = timezone.now()
         for sh in rows:
             order = getattr(sh, "order", None)
             buyer = getattr(order, "buyer", None) if order else None
             seller = getattr(order, "seller", None) if order else None
-            buyer_label = (getattr(buyer, "email", "") or getattr(buyer, "phone", "") or "—") if buyer else "—"
-            seller_label = (getattr(seller, "email", "") or getattr(seller, "phone", "") or "—") if seller else "—"
+            buyer_label = self._user_label(buyer)
+            seller_label = self._user_label(seller)
+            eta = getattr(sh, "estimated_delivery_at", None)
+            actual = getattr(sh, "actual_delivery_at", None)
+            is_delivered = (getattr(sh, "status", "") or "") == Shipment.Status.DELIVERED
+            is_late = bool(
+                eta
+                and (
+                    (actual and actual > eta)
+                    or ((not actual) and (not is_delivered) and (eta < now))
+                )
+            )
+            created_at = getattr(sh, "created_at", None)
+            end_at = actual or now
+            days_in_transit = 0
+            try:
+                if created_at:
+                    days_in_transit = max(0, int((end_at - created_at).total_seconds() // 86400))
+            except Exception:
+                days_in_transit = 0
+            eta_status = "unknown"
+            if not eta:
+                eta_status = "unknown"
+            elif is_delivered:
+                if actual and actual > eta:
+                    eta_status = "delivered_late"
+                else:
+                    eta_status = "delivered_on_time"
+            else:
+                eta_status = "late" if eta < now else "on_track"
+            tracking_exists = bool((getattr(sh, "tracking_number", "") or "").strip() or (getattr(sh, "carrier_id", "") or "").strip())
             out.append(
                 {
                     "id": sh.id,
                     "order_id": getattr(sh, "order_id", None),
                     "status": sh.status,
                     "carrier_id": sh.carrier_id,
+                    "carrier_name": (sh.carrier_id or "").strip(),
                     "tracking_number": sh.tracking_number,
+                    "tracking_exists": tracking_exists,
                     "origin": sh.origin,
                     "destination": sh.destination,
                     "estimated_delivery_at": sh.estimated_delivery_at,
                     "actual_delivery_at": sh.actual_delivery_at,
                     "created_at": sh.created_at,
+                    "buyer_id": getattr(buyer, "id", None) if buyer else None,
+                    "seller_id": getattr(seller, "id", None) if seller else None,
                     "buyer": buyer_label,
                     "seller": seller_label,
+                    "buyer_label": buyer_label,
+                    "seller_label": seller_label,
+                    "buyer_contact": self._user_contact(buyer),
+                    "seller_contact": self._user_contact(seller),
+                    "is_late": is_late,
+                    "days_in_transit": days_in_transit,
+                    "eta_status": eta_status,
                 }
             )
 
@@ -1075,7 +1296,13 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             return Response({"id": "id is required."}, status=status.HTTP_400_BAD_REQUEST)
         sh = (
             Shipment.objects.filter(deleted_at__isnull=True, id=int(shipment_id))
-            .select_related("order", "order__buyer", "order__seller")
+            .select_related(
+                "order",
+                "order__buyer",
+                "order__buyer__buyer_profile",
+                "order__seller",
+                "order__seller__seller_profile",
+            )
             .prefetch_related("events")
             .first()
         )
@@ -1087,21 +1314,26 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
         seller = getattr(order, "seller", None) if order else None
 
         evs = []
+        last_event_type = ""
+        last_event_at = None
+        last_location = ""
         try:
-            for ev in sh.events.filter(deleted_at__isnull=True).order_by("occurred_at", "id"):
-                evs.append(
-                    {
-                        "id": ev.id,
-                        "type": ev.type,
-                        "location": ev.location,
-                        "occurred_at": ev.occurred_at,
-                        "payload": ev.payload or {},
-                    }
-                )
+            events_qs = sh.events.filter(deleted_at__isnull=True).order_by("occurred_at", "id")
+            for ev in events_qs:
+                evs.append({"id": ev.id, "type": ev.type, "location": ev.location, "occurred_at": ev.occurred_at, "payload": ev.payload or {}})
+            last = events_qs.order_by("-occurred_at", "-id").first()
+            if last:
+                last_event_type = getattr(last, "type", "") or ""
+                last_event_at = getattr(last, "occurred_at", None)
+                last_location = (getattr(last, "location", "") or "").strip()
         except Exception:
             evs = []
+            last_event_type = ""
+            last_event_at = None
+            last_location = ""
 
         audit(request.user, action="admin_logistics_shipment_viewed", target_type="shipment", target_id=str(sh.id), payload={})
+        tracking_exists = bool((getattr(sh, "tracking_number", "") or "").strip() or (getattr(sh, "carrier_id", "") or "").strip())
         return Response(
             {
                 "shipment": {
@@ -1109,12 +1341,17 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
                     "order_id": getattr(sh, "order_id", None),
                     "status": sh.status,
                     "carrier_id": sh.carrier_id,
+                    "carrier_name": (sh.carrier_id or "").strip(),
                     "tracking_number": sh.tracking_number,
+                    "tracking_exists": tracking_exists,
                     "origin": sh.origin,
                     "destination": sh.destination,
                     "estimated_delivery_at": sh.estimated_delivery_at,
                     "actual_delivery_at": sh.actual_delivery_at,
                     "created_at": sh.created_at,
+                    "last_event_type": last_event_type,
+                    "last_event_at": last_event_at,
+                    "last_location": last_location,
                 },
                 "order": {
                     "id": getattr(order, "id", None) if order else None,
@@ -1124,15 +1361,234 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
                 },
                 "buyer": {
                     "id": getattr(buyer, "id", None) if buyer else None,
-                    "label": (getattr(buyer, "email", "") or getattr(buyer, "phone", "") or "—") if buyer else "—",
+                    "label": self._user_label(buyer),
+                    **self._user_contact(buyer),
                 },
                 "seller": {
                     "id": getattr(seller, "id", None) if seller else None,
-                    "label": (getattr(seller, "email", "") or getattr(seller, "phone", "") or "—") if seller else "—",
+                    "label": self._user_label(seller),
+                    **self._user_contact(seller),
                 },
                 "events": evs,
             }
         )
+
+    @action(detail=False, methods=["post"], url_path="shipments/set-tracking")
+    def shipments_set_tracking(self, request):
+        try:
+            shipment_id = int((request.data or {}).get("shipment_id") or 0)
+        except Exception:
+            shipment_id = 0
+        if shipment_id <= 0:
+            return Response({"shipment_id": "shipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=shipment_id).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        tracking_number = str((request.data or {}).get("tracking_number") or "").strip()
+        carrier_id = str((request.data or {}).get("carrier_id") or "").strip()
+        Shipment.objects.filter(id=sh.id).update(tracking_number=tracking_number, carrier_id=carrier_id)
+        audit(
+            request.user,
+            action="shipment_tracking_updated",
+            target_type="shipment",
+            target_id=str(sh.id),
+            payload={"order_id": str(getattr(sh, "order_id", "") or ""), "tracking_number": tracking_number},
+        )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path="shipments/set-status")
+    def shipments_set_status(self, request):
+        try:
+            shipment_id = int((request.data or {}).get("shipment_id") or 0)
+        except Exception:
+            shipment_id = 0
+        if shipment_id <= 0:
+            return Response({"shipment_id": "shipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        new_status = str((request.data or {}).get("status") or "").strip().lower()
+        allowed = {str(v).lower() for v, _ in Shipment.Status.choices}
+        if new_status not in allowed:
+            return Response({"status": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=shipment_id).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        prev = getattr(sh, "status", "") or ""
+        if prev != new_status:
+            Shipment.objects.filter(id=sh.id).update(status=new_status)
+            audit(
+                request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(sh.id),
+                payload={"order_id": str(getattr(sh, "order_id", "") or ""), "from": str(prev or ""), "to": str(new_status or "")},
+            )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path="shipments/set-eta")
+    def shipments_set_eta(self, request):
+        try:
+            shipment_id = int((request.data or {}).get("shipment_id") or 0)
+        except Exception:
+            shipment_id = 0
+        if shipment_id <= 0:
+            return Response({"shipment_id": "shipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        eta_raw = (request.data or {}).get("estimated_delivery_at")
+        if not eta_raw:
+            return Response({"estimated_delivery_at": "estimated_delivery_at is required."}, status=status.HTTP_400_BAD_REQUEST)
+        eta = parse_datetime(str(eta_raw))
+        if eta is None:
+            return Response({"estimated_delivery_at": "Invalid datetime."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=shipment_id).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        Shipment.objects.filter(id=sh.id).update(estimated_delivery_at=eta)
+        audit(
+            request.user,
+            action="admin_logistics_eta_set",
+            target_type="shipment",
+            target_id=str(sh.id),
+            payload={"order_id": str(getattr(sh, "order_id", "") or ""), "estimated_delivery_at": eta.isoformat()},
+        )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path="shipments/mark-delivered")
+    def shipments_mark_delivered(self, request):
+        try:
+            shipment_id = int((request.data or {}).get("shipment_id") or 0)
+        except Exception:
+            shipment_id = 0
+        if shipment_id <= 0:
+            return Response({"shipment_id": "shipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=shipment_id).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        prev = getattr(sh, "status", "") or ""
+        now = timezone.now()
+        Shipment.objects.filter(id=sh.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=now)
+        if prev != Shipment.Status.DELIVERED:
+            audit(
+                request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(sh.id),
+                payload={"order_id": str(getattr(sh, "order_id", "") or ""), "from": str(prev or ""), "to": Shipment.Status.DELIVERED},
+            )
+        audit(
+            request.user,
+            action="admin_logistics_mark_delivered",
+            target_type="shipment",
+            target_id=str(sh.id),
+            payload={"order_id": str(getattr(sh, "order_id", "") or "")},
+        )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path=r"shipments/(?P<shipment_id>[^/.]+)/set-tracking")
+    def shipments_set_tracking_by_id(self, request, shipment_id=None):
+        try:
+            sid = int(shipment_id or 0)
+        except Exception:
+            sid = 0
+        if sid <= 0:
+            return Response({"shipment_id": "Invalid shipment id."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=sid).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        tracking_number = str((request.data or {}).get("tracking_number") or "").strip()
+        carrier_id = str((request.data or {}).get("carrier_id") or "").strip()
+        Shipment.objects.filter(id=sh.id).update(tracking_number=tracking_number, carrier_id=carrier_id)
+        audit(
+            request.user,
+            action="shipment_tracking_updated",
+            target_type="shipment",
+            target_id=str(sh.id),
+            payload={"order_id": str(getattr(sh, "order_id", "") or ""), "tracking_number": tracking_number},
+        )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path=r"shipments/(?P<shipment_id>[^/.]+)/set-status")
+    def shipments_set_status_by_id(self, request, shipment_id=None):
+        try:
+            sid = int(shipment_id or 0)
+        except Exception:
+            sid = 0
+        if sid <= 0:
+            return Response({"shipment_id": "Invalid shipment id."}, status=status.HTTP_400_BAD_REQUEST)
+        new_status = str((request.data or {}).get("status") or "").strip().lower()
+        allowed = {str(v).lower() for v, _ in Shipment.Status.choices}
+        if new_status not in allowed:
+            return Response({"status": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=sid).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        prev = getattr(sh, "status", "") or ""
+        if prev != new_status:
+            Shipment.objects.filter(id=sh.id).update(status=new_status)
+            audit(
+                request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(sh.id),
+                payload={"order_id": str(getattr(sh, "order_id", "") or ""), "from": str(prev or ""), "to": str(new_status or "")},
+            )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path=r"shipments/(?P<shipment_id>[^/.]+)/set-eta")
+    def shipments_set_eta_by_id(self, request, shipment_id=None):
+        try:
+            sid = int(shipment_id or 0)
+        except Exception:
+            sid = 0
+        if sid <= 0:
+            return Response({"shipment_id": "Invalid shipment id."}, status=status.HTTP_400_BAD_REQUEST)
+        eta_raw = (request.data or {}).get("estimated_delivery_at")
+        if not eta_raw:
+            return Response({"estimated_delivery_at": "estimated_delivery_at is required."}, status=status.HTTP_400_BAD_REQUEST)
+        eta = parse_datetime(str(eta_raw))
+        if eta is None:
+            return Response({"estimated_delivery_at": "Invalid datetime."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=sid).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        Shipment.objects.filter(id=sh.id).update(estimated_delivery_at=eta)
+        audit(
+            request.user,
+            action="admin_logistics_eta_set",
+            target_type="shipment",
+            target_id=str(sh.id),
+            payload={"order_id": str(getattr(sh, "order_id", "") or ""), "estimated_delivery_at": eta.isoformat()},
+        )
+        return Response({"ok": True})
+
+    @action(detail=False, methods=["post"], url_path=r"shipments/(?P<shipment_id>[^/.]+)/add-event")
+    def shipments_add_event_by_id(self, request, shipment_id=None):
+        try:
+            sid = int(shipment_id or 0)
+        except Exception:
+            sid = 0
+        if sid <= 0:
+            return Response({"shipment_id": "Invalid shipment id."}, status=status.HTTP_400_BAD_REQUEST)
+        sh = Shipment.objects.filter(deleted_at__isnull=True, id=sid).select_related("order").first()
+        if not sh:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        event_type = str((request.data or {}).get("type") or "").strip()
+        if not event_type:
+            return Response({"type": "type is required."}, status=status.HTTP_400_BAD_REQUEST)
+        location = str((request.data or {}).get("location") or "").strip()
+        occurred_at_raw = (request.data or {}).get("occurred_at")
+        occurred_at = parse_datetime(str(occurred_at_raw)) if occurred_at_raw else timezone.now()
+        if occurred_at is None:
+            return Response({"occurred_at": "Invalid datetime."}, status=status.HTTP_400_BAD_REQUEST)
+        payload = (request.data or {}).get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        ev = ShipmentEvent.objects.create(shipment=sh, type=event_type, location=location, occurred_at=occurred_at, payload=payload)
+        audit(
+            request.user,
+            action="admin_logistics_event_added",
+            target_type="shipment",
+            target_id=str(sh.id),
+            payload={"order_id": str(getattr(sh, "order_id", "") or ""), "event_id": str(getattr(ev, "id", "") or ""), "type": event_type},
+        )
+        return Response({"ok": True, "event_id": ev.id})
 
 
 class AdminOrderViewSet(viewsets.GenericViewSet):
