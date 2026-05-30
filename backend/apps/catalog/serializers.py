@@ -499,6 +499,7 @@ class AdminProductListSerializer(serializers.ModelSerializer):
     seller_name = serializers.CharField(read_only=True)
     category_name = serializers.CharField(source="category.name", read_only=True)
     category_slug = serializers.CharField(source="category.slug", read_only=True)
+    category_display = serializers.SerializerMethodField()
     stock_units = serializers.IntegerField(read_only=True)
     admin_status = serializers.SerializerMethodField()
     images_count = serializers.IntegerField(read_only=True)
@@ -527,6 +528,7 @@ class AdminProductListSerializer(serializers.ModelSerializer):
             "category",
             "category_name",
             "category_slug",
+            "category_display",
             "stock_units",
             "admin_status",
             "images_count",
@@ -540,6 +542,22 @@ class AdminProductListSerializer(serializers.ModelSerializer):
             "compliance_destination_rules_count",
             "legal_review_status",
         ]
+
+    def get_category_display(self, obj: Product):
+        cat = getattr(obj, "category", None)
+        if not cat:
+            return ""
+        parts = []
+        cur = cat
+        i = 0
+        while cur is not None and i < 3:
+            nm = (getattr(cur, "name", "") or "").strip()
+            if nm:
+                parts.append(nm)
+            cur = getattr(cur, "parent", None)
+            i += 1
+        parts = list(reversed(parts))
+        return " / ".join(parts)
 
     def get_admin_status(self, obj: Product):
         threshold = int(self.context.get("low_stock_threshold") or 50)

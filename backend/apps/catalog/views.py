@@ -934,7 +934,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         threshold = self._low_stock_threshold()
         qs = (
             Product.objects.filter(deleted_at__isnull=True)
-            .select_related("category", "seller", "seller__seller_profile")
+            .select_related("category", "category__parent", "seller", "seller__seller_profile")
             .annotate(
                 stock_units=Coalesce(Sum("samples__available_quantity"), Value(0), output_field=IntegerField()),
                 vehsl_rating_num=Coalesce("vehsl_rating", Value(0), output_field=DecimalField(max_digits=4, decimal_places=2)),
@@ -1845,11 +1845,29 @@ class AdminProductViewSet(viewsets.GenericViewSet):
     def categories(self, request):
         qs = (
             Category.objects.filter(deleted_at__isnull=True)
+            .select_related("parent")
             .annotate(products_count=Count("products", filter=Q(products__deleted_at__isnull=True)))
             .filter(products_count__gt=0)
             .order_by("name")
         )
-        return Response([{"id": c.id, "name": c.name, "slug": c.slug, "count": c.products_count} for c in qs])
+        out = []
+        for c in qs:
+            parent = getattr(c, "parent", None)
+            label = c.name
+            if parent and getattr(parent, "name", ""):
+                label = f"{parent.name} / {c.name}"
+            out.append(
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "slug": c.slug,
+                    "count": c.products_count,
+                    "parent_id": getattr(c, "parent_id", None),
+                    "parent_name": getattr(parent, "name", "") if parent else "",
+                    "label": label,
+                }
+            )
+        return Response(out)
 
     @action(detail=False, methods=["get"], url_path="export")
     def export(self, request):

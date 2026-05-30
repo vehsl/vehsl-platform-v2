@@ -1421,6 +1421,43 @@ export function AdminProducts() {
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
+  const [requestingMedia, setRequestingMedia] = useState(false);
+
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [categoryQuery, setCategoryQuery] = useState("");
+  const categoryPopoverRef = useRef<HTMLDivElement | null>(null);
+  const categoryButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const selectedCategory = useMemo(() => {
+    if (catFilter === "all") return null;
+    return (
+      categories.find((c: any) => String(c?.slug || "") === String(catFilter)) ||
+      categories.find((c: any) => String(c?.id || "") === String(catFilter)) ||
+      null
+    );
+  }, [catFilter, categories]);
+
+  const filteredCategories = useMemo(() => {
+    const q = (categoryQuery || "").trim().toLowerCase();
+    const base = [...(categories || [])].sort((a: any, b: any) => Number(b?.count || 0) - Number(a?.count || 0));
+    if (!q) return base;
+    return base.filter((c: any) => {
+      const label = (c?.label || c?.name || c?.slug || "").toString().toLowerCase();
+      return label.includes(q);
+    });
+  }, [categories, categoryQuery]);
+
+  useEffect(() => {
+    if (!categoryOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as any;
+      if (categoryPopoverRef.current && categoryPopoverRef.current.contains(t)) return;
+      if (categoryButtonRef.current && categoryButtonRef.current.contains(t)) return;
+      setCategoryOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [categoryOpen]);
   const listFilters = useMemo(() => {
     const f: any = {};
     const q = search.trim();
@@ -1922,13 +1959,80 @@ export function AdminProducts() {
                 <option value="50">50 / page</option>
                 <option value="100">100 / page</option>
               </select>
-              <button
-                key="all"
-                onClick={() => setCatFilter("all")}
-                className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${catFilter === "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"}`}
-              >
-                All
-              </button>
+              <div className="relative">
+                <button
+                  ref={categoryButtonRef}
+                  type="button"
+                  onClick={() => {
+                    setCategoryOpen((v) => !v);
+                    setCategoryQuery("");
+                  }}
+                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap inline-flex items-center gap-2 ${
+                    catFilter !== "all" ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Filter size={14} className="opacity-70" />
+                  {selectedCategory?.label || "All categories"}
+                  <ChevronRight size={14} className={`opacity-50 transition-transform ${categoryOpen ? "rotate-90" : ""}`} />
+                </button>
+                <AnimatePresence>
+                  {categoryOpen && (
+                    <motion.div
+                      ref={categoryPopoverRef}
+                      initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute z-30 mt-2 w-[340px] rounded-2xl border border-border/40 bg-card shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden"
+                    >
+                      <div className="p-3 border-b border-border/30">
+                        <div className="flex items-center gap-2 bg-muted/20 border border-border/30 rounded-2xl px-3 py-2.5">
+                          <Search size={14} className="text-muted-foreground/50" />
+                          <input
+                            value={categoryQuery}
+                            onChange={(e) => setCategoryQuery(e.target.value)}
+                            placeholder="Search categories..."
+                            className="bg-transparent border-none outline-none text-[0.8125rem] text-foreground/80 placeholder:text-muted-foreground/40 w-full"
+                          />
+                        </div>
+                      </div>
+                      <div className="max-h-[320px] overflow-y-auto p-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCatFilter("all");
+                            setCategoryOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-[0.8125rem] transition-colors ${
+                            catFilter === "all" ? "bg-primary/8 text-primary" : "hover:bg-muted/20 text-foreground/80"
+                          }`}
+                        >
+                          <span>All categories</span>
+                          <span className="text-[0.75rem] text-muted-foreground/60 tabular-nums">{formatNumber(stats?.total_products)}</span>
+                        </button>
+                        {filteredCategories.map((cat: any) => (
+                          <button
+                            key={cat.slug || cat.id}
+                            type="button"
+                            onClick={() => {
+                              setCatFilter(cat.slug || String(cat.id));
+                              setCategoryOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-[0.8125rem] transition-colors ${
+                              catFilter === (cat.slug || String(cat.id))
+                                ? "bg-primary/8 text-primary"
+                                : "hover:bg-muted/20 text-foreground/80"
+                            }`}
+                          >
+                            <span className="truncate">{cat.label || cat.name}</span>
+                            <span className="text-[0.75rem] text-muted-foreground/60 tabular-nums">{formatNumber(cat.count)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
               <button
                 type="button"
                 onClick={() => setStatusFilter(v => (v === "compliance" ? "all" : "compliance"))}
@@ -1938,17 +2042,6 @@ export function AdminProducts() {
               >
                 Needs compliance
               </button>
-              {categories.map((cat: any) => (
-                <button
-                  key={cat.slug || cat.id}
-                  onClick={() => setCatFilter(cat.slug || String(cat.id))}
-                  className={`px-4 py-3 rounded-2xl text-[0.8125rem] transition-all cursor-pointer whitespace-nowrap ${
-                    catFilter === (cat.slug || String(cat.id)) ? "bg-primary/8 text-primary" : "bg-muted/20 text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {cat.name}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -2010,7 +2103,7 @@ export function AdminProducts() {
                     <option value="">Select category…</option>
                     {categories.map((c: any) => (
                       <option key={c.id} value={String(c.id)}>
-                        {c.name}
+                        {c.label || c.name}
                       </option>
                     ))}
                   </select>
@@ -2084,7 +2177,7 @@ export function AdminProducts() {
                       <span className="text-[0.6875rem] text-[#E5484D]/80 hidden sm:inline">Needs compliance</span>
                     )}
                   </div>
-                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_name || "—"}</span>
+                  <span className="text-[0.75rem] text-muted-foreground/50">{p.seller_name || "—"} · {p.category_display || p.category_name || "—"}</span>
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
                   <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
@@ -2295,7 +2388,7 @@ export function AdminProducts() {
                 >
                   {categories.map((c: any) => (
                     <option key={c.id} value={String(c.id)}>
-                      {c.name}
+                      {c.label || c.name}
                     </option>
                   ))}
                 </select>
