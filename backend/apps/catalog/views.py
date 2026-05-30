@@ -161,7 +161,14 @@ class ProductViewSet(viewsets.ModelViewSet):
             if cat_id:
                 out = out.filter(category_id=cat_id)
             else:
-                out = out.filter(category__slug__iexact=cat)
+                cat_obj = Category.objects.filter(deleted_at__isnull=True, slug__iexact=cat).first()
+                if cat_obj:
+                    child_ids = list(
+                        Category.objects.filter(deleted_at__isnull=True, parent=cat_obj).values_list("id", flat=True)
+                    )
+                    out = out.filter(category_id__in=[int(cat_obj.id), *[int(x) for x in child_ids]])
+                else:
+                    out = out.filter(category__slug__iexact=cat)
         out = out.annotate(
             review_count=Count("reviews", filter=Q(reviews__deleted_at__isnull=True), distinct=True),
             average_rating=Avg("reviews__rating", filter=Q(reviews__deleted_at__isnull=True)),

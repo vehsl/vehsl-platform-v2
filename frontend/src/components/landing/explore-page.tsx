@@ -13,8 +13,7 @@ import {
   ArrowUpRight,
   Check,
 } from "lucide-react";
-import { categories } from "./category-data";
-import type { Category, SubCategory, Product } from "./category-data";
+import { fetchJsonAuthed } from "@/lib/api";
 import { useBounce } from "./bounce-context";
 import { AliveElement } from "./alive-element";
 import { IconResolver } from "./icon-resolver";
@@ -60,6 +59,7 @@ const t = (id: string) => THEMES[id] || THEMES.vehicles;
 export function ExplorePage() {
   const params = useParams() as { slug?: string[] };
   const [categoryId, subcategoryId] = params.slug ?? [];
+  const [categories, setCategories] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [openSub, setOpenSub] = useState<string | null>(null);
   const [activeNav, setActiveNav] = useState<string | null>(null);
@@ -68,6 +68,40 @@ export function ExplorePage() {
   const refs = useRef<Record<string, HTMLDivElement | null>>({});
   const searchRef = useRef<HTMLInputElement>(null);
   const { scrollY } = useScroll();
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/categories/explore/")
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.categories) ? (data as any).categories : [];
+        const mapped = rows
+          .map((c: any) => ({
+            id: String(c?.slug || c?.id || ""),
+            label: String(c?.name || "").trim(),
+            icon: String(c?.icon || "circle"),
+            count: Number(c?.product_count || 0),
+            subcategories: (Array.isArray(c?.children) ? c.children : [])
+              .map((ch: any) => ({
+                id: String(ch?.slug || ch?.id || ""),
+                label: String(ch?.name || "").trim(),
+                icon: String(ch?.icon || "circle"),
+                count: Number(ch?.product_count || 0),
+                products: [],
+              }))
+              .filter((ch: any) => ch.id && ch.label),
+          }))
+          .filter((c: any) => c.id && c.label);
+        setCategories(mapped);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Sticky nav logic ──
   useMotionValueEvent(scrollY, "change", (y) => {
@@ -161,14 +195,62 @@ export function ExplorePage() {
     [triggerBounce]
   );
 
-  const totalProducts = useMemo(
-    () => categories.reduce((s, c) => s + c.subcategories.reduce((ss, sub) => ss + sub.products.length, 0), 0),
-    []
-  );
-  const totalSubs = useMemo(
-    () => categories.reduce((s, c) => s + c.subcategories.length, 0),
-    []
-  );
+  useEffect(() => {
+    const key = openSub;
+    if (!key) return;
+    const [catId, subId] = key.split("/");
+    if (!catId || !subId) return;
+    const cat = categories.find((c) => c.id === catId);
+    const sub = cat?.subcategories?.find((s: any) => s.id === subId);
+    if (!sub) return;
+    if (Array.isArray(sub.products) && sub.products.length > 0) return;
+
+    let cancelled = false;
+    const params = new URLSearchParams();
+    params.set("category", subId);
+    params.set("page", "1");
+    params.set("page_size", "24");
+    params.set("ordering", "-created_at");
+    fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+        const items = rows
+          .map((r: any) => ({
+            id: String(r?.id || ""),
+            name: String(r?.name || r?.title || "").trim(),
+            icon: "tag",
+            price: "",
+          }))
+          .filter((p: any) => p.id && p.name);
+        setCategories((prev) =>
+          prev.map((c: any) =>
+            c.id !== catId
+              ? c
+              : {
+                  ...c,
+                  subcategories: (c.subcategories || []).map((s: any) => (s.id === subId ? { ...s, products: items } : s)),
+                },
+          ),
+        );
+      })
+      .catch(() => {})
+      .finally(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [categories, openSub]);
+
+  const totalProducts = useMemo(() => {
+    return categories.reduce(
+      (s, c) =>
+        s +
+        (c.subcategories || []).reduce((ss: number, sub: any) => ss + Number(sub?.count ?? sub?.products?.length ?? 0), 0),
+      0,
+    );
+  }, [categories]);
+  const totalSubs = useMemo(() => categories.reduce((s, c) => s + (c.subcategories || []).length, 0), [categories]);
 
   return (
     <div className="min-h-screen bg-[#fafaf9] font-['Urbanist',sans-serif]">
@@ -410,7 +492,7 @@ export function ExplorePage() {
           >
             {categories.map((cat, i) => {
               const theme = t(cat.id);
-              const productCount = cat.subcategories.reduce((s, sub) => s + sub.products.length, 0);
+              const productCount = (cat.subcategories || []).reduce((s: number, sub: any) => s + Number(sub?.count ?? sub?.products?.length ?? 0), 0);
               return (
                 <AliveElement key={cat.id} delay={i} sensitivity={0.35}>
                   <motion.button

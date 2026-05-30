@@ -1,7 +1,7 @@
 // @ts-nocheck -- legacy port; tighten incrementally
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import Link from "next/link";
 import {
@@ -21,8 +21,8 @@ import { SectionReveal } from "./section-reveal";
 import { ProductCard } from "./product-card";
 import { CategoryNav } from "./category-nav";
 import { SearchDropdown } from "./search-dropdown";
-import { categories as categoryData } from "./category-data";
 import { ProfileDropdown } from "./profile-dropdown";
+import { fetchJsonAuthed } from "@/lib/api";
 import List from "./imports/List/List";
 import List2 from "./imports/List-1/List-42170-461";
 import Group419 from "./imports/Group419/Group419";
@@ -93,6 +93,27 @@ function Navbar({
   onSubcategorySelect: (catId: string, subId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mobileCategories, setMobileCategories] = useState<Array<{ id: string; label: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/categories/explore/")
+      .then((data) => {
+        if (cancelled) return;
+        const rows = Array.isArray((data as any)?.categories) ? (data as any).categories : [];
+        const mapped = rows
+          .map((c: any) => ({ id: String(c?.slug || c?.id || ""), label: String(c?.name || "").trim() }))
+          .filter((c: any) => c.id && c.label);
+        setMobileCategories(mapped);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMobileCategories([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <>
@@ -149,7 +170,7 @@ function Navbar({
             className="fixed top-20 left-4 right-4 z-50 bg-white/90 backdrop-blur-2xl rounded-3xl p-6 shadow-[0_20px_60px_rgba(0,0,0,0.1)] border border-white/80 lg:hidden"
           >
             <div className="grid grid-cols-3 gap-3">
-              {categoryData.map((cat) => (
+              {mobileCategories.map((cat) => (
                 <button
                   key={cat.id}
                   onClick={() => {
