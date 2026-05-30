@@ -82,7 +82,11 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
 
         status_filter = (request.query_params.get("status") or "").strip().lower()
         if status_filter and status_filter != "all":
-            qs = qs.filter(status=status_filter)
+            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            if len(statuses) > 1:
+                qs = qs.filter(status__in=statuses)
+            else:
+                qs = qs.filter(status=statuses[0] if statuses else status_filter)
 
         days_raw = (request.query_params.get("days") or "").strip()
         if days_raw:

@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { useLocation } from "react-router";
 import {
   DollarSign, TrendingUp, AlertCircle, CheckCircle2, Clock,
   ChevronRight, Receipt, Truck, ClipboardCheck, Camera,
@@ -132,13 +133,49 @@ export function CostBreakdownInline({ costs, compact = false }: { costs: CostBre
 // ─── Cost Ledger Page ───────────────────────────────────
 
 export function CostLedger() {
+  const location = useLocation();
   const [selectedEntry, setSelectedEntry] = useState<SellerLedgerEntry | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "deducted" | "refunded">("all");
+  const [period, setPeriod] = useState<string>("");
 
-  const filtered = filterStatus === "all" ? mockLedger : mockLedger.filter(e => e.status === filterStatus);
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    setPeriod((params.get("period") || "").trim().toLowerCase());
+  }, [location.search]);
 
-  const totalPending = mockLedger.filter(e => e.status === "pending").reduce((s, e) => s + e.costs.total, 0);
-  const totalDeducted = mockLedger.filter(e => e.status === "deducted").reduce((s, e) => s + e.costs.total, 0);
+  const parseTriggeredAt = (raw: string): Date | null => {
+    const s = (raw || "").replace("·", " ").replace(/\s+/g, " ").trim();
+    if (!s) return null;
+    const dt = new Date(s);
+    if (Number.isNaN(dt.getTime())) return null;
+    return dt;
+  };
+
+  const windowedLedger = useMemo(() => {
+    const p = (period || "").toLowerCase();
+    const days =
+      p === "24h" ? 1 :
+      p === "7d" ? 7 :
+      p === "30d" ? 30 :
+      p === "90d" ? 90 :
+      0;
+    if (!days) return mockLedger;
+    const now = Date.now();
+    const start = now - days * 24 * 60 * 60 * 1000;
+    return mockLedger.filter((e) => {
+      const dt = parseTriggeredAt(e.triggeredAt);
+      if (!dt) return true;
+      return dt.getTime() >= start;
+    });
+  }, [period]);
+
+  const filtered = useMemo(() => {
+    const base = windowedLedger;
+    return filterStatus === "all" ? base : base.filter((e) => e.status === filterStatus);
+  }, [filterStatus, windowedLedger]);
+
+  const totalPending = windowedLedger.filter(e => e.status === "pending").reduce((s, e) => s + e.costs.total, 0);
+  const totalDeducted = windowedLedger.filter(e => e.status === "deducted").reduce((s, e) => s + e.costs.total, 0);
   const totalRevenue = totalPending + totalDeducted;
 
   return (
@@ -182,7 +219,7 @@ export function CostLedger() {
           icon={<DollarSign size={20} className="text-primary" />}
           iconBg="bg-primary/8"
           index={0}
-          subtitle={`${mockLedger.length} transactions`}
+          subtitle={`${windowedLedger.length} transactions`}
           sparklineData={[1200, 1450, 1380, 1620, 1800, 1750, totalRevenue / 10]}
           sparklineColor="#0171E3"
           accentColor="#0171E3"
@@ -190,7 +227,7 @@ export function CostLedger() {
         <StatCard
           label="Pending"
           value={`$${totalPending.toLocaleString()}`}
-          change={`${mockLedger.filter(e => e.status === "pending").length} entries`}
+          change={`${windowedLedger.filter(e => e.status === "pending").length} entries`}
           changeType="neutral"
           icon={<Clock size={20} className="text-[#FFB224]" />}
           iconBg="bg-[#FFB224]/8"
@@ -201,7 +238,7 @@ export function CostLedger() {
         <StatCard
           label="Collected"
           value={`$${totalDeducted.toLocaleString()}`}
-          change={`${mockLedger.filter(e => e.status === "deducted").length} entries`}
+          change={`${windowedLedger.filter(e => e.status === "deducted").length} entries`}
           changeType="positive"
           icon={<CheckCircle2 size={20} className="text-[#30A46C]" />}
           iconBg="bg-[#30A46C]/8"
@@ -213,7 +250,7 @@ export function CostLedger() {
         />
         <StatCard
           label="Avg. Cost/Listing"
-          value={`$${Math.round(totalRevenue / mockLedger.length)}`}
+          value={`$${Math.round(totalRevenue / Math.max(1, windowedLedger.length))}`}
           icon={<Receipt size={20} className="text-[#3B82F6]" />}
           iconBg="bg-[#3B82F6]/8"
           index={3}
@@ -229,10 +266,10 @@ export function CostLedger() {
 
         <div className="space-y-4">
           {[
-            { label: "Quality Testing", total: mockLedger.reduce((s, e) => s + e.costs.testing, 0), color: "#0171E3", icon: <ClipboardCheck size={16} /> },
-            { label: "Logistics & Pickup", total: mockLedger.reduce((s, e) => s + e.costs.logistics, 0), color: "#3B82F6", icon: <Truck size={16} /> },
-            { label: "Platform Fee", total: mockLedger.reduce((s, e) => s + e.costs.platform, 0), color: "#D97706", icon: <Package size={16} /> },
-            { label: "Photography", total: mockLedger.reduce((s, e) => s + e.costs.photography, 0), color: "#EC4899", icon: <Camera size={16} /> },
+            { label: "Quality Testing", total: windowedLedger.reduce((s, e) => s + e.costs.testing, 0), color: "#0171E3", icon: <ClipboardCheck size={16} /> },
+            { label: "Logistics & Pickup", total: windowedLedger.reduce((s, e) => s + e.costs.logistics, 0), color: "#3B82F6", icon: <Truck size={16} /> },
+            { label: "Platform Fee", total: windowedLedger.reduce((s, e) => s + e.costs.platform, 0), color: "#D97706", icon: <Package size={16} /> },
+            { label: "Photography", total: windowedLedger.reduce((s, e) => s + e.costs.photography, 0), color: "#EC4899", icon: <Camera size={16} /> },
           ].map((service) => {
             const pct = Math.round((service.total / totalRevenue) * 100);
             return (

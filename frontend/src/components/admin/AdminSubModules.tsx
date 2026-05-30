@@ -3,6 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { useLocation } from "react-router";
 import {
   Users, UserPlus, Shield, ShieldCheck, Search, Filter, MoreHorizontal,
   Package, Eye, Edit3, Trash2, CheckCircle2, XCircle, Clock,
@@ -59,9 +60,12 @@ const roleColors: Record<string, string> = {
 };
 
 export function AdminUsers() {
+  const location = useLocation();
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | "buyer" | "seller" | "partner" | "manager">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending" | "review" | "suspended">("all");
+  const [activeNow, setActiveNow] = useState<boolean>(false);
+  const [activePeriod, setActivePeriod] = useState<string>("");
   const [stats, setStats] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
@@ -143,6 +147,8 @@ export function AdminUsers() {
     const f: any = {};
     const s = search.trim();
     if (s) f.q = s;
+    if (activeNow) f.active_now = 1;
+    else if (activePeriod) f.active_period = activePeriod;
     if (roleFilter !== "all") {
       if (roleFilter === "manager") {
         f.role = "admin";
@@ -153,7 +159,7 @@ export function AdminUsers() {
     }
     if (statusFilter !== "all") f.admin_status = statusFilter;
     return f;
-  }, [search, roleFilter, statusFilter]);
+  }, [search, activeNow, activePeriod, roleFilter, statusFilter]);
 
   const {
     rows: listRows,
@@ -200,6 +206,8 @@ export function AdminUsers() {
     const sf = (opts?.statusFilter ?? statusFilter).toString();
     const p = opts?.page ?? 1;
     if (s) params.set("q", s);
+    if (activeNow) params.set("active_now", "1");
+    else if (activePeriod) params.set("active_period", activePeriod);
     if (rf !== "all") {
       if (rf === "manager") {
         params.set("role", "admin");
@@ -212,6 +220,36 @@ export function AdminUsers() {
     if (p && p !== 1) params.set("page", String(p));
     return params;
   };
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const qIn = params.get("q");
+    const roleIn = (params.get("role") || "").toLowerCase();
+    const adminRoleIn = (params.get("admin_role") || "").toLowerCase();
+    const statusIn = (params.get("admin_status") || "").toLowerCase();
+    const activeNowIn = (params.get("active_now") || "").toLowerCase();
+    const activePeriodIn = (params.get("active_period") || "").toLowerCase();
+    const pageIn = Number(params.get("page") || "1");
+
+    if (qIn != null) setSearch(qIn);
+
+    if (roleIn === "admin" && adminRoleIn === "manager") setRoleFilter("manager");
+    else if (roleIn === "buyer" || roleIn === "seller" || roleIn === "partner") setRoleFilter(roleIn as any);
+    else if (!roleIn) setRoleFilter("all");
+
+    if (statusIn === "active" || statusIn === "pending" || statusIn === "review" || statusIn === "suspended") {
+      setStatusFilter(statusIn as any);
+    } else if (!statusIn) {
+      setStatusFilter("all");
+    }
+
+    const onNow = activeNowIn === "1" || activeNowIn === "true" || activeNowIn === "yes";
+    setActiveNow(onNow);
+    if (onNow) setActivePeriod("");
+    else setActivePeriod(activePeriodIn);
+
+    if (Number.isFinite(pageIn) && pageIn >= 1) setPage(Math.floor(pageIn));
+  }, [location.search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1347,6 +1385,7 @@ export function AdminUsers() {
 
 export function AdminProducts() {
   const fetchJson = fetchJsonAuthed;
+  const location = useLocation();
 
   const formatNumber = (v: any) => {
     const n = Number(v);
@@ -1374,6 +1413,11 @@ export function AdminProducts() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "low_stock" | "out" | "review" | "compliance">("all");
+  const [exactStatusFilter, setExactStatusFilter] = useState<string>("");
+  const [missingHsCodeFilter, setMissingHsCodeFilter] = useState<boolean>(false);
+  const [missingMediaFilter, setMissingMediaFilter] = useState<boolean>(false);
+  const [missingDocumentsFilter, setMissingDocumentsFilter] = useState<boolean>(false);
+  const [rejectedWithReasonFilter, setRejectedWithReasonFilter] = useState<boolean>(false);
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
@@ -1384,8 +1428,22 @@ export function AdminProducts() {
     if (catFilter !== "all") f.category = catFilter;
     if (statusFilter === "compliance") f.needs_compliance = 1;
     else if (statusFilter !== "all") f.admin_status = statusFilter;
+    if (exactStatusFilter) f.status = exactStatusFilter;
+    if (missingHsCodeFilter) f.missing_hs_code = 1;
+    if (missingMediaFilter) f.missing_media = 1;
+    if (missingDocumentsFilter) f.missing_documents = 1;
+    if (rejectedWithReasonFilter) f.rejected_with_reason = 1;
     return f;
-  }, [search, catFilter, statusFilter]);
+  }, [
+    search,
+    catFilter,
+    statusFilter,
+    exactStatusFilter,
+    missingHsCodeFilter,
+    missingMediaFilter,
+    missingDocumentsFilter,
+    rejectedWithReasonFilter,
+  ]);
 
   const {
     rows: products,
@@ -1407,6 +1465,38 @@ export function AdminProducts() {
     initialPageSize: 20,
     debounceMs: 250,
   });
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const q = (params.get("q") || "").trim();
+    const category = (params.get("category") || "").trim();
+    const adminStatus = (params.get("admin_status") || "").trim().toLowerCase();
+    const needsCompliance = (params.get("needs_compliance") || "").trim().toLowerCase();
+    const status = (params.get("status") || "").trim().toLowerCase();
+    const missingHsCode = (params.get("missing_hs_code") || "").trim().toLowerCase();
+    const missingMedia = (params.get("missing_media") || "").trim().toLowerCase();
+    const missingDocuments = (params.get("missing_documents") || "").trim().toLowerCase();
+    const rejectedWithReason = (params.get("rejected_with_reason") || "").trim().toLowerCase();
+
+    setSearch(q);
+    setCatFilter(category || "all");
+
+    if (adminStatus && ["all", "active", "low_stock", "out", "review", "compliance"].includes(adminStatus)) {
+      setStatusFilter(adminStatus as any);
+    } else if (needsCompliance === "1" || needsCompliance === "true" || needsCompliance === "yes") {
+      setStatusFilter("compliance");
+    } else {
+      setStatusFilter("all");
+    }
+
+    setExactStatusFilter(status);
+    setMissingHsCodeFilter(missingHsCode === "1" || missingHsCode === "true" || missingHsCode === "yes");
+    setMissingMediaFilter(missingMedia === "1" || missingMedia === "true" || missingMedia === "yes");
+    setMissingDocumentsFilter(missingDocuments === "1" || missingDocuments === "true" || missingDocuments === "yes");
+    setRejectedWithReasonFilter(rejectedWithReason === "1" || rejectedWithReason === "true" || rejectedWithReason === "yes");
+
+    setPage(1);
+  }, [location.search, setPage]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -2521,6 +2611,7 @@ const vehicleStatusColor: Record<string, string> = {
 };
 
 export function AdminLogistics() {
+  const location = useLocation();
   const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
@@ -2541,6 +2632,17 @@ export function AdminLogistics() {
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const statusIn = (params.get("status") || "").trim();
+    const qIn = params.get("q");
+    const pageIn = Number(params.get("page") || "1");
+    if (qIn != null) setShipQ(qIn);
+    if (statusIn) setShipStatus(statusIn);
+    else setShipStatus("all");
+    if (Number.isFinite(pageIn) && pageIn >= 1) setShipPage(Math.floor(pageIn));
+  }, [location.search]);
 
   const fmtVehicles = (a: any, t: any) => {
     const aa = Number(a);
@@ -2979,6 +3081,7 @@ export function AdminLogistics() {
 // ════════════════════════════════════════════════════════════
 
 export function AdminQuality() {
+  const location = useLocation();
   const fetchJson = fetchJsonAuthed;
 
   const [stats, setStats] = useState<any>(null);
@@ -3000,6 +3103,19 @@ export function AdminQuality() {
   const [editScore, setEditScore] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const statusIn = (params.get("status") || "").trim();
+    const qIn = params.get("q");
+    const daysIn = Number(params.get("days") || "");
+    const pageIn = Number(params.get("page") || "1");
+    if (qIn != null) setQ(qIn);
+    if (statusIn) setStatusFilter(statusIn);
+    else setStatusFilter("all");
+    if (Number.isFinite(daysIn) && daysIn >= 2) setDays(Math.floor(daysIn));
+    if (Number.isFinite(pageIn) && pageIn >= 1) setPage(Math.floor(pageIn));
+  }, [location.search]);
 
   const fmtPct = (p: any) => {
     const n = Number(p);

@@ -72,6 +72,13 @@ export function AdminDashboard() {
   const [overview, setOverview] = useState<any>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  const go = (path: string) => {
+    const raw = (path || "").toString();
+    if (!raw) return;
+    const normalized = raw === "/admin" ? "/" : raw.startsWith("/admin/") ? raw.slice("/admin".length) : raw;
+    navigate(normalized);
+  };
+
   const formatCompact = (n: any) => {
     const v = Number(n);
     if (!Number.isFinite(v)) return "—";
@@ -155,7 +162,14 @@ export function AdminDashboard() {
   }));
 
   const alerts = overview?.alerts || [];
+  const setupGuidance = overview?.setup_guidance || [];
   const activities = overview?.activity || [];
+  const pipelines = overview?.pipelines || {};
+  const ordersPipeline = pipelines?.orders || {};
+  const sellersPipeline = pipelines?.sellers || {};
+  const listingsPipeline = pipelines?.listings || {};
+  const logisticsPipeline = pipelines?.logistics || {};
+  const paymentsPipeline = pipelines?.payments || {};
   const [alertsQuery, setAlertsQuery] = useState("");
   const [alertsType, setAlertsType] = useState<"all" | "warning" | "info">("all");
   const [alertsPage, setAlertsPage] = useState(1);
@@ -278,58 +292,82 @@ export function AdminDashboard() {
           ))
         ) : (
           <>
-            <StatCard
-              label="Total Revenue"
-              value={`$${formatCompact(totalRevenue?.total)}`}
-              change={`${Number(totalRevenue?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(totalRevenue?.change_pct)}`}
-              changeType={Number(totalRevenue?.change_pct || 0) > 0 ? "positive" : Number(totalRevenue?.change_pct || 0) < 0 ? "negative" : "neutral"}
-              icon={<TrendingUp size={20} className="text-primary" />}
-              iconBg="bg-primary/8"
-              index={0}
-              subtitle={`B2B $${formatCompact(totalRevenue?.b2b)} · B2C $${formatCompact(totalRevenue?.b2c)}`}
-              sparklineData={totalRevenue?.sparkline || []}
-              sparklineColor="#0171E3"
-              accentColor="#0171E3"
-            />
-            <StatCard
-              label="Active Orders"
-              value={(Number(activeOrders?.total) || 0).toLocaleString()}
-              change={`${Number(activeOrders?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(activeOrders?.change_pct)}`}
-              changeType={Number(activeOrders?.change_pct || 0) > 0 ? "positive" : Number(activeOrders?.change_pct || 0) < 0 ? "negative" : "neutral"}
-              icon={<Package size={20} className="text-[#3B82F6]" />}
-              iconBg="bg-[#3B82F6]/8"
-              index={1}
-              subtitle={`${Number(activeOrders?.b2b || 0).toLocaleString()} B2B · ${Number(activeOrders?.b2c || 0).toLocaleString()} B2C`}
-              sparklineData={activeOrders?.sparkline || []}
-              sparklineColor="#3B82F6"
-              accentColor="#3B82F6"
-            />
-            <StatCard
-              label="Users Online"
-              value={(Number(usersOnline?.total) || 0).toLocaleString()}
-              change={`${Number(usersOnline?.change_abs || 0) >= 0 ? "+" : ""}${Number(usersOnline?.change_abs || 0).toLocaleString()}`}
-              changeType={Number(usersOnline?.change_abs || 0) > 0 ? "positive" : Number(usersOnline?.change_abs || 0) < 0 ? "negative" : "neutral"}
-              icon={<Users size={20} className="text-[#30A46C]" />}
-              iconBg="bg-[#30A46C]/8"
-              index={2}
-              subtitle={`${Number(usersOnline?.sellers || 0)} sellers · ${Number(usersOnline?.workers || 0)} workers · ${Number(usersOnline?.buyers || 0)} buyers`}
-              sparklineData={usersOnline?.sparkline || []}
-              sparklineColor="#30A46C"
-              accentColor="#30A46C"
-            />
-            <StatCard
-              label="Quality Score"
-              value={`${(Number(qualityScore?.value) || 0).toFixed(1)}%`}
-              change={`${Number(qualityScore?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(qualityScore?.change_pct)}`}
-              changeType={Number(qualityScore?.change_pct || 0) > 0 ? "positive" : Number(qualityScore?.change_pct || 0) < 0 ? "negative" : "neutral"}
-              icon={<ShieldCheck size={20} className="text-[#D97706]" />}
-              iconBg="bg-[#D97706]/8"
-              index={3}
-              subtitle={`Based on ${(Number(qualityScore?.inspections) || 0).toLocaleString()} inspections`}
-              sparklineData={qualityScore?.sparkline || []}
-              sparklineColor="#D97706"
-              accentColor="#D97706"
-            />
+            <button
+              type="button"
+              onClick={() => totalRevenue?.path && go(totalRevenue.path)}
+              className="text-left rounded-[1.25rem] ring-2 ring-transparent hover:ring-primary/15 focus:outline-none focus:ring-primary/25 transition-all"
+            >
+              <StatCard
+                label="Total Revenue"
+                value={`$${formatCompact(totalRevenue?.total)}`}
+                change={`${Number(totalRevenue?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(totalRevenue?.change_pct)}`}
+                changeType={Number(totalRevenue?.change_pct || 0) > 0 ? "positive" : Number(totalRevenue?.change_pct || 0) < 0 ? "negative" : "neutral"}
+                icon={<TrendingUp size={20} className="text-primary" />}
+                iconBg="bg-primary/8"
+                index={0}
+                subtitle={`B2B $${formatCompact(totalRevenue?.b2b)} · B2C $${formatCompact(totalRevenue?.b2c)}`}
+                sparklineData={totalRevenue?.sparkline || []}
+                sparklineColor="#0171E3"
+                accentColor="#0171E3"
+              />
+            </button>
+            <button
+              type="button"
+              onClick={() => activeOrders?.path && go(activeOrders.path)}
+              className="text-left rounded-[1.25rem] ring-2 ring-transparent hover:ring-[#3B82F6]/20 focus:outline-none focus:ring-[#3B82F6]/25 transition-all"
+            >
+              <StatCard
+                label="Active Orders"
+                value={(Number(activeOrders?.total) || 0).toLocaleString()}
+                change={`${Number(activeOrders?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(activeOrders?.change_pct)}`}
+                changeType={Number(activeOrders?.change_pct || 0) > 0 ? "positive" : Number(activeOrders?.change_pct || 0) < 0 ? "negative" : "neutral"}
+                icon={<Package size={20} className="text-[#3B82F6]" />}
+                iconBg="bg-[#3B82F6]/8"
+                index={1}
+                subtitle={`Now ${Number(activeOrders?.snapshot_total || 0).toLocaleString()} open · ${selectedPeriod}`}
+                sparklineData={activeOrders?.sparkline || []}
+                sparklineColor="#3B82F6"
+                accentColor="#3B82F6"
+              />
+            </button>
+            <button
+              type="button"
+              onClick={() => usersOnline?.path && go(usersOnline.path)}
+              className="text-left rounded-[1.25rem] ring-2 ring-transparent hover:ring-[#30A46C]/20 focus:outline-none focus:ring-[#30A46C]/25 transition-all"
+            >
+              <StatCard
+                label="Active Users"
+                value={(Number(usersOnline?.total) || 0).toLocaleString()}
+                change={`${Number(usersOnline?.change_abs || 0) >= 0 ? "+" : ""}${Number(usersOnline?.change_abs || 0).toLocaleString()}`}
+                changeType={Number(usersOnline?.change_abs || 0) > 0 ? "positive" : Number(usersOnline?.change_abs || 0) < 0 ? "negative" : "neutral"}
+                icon={<Users size={20} className="text-[#30A46C]" />}
+                iconBg="bg-[#30A46C]/8"
+                index={2}
+                subtitle={`Online now ${Number(usersOnline?.snapshot_total || 0).toLocaleString()} · ${Number(usersOnline?.sellers || 0)} sellers · ${Number(usersOnline?.workers || 0)} workers · ${Number(usersOnline?.buyers || 0)} buyers · ${selectedPeriod}`}
+                sparklineData={usersOnline?.sparkline || []}
+                sparklineColor="#30A46C"
+                accentColor="#30A46C"
+              />
+            </button>
+            <button
+              type="button"
+              onClick={() => qualityScore?.path && go(qualityScore.path)}
+              className="text-left rounded-[1.25rem] ring-2 ring-transparent hover:ring-[#D97706]/20 focus:outline-none focus:ring-[#D97706]/25 transition-all"
+            >
+              <StatCard
+                label="Quality Score"
+                value={`${(Number(qualityScore?.value) || 0).toFixed(1)}%`}
+                change={`${Number(qualityScore?.change_pct || 0) >= 0 ? "+" : ""}${fmtPct(qualityScore?.change_pct)}`}
+                changeType={Number(qualityScore?.change_pct || 0) > 0 ? "positive" : Number(qualityScore?.change_pct || 0) < 0 ? "negative" : "neutral"}
+                icon={<ShieldCheck size={20} className="text-[#D97706]" />}
+                iconBg="bg-[#D97706]/8"
+                index={3}
+                subtitle={`Based on ${(Number(qualityScore?.inspections) || 0).toLocaleString()} inspections`}
+                sparklineData={qualityScore?.sparkline || []}
+                sparklineColor="#D97706"
+                accentColor="#D97706"
+              />
+            </button>
           </>
         )}
       </div>
@@ -495,6 +533,315 @@ export function AdminDashboard() {
         </Section>
       </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <Section>
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <p className="text-muted-foreground/60 text-[0.6875rem] tracking-[0.04em] uppercase">
+                Orders Pipeline
+              </p>
+              <p className="text-muted-foreground/50 text-[0.6875rem] mt-0.5">
+                Status + aging
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => go("/admin/management/orders")}
+              className="text-[0.75rem] text-muted-foreground/60 hover:text-foreground transition-colors inline-flex items-center gap-1 cursor-pointer"
+            >
+              View <ArrowUpRight size={14} />
+            </button>
+          </div>
+          <div className="space-y-2.5">
+            {[
+              { k: "created", label: "Created" },
+              { k: "accepted", label: "Accepted" },
+              { k: "shipped", label: "Shipped" },
+              { k: "delivered", label: "Delivered" },
+              { k: "disputed", label: "Disputed" },
+              { k: "cancelled", label: "Cancelled" },
+            ].map((row) => (
+              <button
+                key={row.k}
+                type="button"
+                onClick={() => go(`/admin/management/orders?status=${encodeURIComponent(row.k)}`)}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="text-[0.8125rem] text-foreground/80">{row.label}</span>
+                  <span className="text-[0.6875rem] text-muted-foreground/50 tabular-nums">
+                    {Number(ordersPipeline?.oldest_days_by_status?.[row.k] || 0) > 0 ? `oldest ${Number(ordersPipeline?.oldest_days_by_status?.[row.k]).toFixed(1)}d` : ""}
+                  </span>
+                </div>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  {Number(ordersPipeline?.counts?.[row.k] || 0).toLocaleString()}
+                </span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => go("/admin/management/orders?overdue_deadline=1")}
+              className="w-full flex items-center justify-between py-2.5 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+            >
+              <span className="text-[0.8125rem] text-foreground/80">Overdue deadlines</span>
+              <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                {Number(ordersPipeline?.overdue_deadline || 0).toLocaleString()}
+              </span>
+            </button>
+          </div>
+        </Section>
+
+        <Section>
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <p className="text-muted-foreground/60 text-[0.6875rem] tracking-[0.04em] uppercase">
+                Listings Pipeline
+              </p>
+              <p className="text-muted-foreground/50 text-[0.6875rem] mt-0.5">
+                Review + compliance
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => go("/admin/products")}
+              className="text-[0.75rem] text-muted-foreground/60 hover:text-foreground transition-colors inline-flex items-center gap-1 cursor-pointer"
+            >
+              View <ArrowUpRight size={14} />
+            </button>
+          </div>
+          <div className="space-y-2.5">
+            {[
+              { key: "pending_products", label: "Pending products", path: "/admin/products?status=pending" },
+              { key: "rejected_products", label: "Rejected products", path: "/admin/products?status=rejected" },
+              { key: "rejected_with_reason", label: "Rejected w/ reason", path: "/admin/products?status=rejected&rejected_with_reason=1" },
+              { key: "missing_hs_code", label: "Missing HS code", path: "/admin/products?missing_hs_code=1" },
+              { key: "missing_images", label: "Missing images", path: "/admin/products?missing_media=1" },
+              { key: "missing_documents", label: "Missing documents", path: "/admin/products?missing_documents=1" },
+            ].map((row) => (
+              <button
+                key={row.key}
+                type="button"
+                onClick={() => go(row.path)}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">{row.label}</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  {Number(listingsPipeline?.[row.key] || 0).toLocaleString()}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section>
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <p className="text-muted-foreground/60 text-[0.6875rem] tracking-[0.04em] uppercase">
+                Sellers & KYC
+              </p>
+              <p className="text-muted-foreground/50 text-[0.6875rem] mt-0.5">
+                Verification workload
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => go("/admin/verification")}
+              className="text-[0.75rem] text-muted-foreground/60 hover:text-foreground transition-colors inline-flex items-center gap-1 cursor-pointer"
+            >
+              View <ArrowUpRight size={14} />
+            </button>
+          </div>
+          <div className="space-y-2.5">
+            {[
+              { key: "pending_verifications", label: "Pending sellers", path: "/admin/verification" },
+              { key: "rejected_verifications", label: "Rejected sellers", path: "/admin/verification" },
+              { key: "pending_kyc_docs", label: "Pending KYC docs", path: "/admin/verification" },
+              { key: "expiring_docs_30d", label: "Expiring docs (30d)", path: "/admin/verification" },
+            ].map((row) => (
+              <button
+                key={row.key}
+                type="button"
+                onClick={() => go(row.path)}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">{row.label}</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  {Number(sellersPipeline?.[row.key] || 0).toLocaleString()}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section className="lg:col-span-2">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <p className="text-muted-foreground/60 text-[0.6875rem] tracking-[0.04em] uppercase">
+                Logistics & Payments
+              </p>
+              <p className="text-muted-foreground/50 text-[0.6875rem] mt-0.5">
+                Shipping issues, disputes, and money flow
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => go("/admin/logistics")}
+                className="text-[0.75rem] text-muted-foreground/60 hover:text-foreground transition-colors inline-flex items-center gap-1 cursor-pointer"
+              >
+                Logistics <ArrowUpRight size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => go(`/admin/management/costs?period=${encodeURIComponent(selectedPeriod)}`)}
+                className="text-[0.75rem] text-muted-foreground/60 hover:text-foreground transition-colors inline-flex items-center gap-1 cursor-pointer"
+              >
+                Finance <ArrowUpRight size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-2.5">
+              {[
+                { key: "in_transit", label: "Shipments in transit", path: "/admin/logistics?status=in_transit" },
+                { key: "late_deliveries", label: "Late deliveries", path: "/admin/logistics" },
+                { key: "no_tracking_number", label: "No tracking #", path: "/admin/logistics" },
+                { key: "stuck_7d", label: "Stuck > 7d", path: "/admin/logistics" },
+              ].map((row) => (
+                <button
+                  key={row.key}
+                  type="button"
+                  onClick={() => go(row.path)}
+                  className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+                >
+                  <span className="text-[0.8125rem] text-foreground/80">{row.label}</span>
+                  <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                    {Number(logisticsPipeline?.[row.key] || 0).toLocaleString()}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => go(`/admin/management/costs?period=${encodeURIComponent(selectedPeriod)}`)}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">Payments available</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  {paymentsPipeline?.available ? "Yes" : "No"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => go(`/admin/management/costs?period=${encodeURIComponent(selectedPeriod)}`)}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">Held amount</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  ${formatCompact(paymentsPipeline?.held_amount || 0)}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => go(`/admin/management/costs?period=${encodeURIComponent(selectedPeriod)}`)}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">Released amount</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  ${formatCompact(paymentsPipeline?.released_amount || 0)}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => go("/admin/legal/disputes")}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">Open disputes</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  {Number(paymentsPipeline?.open_disputes || 0).toLocaleString()}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => go("/admin/legal/disputes")}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">Disputed amount</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  ${formatCompact(paymentsPipeline?.disputed_amount || 0)}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => go("/admin/verification")}
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-black/[0.012] border border-black/[0.03] hover:bg-black/[0.02] transition-colors cursor-pointer"
+              >
+                <span className="text-[0.8125rem] text-foreground/80">Release conditions pending</span>
+                <span className="text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                  {Number(paymentsPipeline?.release_conditions_pending || 0).toLocaleString()}
+                </span>
+              </button>
+            </div>
+          </div>
+        </Section>
+      </div>
+
+      {setupGuidance.length > 0 && (
+        <Section>
+          <div className="flex items-center gap-3 mb-5">
+            <div className="w-8 h-8 rounded-xl bg-primary/6 flex items-center justify-center">
+              <BarChart3 size={15} className="text-primary/70" />
+            </div>
+            <div>
+              <p className="text-[0.875rem] text-foreground/90">Setup Guidance</p>
+              <p className="text-[0.6875rem] text-muted-foreground/50">
+                {setupGuidance.length} quick fixes to make the dashboard feel alive
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {setupGuidance.map((g: any, i: number) => (
+              <motion.div
+                key={g?.key || `${g?.title}-${i}`}
+                className="flex items-start gap-3.5 p-4 rounded-2xl bg-black/[0.012] hover:bg-black/[0.025] transition-all duration-400 cursor-pointer group"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.04 }}
+                onClick={() => go(g.path || "/admin/settings")}
+              >
+                <div className="w-[6px] h-[6px] rounded-full mt-2 flex-shrink-0 bg-primary/60" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[0.8125rem] text-foreground/85 leading-relaxed">
+                    {g.title || g.message || "Setup"}
+                  </p>
+                  {g.message && g.title && (
+                    <p className="text-[0.6875rem] text-muted-foreground/55 mt-1 leading-relaxed">
+                      {g.message}
+                    </p>
+                  )}
+                  {g.occurred_at && (
+                    <p className="text-[0.625rem] text-muted-foreground/40 mt-1.5">
+                      {relativeTime(g.occurred_at)}
+                    </p>
+                  )}
+                </div>
+                <button
+                  className="text-[0.75rem] text-primary/60 hover:text-primary whitespace-nowrap cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300 inline-flex items-center gap-1"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    go(g.path || "/admin/settings");
+                  }}
+                >
+                  {g.action || "Open"} <ArrowUpRight size={14} />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+        </Section>
+      )}
+
       {/* ─── Alerts & Activity ───────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Attention Needed */}
@@ -560,7 +907,7 @@ export function AdminDashboard() {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.05 }}
-                  onClick={() => navigate(alert.path || "/admin")}
+                  onClick={() => go(alert.path || "/admin")}
                 >
                   <div
                     className={`w-[6px] h-[6px] rounded-full mt-2 flex-shrink-0 ${
@@ -575,7 +922,7 @@ export function AdminDashboard() {
                     className="text-[0.75rem] text-primary/60 hover:text-primary whitespace-nowrap cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300"
                     onClick={(e) => {
                       e.stopPropagation();
-                      navigate(alert.path || "/admin");
+                      go(alert.path || "/admin");
                     }}
                   >
                     {alert.action}
@@ -678,12 +1025,12 @@ export function AdminDashboard() {
             ) : (
               pagedActivities.map((activity: any, i: number) => (
                 <motion.div
-                  key={`${activity.user}-${activity.action}-${activity.target}-${i}`}
+                  key={activity?.id || `${activity.user}-${activity.action}-${activity.target}-${i}`}
                   className="flex items-center gap-4 p-3.5 rounded-2xl hover:bg-black/[0.015] transition-all duration-400 cursor-pointer"
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.05 }}
-                  onClick={() => navigate(activity.path || "/admin")}
+                  onClick={() => go(activity.path || "/admin")}
                 >
                   <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center text-white text-[0.625rem] flex-shrink-0">
                     {activity.avatar}
@@ -772,7 +1119,7 @@ export function AdminDashboard() {
                 transition-all duration-500 cursor-pointer group"
               whileHover={{ y: -2 }}
               whileTap={{ scale: 0.97 }}
-              onClick={() => navigate(action.path)}
+              onClick={() => go(action.path)}
             >
               <div
                 className="w-11 h-11 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110"

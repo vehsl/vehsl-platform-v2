@@ -483,6 +483,17 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         ser = ListingRequestCreateSerializer(data=request.data, context={"request": request})
         ser.is_valid(raise_exception=True)
         lr = ser.save()
+        audit(
+            request.user,
+            action="seller_listing_request_submitted",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={
+                "product_name": (getattr(lr, "product_name", "") or "").strip(),
+                "stage": (getattr(lr, "stage", "") or "").strip(),
+                "category_id": str(getattr(lr, "category_id", "") or ""),
+            },
+        )
         out = ListingRequestSerializer(lr, context={"request": request}).data
         return Response(out, status=status.HTTP_201_CREATED)
 
@@ -502,6 +513,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
 
         lr.stage = ListingRequest.Stage.INSPECTION
         lr.save()
+        audit(
+            request.user,
+            action="seller_listing_request_stage_updated",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage, "from": "sample"},
+        )
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="advance")
@@ -522,6 +540,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
             lr.rating = rating
             lr.stage = ListingRequest.Stage.LIVE
             lr.save()
+            audit(
+                request.user,
+                action="seller_listing_request_stage_updated",
+                target_type="listing_request",
+                target_id=str(lr.id),
+                payload={"stage": lr.stage, "from": "inspection", "rating": float(rating)},
+            )
             return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
@@ -538,6 +563,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         if lr.created_product_id:
             lr.stage = ListingRequest.Stage.DONE
             lr.save(update_fields=["stage", "updated_at"])
+            audit(
+                request.user,
+                action="seller_listing_request_published",
+                target_type="listing_request",
+                target_id=str(lr.id),
+                payload={"stage": lr.stage, "created_product_id": str(lr.created_product_id)},
+            )
             return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
         category = lr.category
@@ -559,6 +591,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
             status=Product.Status.ACTIVE,
             vehsl_rating=lr.rating,
         )
+        audit(
+            request.user,
+            action="seller_product_created",
+            target_type="product",
+            target_id=str(p.id),
+            payload={"product_name": (p.name or "").strip(), "source": "listing_request", "listing_request_id": str(lr.id)},
+        )
         photos = list(lr.photos.all())
         for idx, ph in enumerate(photos[:10]):
             try:
@@ -570,6 +609,13 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         lr.created_product = p
         lr.stage = ListingRequest.Stage.DONE
         lr.save(update_fields=["created_product", "stage", "updated_at"])
+        audit(
+            request.user,
+            action="seller_listing_request_published",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage, "created_product_id": str(p.id)},
+        )
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
 
@@ -1039,6 +1085,30 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             qs = qs.filter(
                 Q(missing_hs_code=1) | Q(missing_media=1) | Q(missing_hero_image=1) | Q(compliance_docs_required_count__gt=0)
             )
+
+        status_param = (self.request.query_params.get("status") or "").strip().lower()
+        if status_param:
+            raw = [s.strip().lower() for s in status_param.split(",") if s.strip()]
+            allowed = {str(v).lower() for v, _ in Product.Status.choices}
+            statuses = [s for s in raw if s in allowed]
+            if statuses:
+                qs = qs.filter(status__in=statuses)
+
+        missing_hs_code = (self.request.query_params.get("missing_hs_code") or "").strip().lower()
+        if missing_hs_code in {"1", "true", "yes", "y"}:
+            qs = qs.filter(missing_hs_code=1)
+
+        missing_media = (self.request.query_params.get("missing_media") or "").strip().lower()
+        if missing_media in {"1", "true", "yes", "y"}:
+            qs = qs.filter(missing_media=1)
+
+        missing_documents = (self.request.query_params.get("missing_documents") or "").strip().lower()
+        if missing_documents in {"1", "true", "yes", "y"}:
+            qs = qs.filter(compliance_docs_required_count__gt=0)
+
+        rejected_with_reason = (self.request.query_params.get("rejected_with_reason") or "").strip().lower()
+        if rejected_with_reason in {"1", "true", "yes", "y"}:
+            qs = qs.filter(status=Product.Status.REJECTED, detail_config__review__rejection_reason__gt="")
 
         needs_compliance = (self.request.query_params.get("needs_compliance") or "").strip().lower()
         if needs_compliance in {"1", "true", "yes", "y"}:

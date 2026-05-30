@@ -417,6 +417,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order = serializer.save()
+        audit(
+            request.user,
+            action="order_created",
+            target_type="order",
+            target_id=str(order.id),
+            payload={
+                "buyer_id": str(getattr(order, "buyer_id", "") or ""),
+                "seller_id": str(getattr(order, "seller_id", "") or ""),
+                "status": str(getattr(order, "status", "") or ""),
+                "total_amount": str(getattr(order, "total_amount", "") or ""),
+                "currency": str(getattr(order, "currency", "") or ""),
+            },
+        )
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="accept")
@@ -424,8 +437,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = self.get_object()
         if order.seller_id != request.user.id:
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        prev = order.status
         order.status = Order.Status.ACCEPTED
         order.save(update_fields=["status"])
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
         return Response(OrderSerializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="reject")
@@ -433,8 +454,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = self.get_object()
         if order.seller_id != request.user.id:
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        prev = order.status
         order.status = Order.Status.REJECTED
         order.save(update_fields=["status"])
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
         return Response(OrderSerializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="cancel")
@@ -458,8 +487,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             if not ok:
                 return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
 
+        prev = order.status
         order.status = Order.Status.CANCELLED
         order.save(update_fields=["status"])
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
         return Response(OrderSerializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="extend-deadline")
@@ -538,13 +575,30 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Order cannot be updated."}, status=status.HTTP_400_BAD_REQUEST)
 
         shipment = self._ensure_shipment(order)
+        prev_ship = shipment.status
         if shipment.status == Shipment.Status.LABEL_CREATED:
             Shipment.objects.filter(id=shipment.id).update(status=Shipment.Status.PICKED_UP)
             shipment.refresh_from_db()
+        if shipment.status != prev_ship:
+            audit(
+                request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(shipment.id),
+                payload={"order_id": str(order.id), "from": str(prev_ship or ""), "to": str(shipment.status or "")},
+            )
 
         if order.status != Order.Status.SHIPPED:
+            prev = order.status
             order.status = Order.Status.SHIPPED
             order.save(update_fields=["status"])
+            audit(
+                request.user,
+                action="order_status_changed",
+                target_type="order",
+                target_id=str(order.id),
+                payload={"from": str(prev or ""), "to": str(order.status or "")},
+            )
 
         return Response({"order": OrderSerializer(order).data, "shipment": ShipmentSerializer(shipment).data})
 
@@ -557,13 +611,30 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Order cannot be updated."}, status=status.HTTP_400_BAD_REQUEST)
 
         shipment = self._ensure_shipment(order)
+        prev_ship = shipment.status
         if shipment.status in {Shipment.Status.LABEL_CREATED, Shipment.Status.PICKED_UP}:
             Shipment.objects.filter(id=shipment.id).update(status=Shipment.Status.IN_TRANSIT)
             shipment.refresh_from_db()
+        if shipment.status != prev_ship:
+            audit(
+                request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(shipment.id),
+                payload={"order_id": str(order.id), "from": str(prev_ship or ""), "to": str(shipment.status or "")},
+            )
 
         if order.status != Order.Status.SHIPPED:
+            prev = order.status
             order.status = Order.Status.SHIPPED
             order.save(update_fields=["status"])
+            audit(
+                request.user,
+                action="order_status_changed",
+                target_type="order",
+                target_id=str(order.id),
+                payload={"from": str(prev or ""), "to": str(order.status or "")},
+            )
 
         return Response({"order": OrderSerializer(order).data, "shipment": ShipmentSerializer(shipment).data})
 
@@ -572,8 +643,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = self.get_object()
         if order.seller_id != request.user.id:
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        prev = order.status
         order.status = Order.Status.SHIPPED
         order.save(update_fields=["status"])
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
         return Response(OrderSerializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="mark-delivered")
@@ -583,8 +662,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
         if order.status not in {Order.Status.SHIPPED, Order.Status.DELIVERED}:
             return Response({"detail": "Order must be shipped first."}, status=status.HTTP_400_BAD_REQUEST)
+        prev = order.status
         order.status = Order.Status.DELIVERED
         order.save(update_fields=["status"])
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
         return Response(OrderSerializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="mark-completed")
@@ -594,8 +681,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
         if order.status not in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
             return Response({"detail": "Order must be delivered first."}, status=status.HTTP_400_BAD_REQUEST)
+        prev = order.status
         order.status = Order.Status.COMPLETED
         order.save(update_fields=["status"])
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
         return Response(OrderSerializer(order).data)
 
 
@@ -622,6 +717,32 @@ class ShipmentViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsSeller()]
         return [permissions.IsAuthenticated()]
 
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        prev_status = getattr(instance, "status", "")
+        prev_tracking = getattr(instance, "tracking_number", "")
+        obj = serializer.save()
+        if (getattr(obj, "status", "") or "") != (prev_status or ""):
+            audit(
+                self.request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(getattr(obj, "id", "") or ""),
+                payload={
+                    "order_id": str(getattr(obj, "order_id", "") or ""),
+                    "from": str(prev_status or ""),
+                    "to": str(getattr(obj, "status", "") or ""),
+                },
+            )
+        if (getattr(obj, "tracking_number", "") or "") != (prev_tracking or ""):
+            audit(
+                self.request.user,
+                action="shipment_tracking_updated",
+                target_type="shipment",
+                target_id=str(getattr(obj, "id", "") or ""),
+                payload={"order_id": str(getattr(obj, "order_id", "") or ""), "tracking_number": str(getattr(obj, "tracking_number", "") or "")},
+            )
+
 
 class DisputeViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -635,7 +756,29 @@ class DisputeViewSet(viewsets.ModelViewSet):
         return qs.filter(order__buyer=user)
 
     def perform_create(self, serializer):
-        serializer.save(opened_by=self.request.user)
+        dispute = serializer.save(opened_by=self.request.user)
+        audit(
+            self.request.user,
+            action="dispute_opened",
+            target_type="dispute",
+            target_id=str(getattr(dispute, "id", "") or ""),
+            payload={"order_id": str(getattr(dispute, "order_id", "") or ""), "status": str(getattr(dispute, "status", "") or "")},
+        )
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        prev_status = getattr(instance, "status", "")
+        dispute = serializer.save()
+        new_status = getattr(dispute, "status", "")
+        if (new_status or "") != (prev_status or ""):
+            action = "dispute_resolved" if str(new_status or "").lower() == Dispute.Status.RESOLVED else "dispute_status_changed"
+            audit(
+                self.request.user,
+                action=action,
+                target_type="dispute",
+                target_id=str(getattr(dispute, "id", "") or ""),
+                payload={"order_id": str(getattr(dispute, "order_id", "") or ""), "from": str(prev_status or ""), "to": str(new_status or "")},
+            )
 
 
 class ReviewViewSet(viewsets.ModelViewSet):
@@ -869,7 +1012,11 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 
         status_filter = (request.query_params.get("status") or "").strip().lower()
         if status_filter:
-            qs = qs.filter(status=status_filter)
+            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            if len(statuses) > 1:
+                qs = qs.filter(status__in=statuses)
+            else:
+                qs = qs.filter(status=statuses[0] if statuses else status_filter)
 
         q = (request.query_params.get("q") or "").strip()
         if q:
@@ -986,6 +1133,83 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
                 "events": evs,
             }
         )
+
+
+class AdminOrderViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    pagination_class = AdminPageNumberPagination
+
+    def get_queryset(self):
+        qs = (
+            Order.objects.filter(deleted_at__isnull=True)
+            .select_related("buyer", "seller")
+            .prefetch_related("items", "items__product")
+            .annotate(item_count=Count("items"))
+            .order_by("-created_at")
+        )
+
+        status_filter = (self.request.query_params.get("status") or "").strip().lower()
+        if status_filter:
+            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            qs = qs.filter(status__in=statuses)
+
+        overdue_deadline = (self.request.query_params.get("overdue_deadline") or "").strip().lower()
+        if overdue_deadline in {"1", "true", "yes", "y"}:
+            qs = (
+                qs.filter(deadline_at__isnull=False, deadline_at__lt=timezone.now())
+                .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED])
+            )
+
+        q = (self.request.query_params.get("q") or "").strip()
+        if q:
+            qv = q.strip()
+            qn = qv.lower()
+            extracted = qn.replace("#", "").replace("ord-", "").replace("vh-", "")
+            if extracted.isdigit():
+                try:
+                    return qs.filter(id=int(extracted))
+                except Exception:
+                    pass
+            qs = qs.filter(
+                Q(buyer__email__icontains=qv)
+                | Q(buyer__phone__icontains=qv)
+                | Q(seller__email__icontains=qv)
+                | Q(seller__phone__icontains=qv)
+                | Q(items__product__name__icontains=qv)
+                | Q(items__product__sku__icontains=qv)
+            ).distinct()
+
+        return qs
+
+    def list(self, request):
+        qs = self.get_queryset()
+        page = self.paginate_queryset(qs)
+        rows = page if page is not None else list(qs[:50])
+
+        out = []
+        for o in rows:
+            buyer = getattr(o, "buyer", None)
+            seller = getattr(o, "seller", None)
+            out.append(
+                {
+                    "id": o.id,
+                    "status": o.status,
+                    "currency": o.currency,
+                    "total_amount": str(getattr(o, "total_amount", "") or ""),
+                    "payment_status": getattr(o, "payment_status", ""),
+                    "payment_method": getattr(o, "payment_method", ""),
+                    "deadline_at": getattr(o, "deadline_at", None),
+                    "created_at": o.created_at,
+                    "updated_at": getattr(o, "updated_at", None),
+                    "item_count": int(getattr(o, "item_count", 0) or 0),
+                    "buyer": (getattr(buyer, "email", "") or getattr(buyer, "phone", "") or "—") if buyer else "—",
+                    "seller": (getattr(seller, "email", "") or getattr(seller, "phone", "") or "—") if seller else "—",
+                }
+            )
+
+        if page is not None:
+            return self.get_paginated_response(out)
+        return Response({"count": len(out), "next": None, "previous": None, "results": out})
 
 
 class AdminReleaseOrderViewSet(viewsets.GenericViewSet):

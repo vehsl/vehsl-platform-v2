@@ -29,6 +29,8 @@ class Payment(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["order", "status"]),
+            models.Index(fields=["status", "created_at"], name="pay_sc_idx"),
+            models.Index(fields=["deleted_at", "created_at"], name="pay_dc_idx"),
             models.Index(fields=["gateway_reference"]),
         ]
 
