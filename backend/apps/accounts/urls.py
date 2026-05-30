@@ -38,6 +38,8 @@ from .views import (
     TotpEnableMeView,
     TotpDisableMeView,
     DeactivateMeView,
+    MarketingPromisesView,
+    MarketingAssetUploadView,
 )
 
 router = DefaultRouter()
@@ -79,5 +81,7 @@ urlpatterns = [
     path("admin/ui/notifications", AdminUiNotificationsView.as_view()),
     path("admin/ui/notifications/mark-all-read", AdminUiNotificationsMarkAllReadView.as_view()),
     path("admin/ui/notifications/<str:key>/mark-read", AdminUiNotificationsMarkReadView.as_view()),
+    path("marketing/promises/", MarketingPromisesView.as_view()),
+    path("marketing/assets/upload/", MarketingAssetUploadView.as_view()),
     path("", include(router.urls)),
 ]

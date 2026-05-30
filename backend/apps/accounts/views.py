@@ -27,6 +27,7 @@ from django.core.files.storage import default_storage
 from django.contrib.auth.hashers import make_password, check_password
 
 from apps.catalog.models import ListingRequest, Product, ProductMedia, Warehouse, WarehouseStock
+from apps.catalog.serializers import ProductMediaSerializer
 from apps.orders.models import Order, OrderItem, Shipment, WishlistItem, WarehouseRelease, Review
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
 
@@ -3386,7 +3387,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             if item and item.product:
                 media = item.product.media.filter(media_type="image", deleted_at__isnull=True).first()
                 if media:
-                    image_url = media.url
+                    image_url = (ProductMediaSerializer(media, context={"request": request}).data.get("public_url") or "").strip()
 
             latest_shipment = None
             try:
@@ -3453,9 +3454,241 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
         user = request.user
-        qs = Notification.objects.filter(user=user).exclude(status=Notification.Status.READ).order_by("-created_at")[:10]
-        ser = SellerActivitySerializer(qs, many=True)
-        return Response(ser.data)
+
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw) if limit_raw else 20
+        except Exception:
+            limit = 20
+        limit = max(5, min(50, limit))
+
+        def moment_label(dt) -> str:
+            if not dt:
+                return ""
+            now = timezone.now()
+            diff = now - dt
+            if diff.days > 0:
+                return f"{diff.days}d ago"
+            hours = diff.seconds // 3600
+            if hours > 0:
+                return f"{hours}h ago"
+            minutes = (diff.seconds % 3600) // 60
+            return f"{minutes}m ago"
+
+        items: list[dict] = []
+
+        notif_qs = Notification.objects.filter(user=user).order_by("-created_at", "-id")[:limit]
+        for n in notif_qs:
+            data = SellerActivitySerializer(n).data
+            data["_ts"] = n.created_at
+            items.append(data)
+
+        order_qs = (
+            Order.objects.filter(seller=user, deleted_at__isnull=True)
+            .select_related("buyer")
+            .prefetch_related("items", "items__product", "items__product__media", "shipments")
+            .order_by("-updated_at", "-id")[: min(25, limit * 2)]
+        )
+        for o in order_qs:
+            item = o.items.first()
+            prod = getattr(item, "product", None) if item else None
+            product_name = (getattr(prod, "name", "") or "").strip() or "Unknown product"
+            buyer_name = f"{getattr(o.buyer, 'first_name', '')} {getattr(o.buyer, 'last_name', '')}".strip() or "Buyer"
+            qty = 0
+            try:
+                qty = sum(int(i.quantity or 0) for i in o.items.all())
+            except Exception:
+                qty = 0
+            order_ref = f"#VH-{o.id}"
+
+            latest_shipment = None
+            try:
+                latest_shipment = o.shipments.filter(deleted_at__isnull=True).order_by("-created_at", "-id").first()
+            except Exception:
+                latest_shipment = None
+            tracking = (getattr(latest_shipment, "tracking_number", "") or "").strip() if latest_shipment else ""
+
+            if o.payment_status == Order.PaymentStatus.PAID and o.status in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+                items.append(
+                    {
+                        "id": f"order-{o.id}-payment",
+                        "kind": "payment",
+                        "sentence": "Payment released",
+                        "moment": moment_label(getattr(o, "updated_at", None) or getattr(o, "created_at", None)),
+                        "tint": "#2eaa57",
+                        "icon": "💸",
+                        "subtitle": product_name,
+                        "detail": f"Payment for {qty} units has cleared and will be deposited to your registered account.",
+                        "action_kind": "none",
+                        "action_label": "",
+                        "order_id": int(o.id),
+                        "order_ref": order_ref,
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": tracking,
+                        "_ts": getattr(o, "updated_at", None) or getattr(o, "created_at", None),
+                    }
+                )
+                continue
+
+            if o.status == Order.Status.SHIPPED or (latest_shipment and getattr(latest_shipment, "status", "") in {Shipment.Status.PICKED_UP, Shipment.Status.IN_TRANSIT, Shipment.Status.OUT_FOR_DELIVERY, Shipment.Status.CUSTOMS}):
+                items.append(
+                    {
+                        "id": f"order-{o.id}-pickup",
+                        "kind": "pickup_done",
+                        "sentence": "Order in transit",
+                        "moment": moment_label(getattr(o, "updated_at", None) or getattr(o, "created_at", None)),
+                        "tint": "rgba(26,26,26,0.6)",
+                        "icon": "🚚",
+                        "subtitle": product_name,
+                        "detail": f"{qty} units are on the way to the buyer. Tracking {tracking or '—'}.",
+                        "action_kind": "view",
+                        "action_label": "View",
+                        "order_id": int(o.id),
+                        "order_ref": order_ref,
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": tracking,
+                        "_ts": getattr(o, "updated_at", None) or getattr(o, "created_at", None),
+                    }
+                )
+                continue
+
+            if o.status == Order.Status.CREATED:
+                items.append(
+                    {
+                        "id": f"order-{o.id}-new",
+                        "kind": "platform_notice",
+                        "sentence": "New order pending approval",
+                        "moment": moment_label(getattr(o, "created_at", None)),
+                        "tint": "#0171E3",
+                        "icon": "📦",
+                        "subtitle": product_name,
+                        "detail": f"{buyer_name} placed an order for {qty} units. Review and accept to start production.",
+                        "action_kind": "view",
+                        "action_label": "View",
+                        "order_id": int(o.id),
+                        "order_ref": order_ref,
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": tracking,
+                        "_ts": getattr(o, "created_at", None),
+                    }
+                )
+
+        lr_qs = (
+            ListingRequest.objects.filter(seller=user)
+            .select_related("category")
+            .order_by("-updated_at", "-id")[: min(20, limit)]
+        )
+        for lr in lr_qs:
+            product_name = (getattr(lr, "product_name", "") or "").strip() or "Listing"
+            stage = (getattr(lr, "stage", "") or "").strip()
+            rating = getattr(lr, "rating", None)
+            if stage in {ListingRequest.Stage.LIVE, ListingRequest.Stage.DONE} and rating is not None:
+                items.append(
+                    {
+                        "id": f"listing-{lr.id}-inspection",
+                        "kind": "inspection_done",
+                        "sentence": "Inspection complete",
+                        "moment": moment_label(getattr(lr, "updated_at", None) or getattr(lr, "created_at", None)),
+                        "tint": "#2eaa57",
+                        "icon": "✅",
+                        "subtitle": product_name,
+                        "detail": f"Your listing is live with a verified rating of {rating}.",
+                        "action_kind": "none",
+                        "action_label": "",
+                        "order_id": None,
+                        "order_ref": "",
+                        "product_name": product_name,
+                        "client_comment": "",
+                        "tracking_number": "",
+                        "_ts": getattr(lr, "updated_at", None) or getattr(lr, "created_at", None),
+                    }
+                )
+                continue
+
+            stage_label = {
+                ListingRequest.Stage.SAMPLES: "Samples",
+                ListingRequest.Stage.INSPECTION: "Inspection",
+                ListingRequest.Stage.LIVE: "Live",
+                ListingRequest.Stage.DONE: "Done",
+            }.get(stage, "Update")
+            items.append(
+                {
+                    "id": f"listing-{lr.id}",
+                    "kind": "platform_notice",
+                    "sentence": "Listing request update",
+                    "moment": moment_label(getattr(lr, "updated_at", None) or getattr(lr, "created_at", None)),
+                    "tint": "#0071e3",
+                    "icon": "📝",
+                    "subtitle": product_name,
+                    "detail": f"Stage: {stage_label}. We’ll notify you as we progress your verification.",
+                    "action_kind": "none",
+                    "action_label": "",
+                    "order_id": None,
+                    "order_ref": "",
+                    "product_name": product_name,
+                    "client_comment": "",
+                    "tracking_number": "",
+                    "_ts": getattr(lr, "updated_at", None) or getattr(lr, "created_at", None),
+                }
+            )
+
+        products_qs = (
+            Product.objects.filter(seller=user, deleted_at__isnull=True)
+            .filter(status__in=[Product.Status.PENDING, Product.Status.REJECTED])
+            .order_by("-updated_at", "-id")[: min(15, limit)]
+        )
+        for p in products_qs:
+            status_label = "Pending review" if p.status == Product.Status.PENDING else "Listing needs updates"
+            kind = "listing_rejected" if p.status == Product.Status.REJECTED else "platform_notice"
+            reason = ""
+            rejection_photos = []
+            improvement_suggestions = []
+            try:
+                cfg = p.detail_config if isinstance(p.detail_config, dict) else {}
+            except Exception:
+                cfg = {}
+            if isinstance(cfg, dict):
+                review = cfg.get("review") if isinstance(cfg.get("review"), dict) else {}
+                if isinstance(review, dict):
+                    reason = str(review.get("rejection_reason") or "").strip()
+                    rejection_photos = review.get("rejection_photos") if isinstance(review.get("rejection_photos"), list) else []
+                    improvement_suggestions = (
+                        review.get("improvement_suggestions") if isinstance(review.get("improvement_suggestions"), list) else []
+                    )
+            items.append(
+                {
+                    "id": f"product-{p.id}-{p.status}",
+                    "kind": kind,
+                    "sentence": status_label,
+                    "moment": moment_label(getattr(p, "updated_at", None) or getattr(p, "created_at", None)),
+                    "tint": "#e67e22" if p.status == Product.Status.REJECTED else "#0071e3",
+                    "icon": "🛡️" if p.status == Product.Status.REJECTED else "🕒",
+                    "subtitle": (p.name or "").strip() or "Product",
+                    "detail": (reason or "Update your listing details and resubmit for approval.") if p.status == Product.Status.REJECTED else "Your listing is being reviewed by the Vehsl team.",
+                    "action_kind": "resubmit" if p.status == Product.Status.REJECTED else "none",
+                    "action_label": "Fix & resubmit" if p.status == Product.Status.REJECTED else "",
+                    "rejection_reason": reason,
+                    "rejection_photos": rejection_photos,
+                    "improvement_suggestions": improvement_suggestions,
+                    "order_id": None,
+                    "order_ref": "",
+                    "product_name": (p.name or "").strip() or "",
+                    "client_comment": "",
+                    "tracking_number": "",
+                    "_ts": getattr(p, "updated_at", None) or getattr(p, "created_at", None),
+                }
+            )
+
+        items.sort(key=lambda r: (r.get("_ts") or timezone.now()), reverse=True)
+        out = []
+        for r in items[:limit]:
+            rr = dict(r)
+            rr.pop("_ts", None)
+            out.append(rr)
+        return Response(out)
 
     @action(detail=False, methods=["post"], url_path=r"activities/(?P<activity_id>[^/.]+)/dismiss")
     def dismiss_activity(self, request, activity_id=None):
@@ -3465,7 +3698,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         try:
             nid = int(activity_id)
         except Exception:
-            return Response({"detail": "Invalid activity id."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"dismissed": True})
 
         updated = (
             Notification.objects.filter(user=request.user, id=nid)
@@ -3480,20 +3713,23 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         if gate is not None:
             return gate
 
-        try:
-            nid = int(activity_id)
-        except Exception:
-            return Response({"detail": "Invalid activity id."}, status=status.HTTP_400_BAD_REQUEST)
-
         content = str((request.data.get("content") if isinstance(request.data, dict) else "") or "").strip()
         if not content:
             return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        notif = Notification.objects.filter(user=request.user, id=nid).first()
-        if not notif:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            nid = int(activity_id)
+        except Exception:
+            nid = None
 
-        payload = notif.payload or {}
+        notif = None
+        payload = {}
+        if nid is not None:
+            notif = Notification.objects.filter(user=request.user, id=nid).first()
+            if not notif:
+                return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+            payload = notif.payload or {}
+
         order_id = payload.get("order_id") or payload.get("orderId") or (request.data.get("order_id") if isinstance(request.data, dict) else None)
         try:
             order_id = int(order_id)
@@ -3523,7 +3759,8 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         msg = ChatMessage.objects.create(thread=thread, sender=request.user, content=content, read_by=[uid])
         ChatThread.objects.filter(id=thread.id).update(updated_at=msg.sent_at)
 
-        Notification.objects.filter(user=request.user, id=nid).update(status=Notification.Status.READ)
+        if nid is not None:
+            Notification.objects.filter(user=request.user, id=nid).update(status=Notification.Status.READ)
 
         return Response(
             {
@@ -3553,7 +3790,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             if not item:
                 continue
             media = item.product.media.filter(media_type="image", deleted_at__isnull=True).first()
-            image_url = media.url if media else ""
+            image_url = (ProductMediaSerializer(media, context={"request": request}).data.get("public_url") or "").strip() if media else ""
             ship_addr = o.shipping_address or {}
             city = (ship_addr.get("city") or "").strip()
             country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
@@ -3593,10 +3830,10 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         for m in qs:
             p = m.product
             caption = (m.title or "").strip() or p.name
-            thumb = (m.url or "").strip()
+            thumb = (ProductMediaSerializer(m, context={"request": request}).data.get("public_url") or "").strip()
             if not thumb:
                 img = p.media.filter(media_type="image", deleted_at__isnull=True).first()
-                thumb = img.url if img else ""
+                thumb = (ProductMediaSerializer(img, context={"request": request}).data.get("public_url") or "").strip() if img else ""
             stats = (p.detail_config or {}).get("reels_stats") or {}
             s = stats.get(str(m.id)) if isinstance(stats, dict) else None
             if not isinstance(s, dict):
@@ -4611,3 +4848,107 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
         settings_obj.business = business
         settings_obj.save(update_fields=["business", "updated_at"])
         return Response({inventory_item_id: merged})
+
+
+class MarketingPromisesView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        def image_url_for(pid: str) -> str:
+            key = f"marketing/promises/{pid}.png"
+            try:
+                if not default_storage.exists(key):
+                    return ""
+            except Exception:
+                return ""
+            try:
+                url = default_storage.url(key)
+            except Exception:
+                url = f"/media/{key}"
+            if isinstance(url, str) and url.startswith("/") and request is not None:
+                try:
+                    return request.build_absolute_uri(url)
+                except Exception:
+                    return url
+            return url if isinstance(url, str) else ""
+
+        return Response(
+            {
+                "promises": [
+                    {
+                        "id": "sellers-verified",
+                        "image_url": image_url_for("sellers-verified"),
+                        "title_en": "100% Sellers verified.",
+                        "title_zh": "100% 卖家已认证。",
+                        "description_en": "Every seller on our Vehsl is fully KYC-verified, ensuring you buy directly and securely from only verified sellers, no exceptions.",
+                        "description_zh": "我们的 Vehsl 平台上的每位卖家都经过完整的 KYC 认证，确保您直接且安全地从经过验证的卖家处购买，绝无例外。",
+                    },
+                    {
+                        "id": "manufacturing-visit",
+                        "image_url": image_url_for("manufacturing-visit"),
+                        "title_en": "Each manufacturing unit is visited.",
+                        "title_zh": "实地探访每个制造工厂。",
+                        "description_en": "Every manufacturer on Vehsl is validated through in-person visits and careful review of their facility documents, ensuring credibility and transparency.",
+                        "description_zh": "通过实地走访以及对设施文件的仔细审查，来核实 Vehsl 上的每家制造商，确保信誉与透明度。",
+                    },
+                    {
+                        "id": "payment-protection",
+                        "image_url": image_url_for("payment-protection"),
+                        "title_en": "Each Payment and product is protected.",
+                        "title_zh": "每一笔付款与商品都受保护。",
+                        "description_en": "No payment moves without delivery, and no order is placed without secured funds.",
+                        "description_zh": "未交货不付款，资金未安全托管不发单。",
+                    },
+                    {
+                        "id": "customer-support",
+                        "image_url": image_url_for("customer-support"),
+                        "title_en": "Questions at midnight? No problem. Our team is always online.",
+                        "title_zh": "半夜有疑问？没问题。我们的团队始终在线。",
+                        "description_en": "Our global support team provides 24/7 assistance with orders, payments, listings, and more, expert help, wherever you are.",
+                        "description_zh": "我们的全球支持团队全天候 (24/7) 提供订单、付款、商品列表等方面的协助，无论您身在何处，都能获得专家帮助。",
+                    },
+                    {
+                        "id": "buyer-kyc-verified",
+                        "image_url": image_url_for("buyer-kyc-verified"),
+                        "title_en": "Buyer KYC Verified.",
+                        "title_zh": "买家 KYC 已验证。",
+                        "description_en": "Every buyer on our platform is verified through KYC to ensure secure and reliable marketplace.",
+                        "description_zh": "平台上的每位买家都经过 KYC 验证，以确保安全可靠的市场环境。",
+                    },
+                ]
+            }
+        )
+
+
+class MarketingAssetUploadView(APIView):
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        raw_key = str((request.data.get("key") or request.data.get("path") or "")).strip()
+        upload = request.FILES.get("file")
+        if not raw_key:
+            return Response({"detail": "key is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not upload:
+            return Response({"detail": "file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        key = raw_key.lstrip("/").strip()
+        if ".." in key or "\\" in key:
+            return Response({"detail": "Invalid key."}, status=status.HTTP_400_BAD_REQUEST)
+        if not key.startswith("marketing/"):
+            return Response({"detail": "key must start with marketing/."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            saved = default_storage.save(key, upload)
+        except Exception:
+            return Response({"detail": "Upload failed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            url = default_storage.url(saved)
+        except Exception:
+            url = f"/media/{saved}"
+        if isinstance(url, str) and url.startswith("/"):
+            try:
+                url = request.build_absolute_uri(url)
+            except Exception:
+                pass
+        return Response({"storage_key": saved, "url": url}, status=status.HTTP_201_CREATED)

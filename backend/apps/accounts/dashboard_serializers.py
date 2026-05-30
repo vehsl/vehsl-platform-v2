@@ -2,6 +2,7 @@ from rest_framework import serializers
 from apps.accounts.models import User, Notification
 from apps.orders.models import Order, OrderItem, Shipment
 from apps.catalog.models import Product, ListingRequest
+from apps.catalog.serializers import ProductMediaSerializer
 from django.db.models import Sum
 
 class SellerDashboardMetricsSerializer(serializers.Serializer):
@@ -136,8 +137,15 @@ class SellerProductSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'image', 'price', 'status', 'sold', 'in_warehouse', 'in_transit', 'vehsl_rating']
 
     def get_image(self, obj):
-        media = obj.media.filter(media_type='image').first()
-        return media.url if media else None
+        try:
+            media = obj.media.filter(deleted_at__isnull=True, media_type='image').order_by("position", "id").first()
+        except Exception:
+            media = None
+        if not media:
+            return None
+        req = self.context.get("request")
+        url = (ProductMediaSerializer(media, context={"request": req}).data.get("public_url") or "").strip()
+        return url or None
 
 class WarehouseSerializer(serializers.Serializer):
     id = serializers.CharField()

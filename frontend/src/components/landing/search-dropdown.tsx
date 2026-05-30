@@ -18,28 +18,9 @@ import { fetchJsonAuthed } from "@/lib/api";
 import { getIcon } from "./category-nav";
 import { useBounce } from "./bounce-context";
 
-// ─── Filter Data ──────────────────────────────────────────────────────────
-const PRICE_OPTIONS = [
-  { label: "Under $50",  value: "under-50" },
-  { label: "$50–$500",   value: "50-500"   },
-  { label: "$500–$5K",   value: "500-5k"   },
-  { label: "$5K–$50K",   value: "5k-50k"   },
-  { label: "$50K+",      value: "50k-plus" },
-  { label: "Bulk / B2B", value: "bulk"     },
-];
-
-const RATING_OPTIONS = [
-  { label: "4.5+", value: 4.5 },
-  { label: "4.0+", value: 4.0 },
-  { label: "3.5+", value: 3.5 },
-];
-
-const QA_GRADES = [
-  { label: "A+", desc: "Premium",  value: "a-plus", color: "#059669", bg: "rgba(5,150,105,0.08)"  },
-  { label: "A",  desc: "Verified", value: "a",       color: "#2563eb", bg: "rgba(37,99,235,0.08)" },
-  { label: "B",  desc: "Standard", value: "b",       color: "#d97706", bg: "rgba(217,119,6,0.08)" },
-  { label: "C",  desc: "Budget",   value: "c",       color: "#6b7280", bg: "rgba(107,114,128,0.06)"},
-];
+type PriceOption = { label: string; value: string; min_price: number | null; max_price: number | null };
+type RatingOption = { label: string; value: number };
+type QaGrade = { label: string; desc: string; value: string; color: string; bg: string };
 
 // ─── Filter row: label + horizontal scrollable chips ──────────────────────
 function FilterRow({
@@ -197,6 +178,9 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
     Array<{ key: string; name: string; icon: string; category: string; productId?: number; categorySlug?: string }>
   >([]);
   const [resultsLoading, setResultsLoading] = useState(false);
+  const [priceOptions, setPriceOptions] = useState<PriceOption[]>([]);
+  const [ratingOptions, setRatingOptions] = useState<RatingOption[]>([]);
+  const [qaGrades, setQaGrades] = useState<QaGrade[]>([]);
   const [filters, setFilters] = useState<{
     category: string | null;
     price: string | null;
@@ -216,6 +200,52 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
   const hasQuery = query.trim().length > 0;
   const showDropdown = isFocused;
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJsonAuthed("/api/v1/products/facets/")
+      .then((data) => {
+        if (cancelled) return;
+        const rawPrice: PriceOption[] = Array.isArray((data as any)?.price_options) ? (data as any).price_options : [];
+        const rawRating: RatingOption[] = Array.isArray((data as any)?.rating_options) ? (data as any).rating_options : [];
+        const rawQa: QaGrade[] = Array.isArray((data as any)?.qa_grades) ? (data as any).qa_grades : [];
+        setPriceOptions(
+          rawPrice
+            .map((x: any) => ({
+              label: String(x?.label || "").trim(),
+              value: String(x?.value || "").trim(),
+              min_price: x?.min_price === null || x?.min_price === undefined ? null : Number(x.min_price),
+              max_price: x?.max_price === null || x?.max_price === undefined ? null : Number(x.max_price),
+            }))
+            .filter((x: PriceOption) => x.label && x.value),
+        );
+        setRatingOptions(
+          rawRating
+            .map((x: any) => ({ label: String(x?.label || "").trim(), value: Number(x?.value || 0) }))
+            .filter((x: RatingOption) => x.label && Number.isFinite(x.value) && x.value > 0),
+        );
+        setQaGrades(
+          rawQa
+            .map((x: any) => ({
+              label: String(x?.label || "").trim(),
+              desc: String(x?.desc || "").trim(),
+              value: String(x?.value || "").trim(),
+              color: String(x?.color || "").trim(),
+              bg: String(x?.bg || "").trim(),
+            }))
+            .filter((x: QaGrade) => x.label && x.value),
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPriceOptions([]);
+        setRatingOptions([]);
+        setQaGrades([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -353,6 +383,15 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
       params.set("page_size", "8");
       params.set("ordering", "-created_at");
       if (filters.category) params.set("category", filters.category);
+      if (filters.price) {
+        const opt = priceOptions.find((x) => x.value === filters.price);
+        if (opt?.min_price !== null && opt?.min_price !== undefined) params.set("min_price", String(opt.min_price));
+        if (opt?.max_price !== null && opt?.max_price !== undefined) params.set("max_price", String(opt.max_price));
+      }
+      if (typeof filters.rating === "number" && Number.isFinite(filters.rating)) {
+        params.set("min_rating", String(filters.rating));
+      }
+      if (filters.qaGrade) params.set("qa_grade", filters.qaGrade);
       fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
         .then((data) => {
           if (cancelled) return;
@@ -384,7 +423,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
       cancelled = true;
       window.clearTimeout(tmr);
     };
-  }, [filters.category, hasQuery, query, serverCategories]);
+  }, [filters.category, filters.price, filters.qaGrade, filters.rating, hasQuery, priceOptions, query, serverCategories]);
 
   // ── Close on outside click ──
   useEffect(() => {
@@ -424,14 +463,17 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
   const handleSubmit = useCallback(() => {
     const q = query.trim();
-    if (!q && !filters.category) return;
+    if (!q && !filters.category && !filters.price && !filters.rating && !filters.qaGrade) return;
     const sp = new URLSearchParams();
     if (q) sp.set("search", q);
     if (filters.category) sp.set("category", filters.category);
+    if (filters.price) sp.set("price", filters.price);
+    if (typeof filters.rating === "number" && Number.isFinite(filters.rating)) sp.set("rating", String(filters.rating));
+    if (filters.qaGrade) sp.set("qa_grade", filters.qaGrade);
     triggerBounce();
     setIsFocused(false);
     router.push(`/explore?${sp.toString()}`);
-  }, [filters.category, query, router, triggerBounce]);
+  }, [filters.category, filters.price, filters.qaGrade, filters.rating, query, router, triggerBounce]);
 
   // ── Category chips: just the 11 categories ──
   const categoryChips = useMemo(
@@ -650,7 +692,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
                       {/* ── Price ── */}
                       <FilterRow icon={Tag} label="Price">
-                        {PRICE_OPTIONS.map((opt) => (
+                        {priceOptions.map((opt) => (
                           <Chip
                             key={opt.value}
                             label={opt.label}
@@ -662,7 +704,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
                       {/* ── Rating ── */}
                       <FilterRow icon={Star} label="Rating">
-                        {RATING_OPTIONS.map((opt) => (
+                        {ratingOptions.map((opt) => (
                           <StarChip
                             key={opt.value}
                             label={`${opt.label} ★`}
@@ -674,7 +716,7 @@ export function SearchDropdown({ className = "" }: SearchDropdownProps) {
 
                       {/* ── QA Grade ── */}
                       <FilterRow icon={ShieldCheck} label="QA Grade">
-                        {QA_GRADES.map((grade) => (
+                        {qaGrades.map((grade) => (
                           <motion.button
                             key={grade.value}
                             whileTap={{ scale: 0.91 }}

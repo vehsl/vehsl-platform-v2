@@ -98,10 +98,42 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+AWS_STORAGE_BUCKET_NAME = os.environ.get("AWS_STORAGE_BUCKET_NAME", "").strip()
+AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", "").strip() or None
+AWS_S3_ENDPOINT_URL = os.environ.get("AWS_S3_ENDPOINT_URL", "").strip() or None
+AWS_S3_CUSTOM_DOMAIN = os.environ.get("AWS_S3_CUSTOM_DOMAIN", "").strip() or None
+AWS_S3_MEDIA_LOCATION = os.environ.get("AWS_S3_MEDIA_LOCATION", "media").strip().strip("/")
+AWS_DEFAULT_ACL = None
+AWS_QUERYSTRING_AUTH = False
+AWS_S3_OBJECT_PARAMETERS = {"CacheControl": "max-age=31536000"}
+
+if AWS_STORAGE_BUCKET_NAME and "storages" not in INSTALLED_APPS:
+    INSTALLED_APPS.append("storages")
+
+STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage" if AWS_STORAGE_BUCKET_NAME else "django.core.files.storage.FileSystemStorage",
+        "OPTIONS": (
+            {
+                "bucket_name": AWS_STORAGE_BUCKET_NAME,
+                "location": AWS_S3_MEDIA_LOCATION,
+                "region_name": AWS_S3_REGION_NAME,
+                "endpoint_url": AWS_S3_ENDPOINT_URL,
+                "custom_domain": AWS_S3_CUSTOM_DOMAIN,
+                "default_acl": None,
+                "querystring_auth": False,
+                "file_overwrite": False,
+            }
+            if AWS_STORAGE_BUCKET_NAME
+            else {}
+        ),
+    },
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
