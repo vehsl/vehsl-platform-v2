@@ -13,6 +13,7 @@ import { fetchJsonAuthed } from "@/lib/api";
 import { fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
+import { categories as staticCategories } from "@/lib/categories";
 
 
 type UiSubcategory = {
@@ -551,24 +552,56 @@ export function ExploreShell() {
   }, []);
 
   const uiCategories: UiCategory[] = useMemo(() => {
+    const slugify = (v: string) =>
+      v
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80);
+
     const server = Array.isArray(serverCategories) ? serverCategories : [];
-    return server
-      .filter((c) => String(c.slug || "").toLowerCase() !== "other" && String(c.name || "").toLowerCase() !== "other")
-      .map((c) => ({
-        id: String(c.slug || c.id),
-        name: String(c.name || ""),
-        icon: Package,
-        accent: (c.accent || "#3B82F6").toString(),
-        count: Number(c.product_count || 0),
-        subcategories: (Array.isArray(c.children) ? c.children : []).map((ch) => ({
-          id: String(ch.slug || ch.id),
-          name: String(ch.name || ""),
-          slug: String(ch.slug || ch.id),
-          icon: Package,
-          items: [],
-          count: Number(ch.product_count || 0),
-        })),
-      }));
+    const serverMap = new Map<string, ExploreApiCategory>();
+    for (const c of server) {
+      const slug = String(c.slug || c.id || "").toLowerCase();
+      if (!slug) continue;
+      if (slug === "other" || String(c.name || "").toLowerCase() === "other") continue;
+      serverMap.set(slug, c);
+    }
+
+    return staticCategories.map((base) => {
+      const hit = serverMap.get(String(base.id || "").toLowerCase());
+      const children = Array.isArray(hit?.children) ? hit!.children : [];
+      const byName = new Map<string, ExploreApiChild>();
+      const bySlug = new Map<string, ExploreApiChild>();
+      for (const ch of children) {
+        byName.set(String(ch.name || "").toLowerCase(), ch);
+        bySlug.set(String(ch.slug || ch.id || "").toLowerCase(), ch);
+      }
+
+      return {
+        id: base.id,
+        name: base.name,
+        nameZh: base.nameZh,
+        icon: base.icon,
+        accent: (hit?.accent || base.accent || "#3B82F6").toString(),
+        count: Number(hit?.product_count || 0),
+        subcategories: base.subcategories.map((s) => {
+          const key = String(s.name || "").toLowerCase();
+          const ch = byName.get(key) || bySlug.get(slugify(String(s.name || "")));
+          const slug = String(ch?.slug || slugify(String(s.name || "")) || "").trim() || slugify(String(s.name || ""));
+          return {
+            id: slug,
+            name: s.name,
+            nameZh: s.nameZh,
+            slug,
+            icon: s.icon,
+            items: Array.isArray(s.items) ? s.items : [],
+            itemsZh: s.itemsZh,
+            count: Number(ch?.product_count || 0),
+          };
+        }),
+      };
+    });
   }, [serverCategories]);
 
   const stats = useMemo(() => {
