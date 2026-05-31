@@ -203,14 +203,14 @@ function fmtNum(n: number) {
 /* ═══════════════════════════════════════ */
 export function SellerReels() {
     const [expanded, setExpanded] = useState(false);
-    const [reels, setReels] = useState(INITIAL_REELS);
+    const [reels, setReels] = useState<Reel[]>([]);
     const [filter, setFilter] = useState<'all' | ReelStatus>('all');
     const [showUpload, setShowUpload] = useState(false);
     const [editingReel, setEditingReel] = useState<Reel | null>(null);
     const [menuOpen, setMenuOpen] = useState<string | null>(null);
     const [commentsOpenId, setCommentsOpenId] = useState<string | null>(null);
     const [replyTexts, setReplyTexts] = useState<Record<string, string>>({});
-    const [localComments, setLocalComments] = useState<Record<string, BuyerComment[]>>(REEL_COMMENTS);
+    const [localComments, setLocalComments] = useState<Record<string, BuyerComment[]>>({});
     const [likedComments, setLikedComments] = useState<Set<string>>(new Set());
     const menuRef = useRef<HTMLDivElement>(null);
     const replyInputRef = useRef<HTMLInputElement>(null);

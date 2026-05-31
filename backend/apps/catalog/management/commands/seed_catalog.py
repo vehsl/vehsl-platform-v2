@@ -927,18 +927,6 @@ class Command(BaseCommand):
                             position=10,
                         )
 
-                        if created_products % 5 == 0:
-                            ProductMedia.objects.create(
-                                product=p,
-                                variation=None,
-                                media_type=ProductMedia.MediaType.VIDEO,
-                                url=f"https://picsum.photos/seed/{p.sku}-reel/1080/1920",
-                                title="Behind the scenes",
-                                content_type="video/mp4",
-                                size_bytes=0,
-                                position=20,
-                            )
-
             if reset:
                 Order.objects.filter(buyer=buyer, seller=primary_seller, items__product__sku__startswith="SEED-").delete()
 

@@ -69,8 +69,6 @@ services:
 
           python manage.py shell -c "import os; from django.contrib.auth import get_user_model; User=get_user_model(); email=os.environ.get('DJANGO_SUPERUSER_EMAIL','admin@vehsl.local'); pw=os.environ.get('DJANGO_SUPERUSER_PASSWORD','admin'); u, _ = User.objects.get_or_create(email=email, defaults={'is_staff': True, 'is_superuser': True, 'is_active': True, 'role': 'admin', 'account_type': 'buyer'}); u.is_staff=True; u.is_superuser=True; u.is_active=True; u.role='admin'; u.account_type=u.account_type or 'buyer'; u.set_password(pw); u.save(); print('dev superuser ready:', email)"
 
-          python manage.py seed_login_users
-          
           RELOAD_FLAG=""
           if [ "$${GUNICORN_RELOAD:-0}" = "1" ]; then
             RELOAD_FLAG="--reload"
