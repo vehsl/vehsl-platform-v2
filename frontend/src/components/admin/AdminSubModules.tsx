@@ -253,18 +253,38 @@ export function AdminUsers() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchJson("/api/v1/admin/users/stats");
-        if (!cancelled) setStats(data);
-      } catch (e: any) {
-        if (!cancelled) setStats(null);
-      }
-    })();
+    const controller = new AbortController();
+    const t = window.setTimeout(() => {
+      (async () => {
+        try {
+          const params = new URLSearchParams();
+          const s = search.trim();
+          if (s) params.set("q", s);
+          if (activeNow) params.set("active_now", "1");
+          else if (activePeriod) params.set("active_period", activePeriod);
+          if (roleFilter !== "all") {
+            if (roleFilter === "manager") {
+              params.set("role", "admin");
+              params.set("admin_role", "manager");
+            } else {
+              params.set("role", roleFilter);
+            }
+          }
+          if (statusFilter !== "all") params.set("admin_status", statusFilter);
+          const qs = params.toString();
+          const data = await fetchJson(`/api/v1/admin/users/stats${qs ? `?${qs}` : ""}`, { signal: controller.signal } as any);
+          if (!cancelled) setStats(data);
+        } catch (e: any) {
+          if (!cancelled) setStats(null);
+        }
+      })();
+    }, 250);
     return () => {
       cancelled = true;
+      controller.abort();
+      window.clearTimeout(t);
     };
-  }, []);
+  }, [fetchJson, search, activeNow, activePeriod, roleFilter, statusFilter]);
 
   useEffect(() => {
     let cancelled = false;

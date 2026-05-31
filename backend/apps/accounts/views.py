@@ -3696,12 +3696,14 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
-        total_users = User.objects.count()
-        suspended = User.objects.filter(status=User.Status.SUSPENDED).count()
-        pending_review = User.objects.filter(status=User.Status.ACTIVE, seller_profile__verification_status="pending").count()
-        review = User.objects.filter(status=User.Status.ACTIVE, seller_profile__verification_status="rejected").count()
+        qs = self.get_queryset()
+
+        total_users = qs.count()
+        suspended = qs.filter(status=User.Status.SUSPENDED).count()
+        pending_review = qs.filter(status=User.Status.ACTIVE, seller_profile__verification_status="pending").count()
+        review = qs.filter(status=User.Status.ACTIVE, seller_profile__verification_status="rejected").count()
         active = (
-            User.objects.exclude(status=User.Status.SUSPENDED)
+            qs.exclude(status=User.Status.SUSPENDED)
             .exclude(status=User.Status.DELETED)
             .filter(Q(seller_profile__isnull=True) | ~Q(seller_profile__verification_status__in=["pending", "rejected"]))
             .count()
