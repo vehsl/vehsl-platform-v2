@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Upload, CheckCircle2, Clock, XCircle, FileText, RefreshCw, LogOut, Eye, X, Trash2 } from "lucide-react";
+import { Upload, CheckCircle2, Clock, XCircle, FileText, RefreshCw, LogOut, Eye, X, Trash2, Lock } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ type RequirementGroup = {
   uploaded_count?: number;
   verified_count?: number;
   options: RequirementOption[];
-  status: "missing" | "pending" | "verified" | "rejected";
+  status: "missing" | "pending" | "verified" | "rejected" | "optional";
   documents: Array<{
     id: string;
     kind: string;
@@ -154,6 +154,7 @@ function KycPageInner() {
     if (status === "verified") return { label: "Verified", icon: <CheckCircle2 className="h-4 w-4" />, cls: "bg-[#30A46C]/10 text-[#1f7a4a]" };
     if (status === "pending") return { label: "Pending", icon: <Clock className="h-4 w-4" />, cls: "bg-[#FFB224]/12 text-[#9a5b00]" };
     if (status === "rejected") return { label: "Rejected", icon: <XCircle className="h-4 w-4" />, cls: "bg-[#E5484D]/10 text-[#b4232a]" };
+    if (status === "optional") return { label: "Optional", icon: <FileText className="h-4 w-4" />, cls: "bg-muted/30 text-muted-foreground" };
     return { label: "Missing", icon: <FileText className="h-4 w-4" />, cls: "bg-muted/30 text-muted-foreground" };
   };
 
@@ -307,6 +308,7 @@ function KycPageInner() {
                   const isRejected = (g.status || "") === "rejected";
                   const groupFilled = g.required ? uploadedCount >= requiredCount : false;
                   const extraDocs = requiredCount ? Math.max(0, (g.documents || []).length - requiredCount) : 0;
+                  const optionsCount = Array.isArray(g.options) ? g.options.length : 0;
                   return (
                     <div key={g.key} className="rounded-2xl border border-border/40 bg-muted/10 p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -318,6 +320,11 @@ function KycPageInner() {
                           <div className="mt-1 text-[12px] text-muted-foreground">
                             {g.options?.length ? `Accepted: ${g.options.map((o) => o.label).join(" / ")}` : ""}
                           </div>
+                          {requiredCount > 0 && optionsCount > 0 && (
+                            <div className="mt-1 text-[12px] text-muted-foreground/70">
+                              Required: {requiredCount} document{requiredCount === 1 ? "" : "s"} (choose any {requiredCount} of {optionsCount})
+                            </div>
+                          )}
                         </div>
                         <div className={cn("inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-medium", chip.cls)}>
                           {chip.icon}
@@ -330,6 +337,21 @@ function KycPageInner() {
                           const alreadyUploaded = uploadedKinds.has(o.kind);
                           const lockedByRequirement = groupFilled && !alreadyUploaded && !isRejected;
                           const uploadLocked = alreadyUploaded || lockedByRequirement || requirements.can_access_dashboard;
+                          const icon = alreadyUploaded ? (
+                            <CheckCircle2 className="h-4 w-4 text-[#30A46C]" />
+                          ) : lockedByRequirement ? (
+                            <Lock className="h-4 w-4 text-muted-foreground/70" />
+                          ) : requirements.can_access_dashboard ? (
+                            <CheckCircle2 className="h-4 w-4 text-[#30A46C]" />
+                          ) : (
+                            <Upload className="h-4 w-4 text-muted-foreground/70" />
+                          );
+
+                          const label = alreadyUploaded
+                            ? `${o.label} uploaded`
+                            : lockedByRequirement
+                              ? `${o.label} (locked)`
+                              : `Upload ${o.label}`;
                           return (
                             <label
                               key={o.kind}
@@ -350,12 +372,8 @@ function KycPageInner() {
                                     : undefined
                               }
                             >
-                              {uploadLocked ? (
-                                <CheckCircle2 className="h-4 w-4 text-[#30A46C]" />
-                              ) : (
-                                <Upload className="h-4 w-4 text-muted-foreground/70" />
-                              )}
-                              {alreadyUploaded ? `${o.label} uploaded` : `Upload ${o.label}`}
+                              {icon}
+                              {label}
                               <input
                                 type="file"
                                 className="sr-only"
@@ -375,9 +393,16 @@ function KycPageInner() {
                       <div className="mt-4">
                         <div className="flex items-center justify-between gap-3 text-[12px] text-muted-foreground mb-2">
                           <div>
-                            Uploaded {requiredCount ? `${Math.min(uploadedCount, requiredCount)}/${requiredCount}` : `(${uploadedCount})`}
+                            Uploaded{" "}
+                            {requiredCount
+                              ? `${Math.min(uploadedCount, requiredCount)}/${requiredCount} required`
+                              : `(${uploadedCount})`}
                           </div>
-                          {requiredCount ? <div>Verified {Math.min(verifiedCount, requiredCount)}/{requiredCount}</div> : null}
+                          {requiredCount ? (
+                            <div>
+                              Verified {Math.min(verifiedCount, requiredCount)}/{requiredCount} required
+                            </div>
+                          ) : null}
                         </div>
                         {extraDocs > 0 ? (
                           <div className="mb-2 text-[12px] text-[#9a5b00]">

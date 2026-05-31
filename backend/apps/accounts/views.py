@@ -2080,7 +2080,7 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
     def opt(kind: str, label: str):
         return {"kind": kind, "label": label}
 
-    identity_required = 2 if is_seller else 1
+    identity_required = 3
     groups = [
         {
             "key": "identity",
@@ -2097,7 +2097,7 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
             "key": "address",
             "label": "Proof of Address",
             "required": True,
-            "required_count": 1,
+            "required_count": 2,
             "options": [
                 opt(KycDocument.Kind.BANK_STATEMENT, "Bank Statement"),
                 opt(KycDocument.Kind.UTILITY_BILL, "Utility Bill"),
@@ -2197,6 +2197,30 @@ def _kyc_requirements_payload(user: User, request) -> dict:
         if g.get("required") and not has_verified_enough:
             unverified_groups.append(g["key"])
 
+        is_required = bool(g.get("required")) and required_count > 0
+        if not is_required:
+            status_val = (
+                "rejected"
+                if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
+                else "pending"
+                if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
+                else "verified"
+                if uploaded_count > 0 and verified_count == uploaded_count
+                else "optional"
+            )
+        else:
+            status_val = (
+                "missing"
+                if not has_enough
+                else "rejected"
+                if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
+                else "pending"
+                if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
+                else "verified"
+                if has_verified_enough
+                else "pending"
+            )
+
         out_groups.append(
             {
                 "key": g["key"],
@@ -2207,17 +2231,7 @@ def _kyc_requirements_payload(user: User, request) -> dict:
                 "verified_count": verified_count,
                 "options": g.get("options") or [],
                 "documents": KycDocumentSelfSerializer(gdocs, many=True, context={"request": request}).data,
-                "status": (
-                    "missing"
-                    if not has_enough
-                    else "rejected"
-                    if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
-                    else "pending"
-                    if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
-                    else "verified"
-                    if has_verified_enough
-                    else "pending"
-                ),
+                "status": status_val,
             }
         )
 
