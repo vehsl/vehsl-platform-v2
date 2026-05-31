@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { cn } from "@/components/ui/utils";
 import { LanguageToggle } from "@/components/common/LanguageToggle";
 import { fetchJsonAuthed } from "@/lib/api";
+import { fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
 
@@ -78,13 +79,7 @@ type ProductsApiResponse = {
 };
 
 function fmtMoney(currency: string, amount: string) {
-  const num = Number(amount);
-  if (!Number.isFinite(num)) return `${currency} ${amount}`;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(num);
-  } catch {
-    return `${currency} ${amount}`;
-  }
+  return fmtMoneyUtil(amount, currency);
 }
 
 function CategoryCard({ category, onClick }: { category: UiCategory; onClick: () => void }) {

@@ -110,6 +110,7 @@ export function Layout() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarHovered, setSidebarHovered] = useState(true);
+  const [platformName, setPlatformName] = useState("Vehsl");
   const [verificationBadge, setVerificationBadge] = useState(0);
   const [usersBadge, setUsersBadge] = useState(0);
   const [productsBadge, setProductsBadge] = useState(0);
@@ -134,7 +135,17 @@ export function Layout() {
     } catch {
       setUser(null);
     }
+    try {
+      const pn = window.localStorage.getItem("vehsl.platform_name");
+      if (pn) setPlatformName(pn);
+    } catch {}
   }, []);
+
+  useEffect(() => {
+    try {
+      document.title = `${platformName} — ${nav.title}`;
+    } catch {}
+  }, [nav.title, platformName]);
 
   const apiBase = () => {
     const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
@@ -176,12 +187,13 @@ export function Layout() {
     let cancelled = false;
     (async () => {
       try {
-        const [verRes, relRes, usersRes, productsRes, qualityRes] = await Promise.all([
+        const [verRes, relRes, usersRes, productsRes, qualityRes, settingsRes] = await Promise.all([
           fetch(`${apiBase()}/api/v1/admin/verification/users/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
           fetch(`${apiBase()}/api/v1/admin/verification/release/orders/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
           fetch(`${apiBase()}/api/v1/admin/users/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
           fetch(`${apiBase()}/api/v1/admin/products/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
           fetch(`${apiBase()}/api/v1/admin/quality/stats/`, { headers: { Authorization: `Bearer ${access}` } }),
+          fetch(`${apiBase()}/api/v1/admin/settings`, { headers: { Authorization: `Bearer ${access}` } }),
         ]);
 
         const ver = verRes.ok ? await verRes.json() : null;
@@ -189,6 +201,7 @@ export function Layout() {
         const users = usersRes.ok ? await usersRes.json() : null;
         const products = productsRes.ok ? await productsRes.json() : null;
         const quality = qualityRes.ok ? await qualityRes.json() : null;
+        const settings = settingsRes.ok ? await settingsRes.json() : null;
 
         const pendingVer = Number(ver?.pending_review || 0) || 0;
         const blocked = Number(rel?.blocked_orders || 0) || 0;
@@ -202,6 +215,20 @@ export function Layout() {
           setUsersBadge(pendingUsers + rejectedUsers);
           setProductsBadge(productsPending);
           setQualityBadge(qualityFailed);
+          try {
+            const g = (settings && settings.general) || {};
+            const pn = (g.platform_name || "").toString().trim();
+            const cur = (g.default_currency || "").toString().trim();
+            const tz = (g.timezone || "").toString().trim();
+            const lang = (g.language || "").toString().trim();
+            if (pn) {
+              setPlatformName(pn);
+              window.localStorage.setItem("vehsl.platform_name", pn);
+            }
+            if (cur) window.localStorage.setItem("vehsl.platform_currency", cur);
+            if (tz) window.localStorage.setItem("vehsl.platform_timezone", tz);
+            if (lang) window.localStorage.setItem("vehsl.platform_language", lang);
+          } catch {}
         }
       } catch {
         if (!cancelled) setVerificationBadge(0);
@@ -467,7 +494,7 @@ export function Layout() {
             animate={{ opacity: sidebarHovered ? 1 : 0 }}
             transition={{ duration: 0.3, ease: [0.22, 0.68, 0.36, 1] }}
           >
-            <p className="text-[0.9375rem] text-foreground tracking-[-0.01em] whitespace-nowrap">TradeFlow</p>
+            <p className="text-[0.9375rem] text-foreground tracking-[-0.01em] whitespace-nowrap">{platformName}</p>
             <p className="text-[0.6875rem] text-muted-foreground/70 tracking-wide uppercase whitespace-nowrap">{nav.title} Portal</p>
           </motion.div>
         </div>

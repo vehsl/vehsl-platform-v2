@@ -23,7 +23,7 @@ import {
 import { toast } from "sonner";
 
 import { fetchJsonAuthed } from "@/lib/api";
-import { safeJsonParse } from "@/lib/utils";
+import { safeJsonParse, fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
 
@@ -100,13 +100,7 @@ type ShippingQuote = {
 };
 
 function fmtMoney(currency: string, amount: string) {
-  const num = Number(amount);
-  if (!Number.isFinite(num)) return `${currency} ${amount}`;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(num);
-  } catch {
-    return `${currency} ${amount}`;
-  }
+  return fmtMoneyUtil(amount, currency);
 }
 
 function fmtBytes(bytes: number) {

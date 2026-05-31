@@ -12,6 +12,7 @@ import {
 import { BounceButton } from "./BounceButton";
 import { StatusPill } from "./StatusPill";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
+import { fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 
 // ── Images ─────────────────────────────────────────────────────
 
@@ -513,11 +514,7 @@ const formatNum = (n: number) => {
   return n.toString();
 };
 
-const formatMoney = (n: number) => {
-  if (n >= 1000000) return "$" + (n / 1000000).toFixed(2) + "M";
-  if (n >= 1000) return "$" + (n / 1000).toFixed(1) + "K";
-  return "$" + n.toFixed(0);
-};
+const formatMoney = (n: number) => fmtMoneyUtil(n);
 
 // ── Reusable Components ────────────────────────────────────────
 
