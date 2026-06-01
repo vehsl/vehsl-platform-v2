@@ -30,10 +30,12 @@ from .models import (
     ShippingRate,
     Trademark,
     Warehouse,
+    WarehouseStock,
 )
 from .serializers import (
     AdminProductListSerializer,
     AdminProductWriteSerializer,
+    AdminListingRequestSerializer,
     CategorySerializer,
     ComplianceRuleSerializer,
     ListingRequestCreateSerializer,
@@ -44,7 +46,204 @@ from .serializers import (
     ProductVariationSerializer,
     TrademarkSerializer,
     WarehouseSerializer,
+    WarehouseStockSerializer,
 )
+
+
+def _create_product_from_listing_request(lr: ListingRequest) -> Product:
+    category = lr.category
+    if category is None:
+        category = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
+    if category is None:
+        category = Category.objects.first()
+    if category is None:
+        category, _ = Category.objects.get_or_create(name="Other")
+
+    p = Product.objects.create(
+        seller=lr.seller,
+        category=category,
+        name=lr.product_name,
+        title=lr.product_name,
+        description=lr.description or "",
+        currency=(lr.currency or "USD").upper(),
+        price=lr.unit_price,
+        status=Product.Status.ACTIVE,
+        vehsl_rating=lr.rating,
+    )
+    try:
+        meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+        sku = str(meta.get("sku") or "").strip()
+        hs_code = str(meta.get("hs_code") or "").strip()
+        origin_location = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        detail_cfg = meta.get("detail_config") if isinstance(meta.get("detail_config"), dict) else {}
+        ip_level = str(meta.get("ip_protection_level") or "").strip().lower()
+        trademark_reg = str(meta.get("trademark_registration_number") or "").strip()
+        variations_in = meta.get("variations") if isinstance(meta.get("variations"), list) else []
+        tiers_in = meta.get("pricing_tiers") if isinstance(meta.get("pricing_tiers"), list) else []
+
+        if sku:
+            p.sku = sku[:64]
+        if hs_code:
+            p.hs_code = hs_code[:32]
+        if ip_level and ip_level in {c[0] for c in Product.IpProtectionLevel.choices}:
+            p.ip_protection_level = ip_level
+
+        if isinstance(origin_location, dict):
+            p.origin_location = {
+                "country": str(origin_location.get("country") or "").strip(),
+                "region": str(origin_location.get("region") or "").strip(),
+                "city": str(origin_location.get("city") or "").strip(),
+            }
+
+        def as_int(v, default=None):
+            try:
+                if v is None or v == "":
+                    return default
+                return int(v)
+            except Exception:
+                return default
+
+        lead = as_int(meta.get("lead_time_days"), None)
+        if lead is not None and lead >= 0:
+            p.lead_time_days = int(lead)
+
+        w = as_int(meta.get("weight_grams"), None)
+        if w is not None and w > 0:
+            p.weight_grams = int(w)
+
+        mn = as_int(meta.get("ship_time_min_days"), None)
+        mx = as_int(meta.get("ship_time_max_days"), None)
+        if mn is not None and mn >= 0:
+            p.ship_time_min_days = int(mn)
+        if mx is not None and mx >= 0:
+            p.ship_time_max_days = int(mx)
+        if mn is not None and mx is not None and int(mx) < int(mn):
+            p.ship_time_min_days = int(mx)
+            p.ship_time_max_days = int(mn)
+
+        p.sample_available = bool(meta.get("sample_available") is True)
+        ss = as_int(meta.get("sample_ship_days"), None)
+        if ss is not None and ss >= 0:
+            p.sample_ship_days = int(ss)
+
+        merged_cfg = dict(detail_cfg) if isinstance(detail_cfg, dict) else {}
+        try:
+            merged_cfg["moq"] = int(lr.moq or 1)
+        except Exception:
+            merged_cfg["moq"] = 1
+        if (lr.company_name or "").strip():
+            merged_cfg.setdefault("company_name", (lr.company_name or "").strip())
+        if (lr.monthly_capacity or "").strip():
+            merged_cfg.setdefault("monthly_capacity", (lr.monthly_capacity or "").strip())
+        p.detail_config = merged_cfg
+        p.save()
+
+        created_variations: list[ProductVariation] = []
+        if isinstance(variations_in, list) and variations_in:
+            for v in variations_in[:40]:
+                if not isinstance(v, dict):
+                    continue
+                attrs = v.get("attributes") if isinstance(v.get("attributes"), dict) else {}
+                cleaned_attrs = {}
+                for k, val in list(attrs.items())[:30]:
+                    kk = str(k or "").strip()
+                    vv = str(val or "").strip()
+                    if not kk or not vv:
+                        continue
+                    if len(kk) > 40 or len(vv) > 80:
+                        continue
+                    cleaned_attrs[kk] = vv
+                vsku = str(v.get("sku") or "").strip()[:64]
+                created_variations.append(ProductVariation.objects.create(product=p, attributes=cleaned_attrs, sku=vsku))
+
+        created_tiers = 0
+        if isinstance(tiers_in, list) and tiers_in:
+            base_currency = (p.currency or "USD").upper()
+
+            def as_int(v, default=None):
+                try:
+                    if v is None or v == "":
+                        return default
+                    return int(v)
+                except Exception:
+                    return default
+
+            for t in tiers_in[:120]:
+                if not isinstance(t, dict):
+                    continue
+                min_q = as_int(t.get("min_quantity"), 1)
+                max_q = as_int(t.get("max_quantity"), None) if t.get("max_quantity", None) is not None else None
+                if max_q is not None and max_q < min_q:
+                    continue
+                cur = str(t.get("currency") or base_currency).strip().upper()
+                if len(cur) != 3 or cur != base_currency:
+                    continue
+                unit_price_raw = t.get("unit_price")
+                try:
+                    unit_price = Decimal(str(unit_price_raw).strip())
+                except Exception:
+                    continue
+                if unit_price < 0:
+                    continue
+                v_idx = as_int(t.get("variation"), None)
+                variation = None
+                if v_idx is not None and 0 <= v_idx < len(created_variations):
+                    variation = created_variations[v_idx]
+                PricingTier.objects.create(
+                    product=p,
+                    variation=variation,
+                    min_quantity=max(1, int(min_q or 1)),
+                    max_quantity=int(max_q) if max_q is not None else None,
+                    unit_price=unit_price,
+                    currency=base_currency,
+                )
+                created_tiers += 1
+
+        if created_tiers <= 0 and int(lr.moq or 1) > 1:
+            PricingTier.objects.get_or_create(
+                product=p,
+                variation=None,
+                min_quantity=int(lr.moq or 1),
+                max_quantity=None,
+                currency=(p.currency or "USD").upper(),
+                defaults={"unit_price": lr.unit_price},
+            )
+
+        if trademark_reg:
+            Trademark.objects.create(
+                seller=lr.seller,
+                product=p,
+                registration_number=trademark_reg[:128],
+                status=Trademark.Status.PENDING,
+            )
+    except Exception:
+        pass
+
+    photos = list(lr.photos.all())
+    img_pos = 0
+    doc_pos = 0
+    for ph in photos[:25]:
+        try:
+            url = ph.file.url
+        except Exception:
+            continue
+        ct = (getattr(ph, "content_type", "") or "").lower()
+        if ct.startswith("image/"):
+            ProductMedia.objects.create(product=p, media_type=ProductMedia.MediaType.IMAGE, url=url, position=img_pos)
+            img_pos += 1
+        else:
+            ProductMedia.objects.create(
+                product=p,
+                media_type=ProductMedia.MediaType.DOCUMENT,
+                url=url,
+                title=(getattr(ph, "original_name", "") or "").strip()[:160],
+                content_type=(getattr(ph, "content_type", "") or "").strip()[:128],
+                size_bytes=int(getattr(ph, "size_bytes", 0) or 0),
+                position=doc_pos,
+            )
+            doc_pos += 1
+
+    return p
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -483,6 +682,27 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         ser = ListingRequestCreateSerializer(data=request.data, context={"request": request})
         ser.is_valid(raise_exception=True)
         lr = ser.save()
+        try:
+            files = []
+            for key in ["photos", "images", "documents", "docs", "files"]:
+                try:
+                    files.extend(list(request.FILES.getlist(key) or []))
+                except Exception:
+                    continue
+            files = files[:20]
+            for f in files:
+                try:
+                    ListingRequestPhoto.objects.create(
+                        listing_request=lr,
+                        file=f,
+                        original_name=getattr(f, "name", "") or "",
+                        content_type=getattr(f, "content_type", "") or "",
+                        size_bytes=int(getattr(f, "size", 0) or 0),
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
         audit(
             request.user,
             action="seller_listing_request_submitted",
@@ -524,32 +744,107 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="advance")
     def advance(self, request, pk=None):
+        return Response({"detail": "Only the review team can advance inspection stages."}, status=status.HTTP_403_FORBIDDEN)
+
+    @action(detail=True, methods=["post"], url_path="publish")
+    def publish(self, request, pk=None):
+        return Response({"detail": "Only the review team can publish listings."}, status=status.HTTP_403_FORBIDDEN)
+
+
+class AdminListingRequestViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = AdminListingRequestSerializer
+    pagination_class = AdminPageNumberPagination
+    parser_classes = [JSONParser]
+
+    def get_queryset(self):
+        return (
+            ListingRequest.objects.select_related("seller", "category", "created_product")
+            .prefetch_related("photos")
+            .order_by("-created_at")
+        )
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        stage = (request.query_params.get("stage") or "").strip().lower()
+        q = (request.query_params.get("q") or "").strip()
+        seller = (request.query_params.get("seller") or "").strip()
+        if stage:
+            qs = qs.filter(stage=stage)
+        if seller:
+            qs = qs.filter(Q(seller__email__icontains=seller) | Q(seller__first_name__icontains=seller) | Q(seller__last_name__icontains=seller))
+        if q:
+            qs = qs.filter(Q(product_name__icontains=q) | Q(company_name__icontains=q) | Q(description__icontains=q))
+        page = self.paginate_queryset(qs)
+        ser = AdminListingRequestSerializer(page, many=True, context={"request": request})
+        return self.get_paginated_response(ser.data)
+
+    def retrieve(self, request, pk=None, *args, **kwargs):
+        obj = self.get_queryset().filter(pk=pk).first()
+        if not obj:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(AdminListingRequestSerializer(obj, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="review")
+    def review(self, request, pk=None):
         lr = self.get_queryset().filter(pk=pk).first()
         if not lr:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if lr.stage == ListingRequest.Stage.SAMPLES:
-            return Response({"detail": "Save sample pickup details first."}, status=status.HTTP_400_BAD_REQUEST)
+        decision = (request.data.get("decision") or "").strip().lower()
+        message = (request.data.get("message") or "").strip()
+        rating_in = request.data.get("rating", None)
 
-        if lr.stage == ListingRequest.Stage.INSPECTION:
+        if decision not in {"approve", "needs_changes", "reject"}:
+            return Response({"detail": "Invalid decision."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if decision == "approve":
             try:
-                rating = float(request.data.get("rating") or 4.8)
+                rating = float(rating_in) if rating_in is not None else float(lr.rating or 4.8)
             except Exception:
                 rating = 4.8
             rating = max(0.0, min(5.0, rating))
             lr.rating = rating
             lr.stage = ListingRequest.Stage.LIVE
-            lr.save()
+            lr.save(update_fields=["rating", "stage", "updated_at"])
             audit(
                 request.user,
-                action="seller_listing_request_stage_updated",
+                action="admin_listing_request_reviewed",
                 target_type="listing_request",
                 target_id=str(lr.id),
-                payload={"stage": lr.stage, "from": "inspection", "rating": float(rating)},
+                payload={"decision": "approve", "rating": float(rating)},
             )
-            return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 
-        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+        meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+        if message:
+            meta = {**meta, "review_message": message}
+            lr.product_meta = meta
+
+        if decision == "needs_changes":
+            lr.rating = None
+            lr.stage = ListingRequest.Stage.SAMPLES
+            lr.save(update_fields=["product_meta", "rating", "stage", "updated_at"])
+            audit(
+                request.user,
+                action="admin_listing_request_reviewed",
+                target_type="listing_request",
+                target_id=str(lr.id),
+                payload={"decision": "needs_changes"},
+            )
+            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+        lr.rating = None
+        lr.stage = ListingRequest.Stage.DONE
+        lr.save(update_fields=["product_meta", "rating", "stage", "updated_at"])
+        audit(
+            request.user,
+            action="admin_listing_request_reviewed",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"decision": "reject"},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="publish")
     def publish(self, request, pk=None):
@@ -557,66 +852,95 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         if not lr:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if lr.stage not in {ListingRequest.Stage.LIVE, ListingRequest.Stage.DONE}:
-            return Response({"detail": "Listing is not ready to publish."}, status=status.HTTP_400_BAD_REQUEST)
-
         if lr.created_product_id:
             lr.stage = ListingRequest.Stage.DONE
             lr.save(update_fields=["stage", "updated_at"])
-            audit(
-                request.user,
-                action="seller_listing_request_published",
-                target_type="listing_request",
-                target_id=str(lr.id),
-                payload={"stage": lr.stage, "created_product_id": str(lr.created_product_id)},
+            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+        meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+        origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        missing = []
+        if not str(meta.get("sku") or "").strip():
+            missing.append("sku")
+        if not str(meta.get("hs_code") or "").strip():
+            missing.append("hs_code")
+        if not str(origin.get("country") or "").strip():
+            missing.append("origin_country")
+        if meta.get("lead_time_days", None) in (None, ""):
+            missing.append("lead_time_days")
+        if meta.get("weight_grams", None) in (None, ""):
+            missing.append("weight_grams")
+        if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+            missing.append("ship_time_range_days")
+        if missing:
+            return Response(
+                {"detail": "Listing request is missing required product fields.", "missing": missing},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-            return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
-        category = lr.category
-        if category is None:
-            category = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
-        if category is None:
-            category = Category.objects.first()
-        if category is None:
-            category, _ = Category.objects.get_or_create(name="Other")
+        required_documents: set[str] = set()
+        try:
+            rules = list(ComplianceRule.objects.filter(category_id=lr.category_id, deleted_at__isnull=True).order_by("-created_at")[:200])
+            for r in rules:
+                payload = getattr(r, "payload", None) or {}
+                if isinstance(payload, dict):
+                    docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
+                    if isinstance(docs, list):
+                        for item in docs:
+                            s = str(item or "").strip()
+                            if s:
+                                required_documents.add(s)
+                    elif isinstance(docs, str):
+                        s = docs.strip()
+                        if s:
+                            required_documents.add(s)
+        except Exception:
+            required_documents = set()
 
-        p = Product.objects.create(
-            seller=request.user,
-            category=category,
-            name=lr.product_name,
-            title=lr.product_name,
-            description=lr.description or "",
-            currency=(lr.currency or "USD").upper(),
-            price=lr.unit_price,
-            status=Product.Status.ACTIVE,
-            vehsl_rating=lr.rating,
-        )
+        if required_documents:
+            doc_count = 0
+            try:
+                for ph in list(lr.photos.all())[:50]:
+                    ct = (getattr(ph, "content_type", "") or "").lower()
+                    if ct and not ct.startswith("image/"):
+                        doc_count += 1
+            except Exception:
+                doc_count = 0
+            if doc_count <= 0:
+                return Response(
+                    {"detail": "Compliance documents required before publish.", "required_documents": sorted(list(required_documents))[:80]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            rating = float(request.data.get("rating")) if request.data.get("rating") is not None else float(lr.rating or 4.8)
+        except Exception:
+            rating = 4.8
+        rating = max(0.0, min(5.0, rating))
+        lr.rating = rating
+        lr.stage = ListingRequest.Stage.LIVE
+        lr.save(update_fields=["rating", "stage", "updated_at"])
+
+        p = _create_product_from_listing_request(lr)
         audit(
             request.user,
-            action="seller_product_created",
+            action="admin_product_created",
             target_type="product",
             target_id=str(p.id),
             payload={"product_name": (p.name or "").strip(), "source": "listing_request", "listing_request_id": str(lr.id)},
         )
-        photos = list(lr.photos.all())
-        for idx, ph in enumerate(photos[:10]):
-            try:
-                url = ph.file.url
-            except Exception:
-                continue
-            ProductMedia.objects.create(product=p, media_type=ProductMedia.MediaType.IMAGE, url=url, position=idx)
 
         lr.created_product = p
         lr.stage = ListingRequest.Stage.DONE
         lr.save(update_fields=["created_product", "stage", "updated_at"])
         audit(
             request.user,
-            action="seller_listing_request_published",
+            action="admin_listing_request_published",
             target_type="listing_request",
             target_id=str(lr.id),
-            payload={"stage": lr.stage, "created_product_id": str(p.id)},
+            payload={"stage": lr.stage, "created_product_id": str(p.id), "seller_id": str(lr.seller_id)},
         )
-        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 
 
 class ProductVariationViewSet(viewsets.ModelViewSet):
@@ -859,6 +1183,51 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
             position=position,
         )
         return Response(self._serialize(obj, request), status=status.HTTP_201_CREATED)
+
+
+class WarehouseStockViewSet(viewsets.ModelViewSet):
+    serializer_class = WarehouseStockSerializer
+
+    def get_queryset(self):
+        qs = WarehouseStock.objects.select_related("warehouse", "product", "variation", "seller").filter(deleted_at__isnull=True)
+        product_id = (self.request.query_params.get("product") or "").strip()
+        warehouse_id = (self.request.query_params.get("warehouse") or "").strip()
+        if product_id:
+            try:
+                qs = qs.filter(product_id=int(product_id))
+            except Exception:
+                qs = qs.none()
+        if warehouse_id:
+            try:
+                qs = qs.filter(warehouse_id=int(warehouse_id))
+            except Exception:
+                qs = qs.none()
+        user = self.request.user
+        if user.is_authenticated and (user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin"):
+            return qs
+        if user.is_authenticated and getattr(user, "account_type", "") == "seller":
+            return qs.filter(seller=user)
+        return qs.none()
+
+    def get_permissions(self):
+        if self.action in {"list", "retrieve"}:
+            return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), IsSeller()]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        product = serializer.validated_data["product"]
+        if product.seller_id != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        serializer.save(seller=user)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        obj = serializer.instance
+        product = serializer.validated_data.get("product") or getattr(obj, "product", None)
+        if not product or getattr(product, "seller_id", None) != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        serializer.save()
 
 
 class TrademarkViewSet(viewsets.ModelViewSet):
@@ -1322,6 +1691,15 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         except Exception:
             pricing_tiers = []
 
+        warehouse_stocks = []
+        try:
+            warehouse_stocks = WarehouseStockSerializer(
+                WarehouseStock.objects.filter(product_id=obj.id, deleted_at__isnull=True).select_related("warehouse", "variation", "seller").order_by("warehouse_id", "variation_id", "id")[:500],
+                many=True,
+            ).data
+        except Exception:
+            warehouse_stocks = []
+
         compliance_rules = []
         try:
             compliance_rules = ComplianceRuleSerializer(ComplianceRule.objects.filter(category_id=obj.category_id, deleted_at__isnull=True).order_by("-created_at")[:50], many=True).data
@@ -1467,6 +1845,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             "media": media,
             "variations": variations,
             "pricing_tiers": pricing_tiers,
+            "warehouse_stocks": warehouse_stocks,
             "compliance_rules": compliance_rules,
             "sample": sample,
             "sample_requests": sample_requests,

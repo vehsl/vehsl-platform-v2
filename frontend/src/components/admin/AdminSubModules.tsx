@@ -1406,6 +1406,7 @@ export function AdminUsers() {
 export function AdminProducts() {
   const fetchJson = fetchJsonAuthed;
   const location = useLocation();
+  const navigate = useNavigate();
 
   const formatNumber = (v: any) => {
     const n = Number(v);
@@ -1523,8 +1524,39 @@ export function AdminProducts() {
     debounceMs: 250,
   });
 
+  const [lrSearch, setLrSearch] = useState("");
+  const [lrStage, setLrStage] = useState<string>("inspection");
+
+  const lrFilters = useMemo(() => {
+    const f: any = {};
+    const q = lrSearch.trim();
+    if (q) f.q = q;
+    if (lrStage && lrStage !== "all") f.stage = lrStage;
+    return f;
+  }, [lrSearch, lrStage]);
+
+  const {
+    rows: listingRequests,
+    count: listingRequestsCount,
+    loading: listingRequestsLoading,
+    error: listingRequestsError,
+    page: lrPage,
+    pageSize: lrPageSize,
+    setPage: setLrPage,
+    setPageSize: setLrPageSize,
+    refresh: refreshListingRequests,
+    totalPages: lrTotalPages,
+  } = usePaginatedList<any>({
+    endpoint: "/api/v1/admin/listing-requests/",
+    filters: lrFilters,
+    initialOrdering: "-created_at",
+    initialPageSize: 20,
+    debounceMs: 250,
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(location.search);
+    const mode = (params.get("mode") || "").trim().toLowerCase();
     const q = (params.get("q") || "").trim();
     const category = (params.get("category") || "").trim();
     const adminStatus = (params.get("admin_status") || "").trim().toLowerCase();
@@ -1553,7 +1585,59 @@ export function AdminProducts() {
     setRejectedWithReasonFilter(rejectedWithReason === "1" || rejectedWithReason === "true" || rejectedWithReason === "yes");
 
     setPage(1);
+    if (mode === "requests") {
+      const rq = (params.get("rq") || "").trim();
+      const rs = (params.get("rs") || "").trim().toLowerCase();
+      setLrSearch(rq);
+      setLrStage(rs || "inspection");
+      setLrPage(1);
+    }
   }, [location.search, setPage]);
+
+  const mode = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const m = (params.get("mode") || "").trim().toLowerCase();
+    return m === "requests" ? "requests" : "products";
+  }, [location.search]);
+
+  const setMode = (nextMode: "products" | "requests") => {
+    const params = new URLSearchParams(location.search);
+    if (nextMode === "requests") params.set("mode", "requests");
+    else params.delete("mode");
+    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+  };
+
+  const publishListingRequest = async (id: number) => {
+    try {
+      const raw = window.prompt("Rating (0–5). Leave blank for default 4.8") || "";
+      const rating = raw.trim() ? Number(raw.trim()) : undefined;
+      const body: any = {};
+      if (rating != null && Number.isFinite(rating)) body.rating = rating;
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      refreshListingRequests();
+      refreshProducts();
+    } catch (e: any) {
+      setActionError(e?.message || "Publish failed.");
+    }
+  };
+
+  const requestChangesForListing = async (id: number) => {
+    try {
+      const msg = (window.prompt("Message to seller (what to fix)") || "").trim();
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/review/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "needs_changes", message: msg }),
+      });
+      refreshListingRequests();
+    } catch (e: any) {
+      setActionError(e?.message || "Request changes failed.");
+    }
+  };
 
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -1926,6 +2010,178 @@ export function AdminProducts() {
         </div>
       </motion.div>
 
+      <motion.div variants={stagger.item} className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode("products")}
+          className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border transition-all ${
+            mode === "products" ? "bg-primary/8 text-primary border-primary/20" : "bg-muted/20 text-muted-foreground border-border/30 hover:text-foreground"
+          }`}
+        >
+          Products
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("requests")}
+          className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border transition-all ${
+            mode === "requests" ? "bg-primary/8 text-primary border-primary/20" : "bg-muted/20 text-muted-foreground border-border/30 hover:text-foreground"
+          }`}
+        >
+          Listing Requests
+        </button>
+      </motion.div>
+
+      {mode === "requests" ? (
+        <motion.div variants={stagger.item}>
+          <SectionCard>
+            <div className="flex flex-col sm:flex-row gap-3 mb-5">
+              <div className="flex-1 relative">
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+                <input
+                  type="text"
+                  placeholder="Search listing requests..."
+                  value={lrSearch}
+                  onChange={(e) => {
+                    setLrSearch(e.target.value);
+                    const params = new URLSearchParams(location.search);
+                    if (e.target.value.trim()) params.set("rq", e.target.value.trim());
+                    else params.delete("rq");
+                    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+                  }}
+                  className="w-full pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <select
+                  value={lrStage}
+                  onChange={(e) => {
+                    const v = (e.target.value || "").toString();
+                    setLrStage(v);
+                    const params = new URLSearchParams(location.search);
+                    if (v && v !== "all") params.set("rs", v);
+                    else params.delete("rs");
+                    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+                  }}
+                  className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+                >
+                  <option value="all">All stages</option>
+                  <option value="samples">Samples</option>
+                  <option value="inspection">Inspection</option>
+                  <option value="live">Approved</option>
+                  <option value="done">Done</option>
+                </select>
+                <select
+                  value={String(lrPageSize)}
+                  onChange={(e) => setLrPageSize(Number(e.target.value) || 20)}
+                  className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+                >
+                  <option value="20">20 / page</option>
+                  <option value="50">50 / page</option>
+                  <option value="100">100 / page</option>
+                </select>
+              </div>
+            </div>
+
+            {listingRequestsError && (
+              <div className="rounded-2xl border border-border/30 bg-muted/10 p-4 text-[0.8125rem] text-muted-foreground">
+                Failed to load listing requests.
+              </div>
+            )}
+
+            {!listingRequestsLoading && (!listingRequests || listingRequests.length === 0) ? (
+              <div className="rounded-2xl border border-border/30 bg-muted/10 p-6">
+                <div className="text-[0.875rem] text-foreground/80 font-semibold">No listing requests found.</div>
+                <div className="text-[0.8125rem] text-muted-foreground/70 mt-1">Try changing stage filter or search.</div>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-2xl border border-border/30">
+                <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-muted/10 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                  <div className="col-span-4">Product</div>
+                  <div className="col-span-3">Seller</div>
+                  <div className="col-span-2">Stage</div>
+                  <div className="col-span-2">Created</div>
+                  <div className="col-span-1 text-right">Actions</div>
+                </div>
+                <div className="divide-y divide-border/20">
+                  {(listingRequests || []).map((lr: any) => (
+                    <div key={lr.id} className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
+                      <div className="col-span-4">
+                        <div className="text-[0.875rem] font-semibold text-foreground/85">{lr.product_name || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.company_name || "—"}</div>
+                      </div>
+                      <div className="col-span-3">
+                        <div className="text-[0.8125rem] text-foreground/80">{lr.seller_label || lr.seller_email || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.seller_email || "—"}</div>
+                      </div>
+                      <div className="col-span-2">
+                        <StatusPill status={lr.stage === "done" ? "success" : lr.stage === "inspection" ? "pending" : "warning"} label={(lr.stage || "—").toString()} />
+                      </div>
+                      <div className="col-span-2 text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                        {(lr.created_at || "").toString().slice(0, 10) || "—"}
+                      </div>
+                      <div className="col-span-1 flex justify-end gap-2">
+                        {lr.stage === "inspection" || lr.stage === "live" ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => requestChangesForListing(Number(lr.id))}
+                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              Changes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => publishListingRequest(Number(lr.id))}
+                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                            >
+                              Publish
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => publishListingRequest(Number(lr.id))}
+                            className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            Publish
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between mt-5 text-[0.8125rem] text-muted-foreground/70">
+              <div>
+                {typeof listingRequestsCount === "number" ? `Total: ${listingRequestsCount.toLocaleString()}` : ""}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLrPage(Math.max(1, lrPage - 1))}
+                  disabled={lrPage <= 1}
+                  className="px-3 py-2 rounded-xl border border-border/30 bg-muted/20 disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLrPage(lrTotalPages != null ? Math.min(lrTotalPages, lrPage + 1) : lrPage + 1)}
+                  disabled={lrTotalPages != null ? lrPage >= lrTotalPages : (listingRequests || []).length < lrPageSize}
+                  className="px-3 py-2 rounded-xl border border-border/30 bg-muted/20 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </SectionCard>
+        </motion.div>
+      ) : null}
+
+      {mode === "requests" ? null : (
+      <>
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-5 gap-5">
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "all" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter("all")}>
           <StatCard label="Total Products" value={formatNumber(stats?.total_products)} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
@@ -2350,6 +2606,8 @@ export function AdminProducts() {
           )}
         </SectionCard>
       </motion.div>
+      </>
+      )}
 
       <AnimatePresence>
         {formOpen && (
