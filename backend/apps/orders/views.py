@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, time as dt_time
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.cache import cache
-from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
-from django.db.models.functions import TruncDate
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum, Value, IntegerField
+from django.db.models.functions import TruncDate, Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.contrib.auth.hashers import check_password
@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 from apps.accounts.admin_utils import AdminPageNumberPagination, response_list, audit
 from apps.accounts.models import UserSettings
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
-from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price, WarehouseStock
 
 from .models import (
     Cart,
@@ -85,6 +85,19 @@ class CartMeView(APIView):
             unit_price, currency = resolve_unit_price(p, var, i["quantity"])
             if unit_price is None:
                 return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Real-time stock check
+            stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
+            available = stock_qs.aggregate(
+                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
+            )["total"]
+
+            if i["quantity"] > available:
+                return Response(
+                    {"detail": f"Not enough stock for {p.name}. Available: {available}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             CartItem.objects.update_or_create(
                 cart=cart,
                 product_id=i["product_id"],
@@ -136,6 +149,19 @@ class CartItemMeDetailView(APIView):
         try:
             p = item.product
             var = item.variation if item.variation_id else None
+
+            # Real-time stock check
+            stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
+            available = stock_qs.aggregate(
+                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
+            )["total"]
+
+            if qty > available:
+                return Response(
+                    {"detail": f"Not enough stock for {p.name}. Available: {available}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             unit_price, currency = resolve_unit_price(p, var, qty)
             if unit_price is None:
                 return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1289,6 +1315,44 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
             return self.get_paginated_response(out)
         return Response({"count": len(out), "next": None, "previous": None, "results": out})
 
+    @action(detail=False, methods=["post"], url_path="update-shipment-status")
+    def update_shipment_status(self, request):
+        shipment_id = request.data.get("id") or request.data.get("shipment_id")
+        if not shipment_id:
+            return Response({"detail": "id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            sh = Shipment.objects.get(id=int(shipment_id), deleted_at__isnull=True)
+        except (Shipment.DoesNotExist, ValueError):
+            return Response({"detail": "Shipment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        new_status = request.data.get("status")
+        if new_status not in dict(Shipment.Status.choices):
+            return Response({"detail": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sh.status = new_status
+        if new_status == Shipment.Status.DELIVERED:
+            sh.actual_delivery_at = timezone.now()
+            # Also update order status
+            if sh.order:
+                sh.order.status = Order.Status.DELIVERED
+                sh.order.save(update_fields=["status", "updated_at"])
+        
+        sh.save()
+
+        # Create tracking event
+        from apps.orders.models import ShipmentEvent
+        ShipmentEvent.objects.create(
+            shipment=sh,
+            type=new_status,
+            location=request.data.get("location") or "Warehouse",
+            occurred_at=timezone.now(),
+            payload=request.data.get("payload") or {}
+        )
+
+        audit(request.user, action="admin_logistics_shipment_status_updated", target_type="shipment", target_id=str(sh.id), payload={"status": new_status})
+        return Response({"detail": "Shipment status updated.", "status": sh.status})
+
     @action(detail=False, methods=["get"], url_path="shipment-detail")
     def shipment_detail(self, request):
         shipment_id = (request.query_params.get("id") or request.query_params.get("shipment_id") or "").strip()
@@ -1726,49 +1790,57 @@ class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
-        orders_qs = (
-            Order.objects.filter(deleted_at__isnull=True)
-            .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
-            .prefetch_related("release_conditions")
+        base_qs = Order.objects.filter(deleted_at__isnull=True).exclude(
+            status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED]
         )
 
-        active_orders = orders_qs.count()
+        active_orders = base_qs.count()
 
-        total_conditions = ReleaseCondition.objects.filter(order__in=orders_qs).count()
-        satisfied_conditions = ReleaseCondition.objects.filter(
-            order__in=orders_qs, status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED]
-        ).count()
+        # Get aggregate condition stats
+        cond_stats = ReleaseCondition.objects.filter(order__in=base_qs).aggregate(
+            total=Count("id"),
+            satisfied=Count("id", filter=Q(status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED])),
+        )
 
-        cleared = 0
-        blocked = 0
-        ready_to_ship = 0
-        for o in orders_qs.iterator(chunk_size=200):
-            conds = list(o.release_conditions.all())
-            if not conds:
-                blocked += 1
-                continue
-            all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
-            any_ok = any(
-                c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.WAIVED}
-                for c in conds
-            )
-            if all_ok:
-                cleared += 1
-                if not o.release_authorized_at:
-                    ready_to_ship += 1
-            elif any_ok:
-                blocked += 1
-            else:
-                blocked += 1
+        # Annotate orders with condition summary to avoid loop
+        orders_with_counts = base_qs.annotate(
+            total_conds=Count("release_conditions", distinct=True),
+            ok_conds=Count(
+                "release_conditions",
+                filter=Q(release_conditions__status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED]),
+                distinct=True,
+            ),
+            partial_conds=Count(
+                "release_conditions",
+                filter=Q(
+                    release_conditions__status__in=[
+                        ReleaseCondition.Status.SATISFIED,
+                        ReleaseCondition.Status.IN_PROGRESS,
+                        ReleaseCondition.Status.WAIVED,
+                    ]
+                ),
+                distinct=True,
+            ),
+        )
+
+        # Orders where all conditions are ok
+        cleared_qs = orders_with_counts.filter(total_conds__gt=0, total_conds=F("ok_conds"))
+        cleared_orders = cleared_qs.count()
+
+        # Orders ready to ship (cleared but not yet authorized)
+        ready_to_ship = cleared_qs.filter(release_authorized_at__isnull=True).count()
+
+        # Blocked orders (not cleared)
+        blocked_orders = active_orders - cleared_orders
 
         return Response(
             {
                 "active_orders": active_orders,
-                "blocked_orders": blocked,
+                "blocked_orders": blocked_orders,
                 "ready_to_ship": ready_to_ship,
-                "total_conditions": total_conditions,
-                "satisfied_conditions": satisfied_conditions,
-                "cleared_orders": cleared,
+                "total_conditions": cond_stats["total"] or 0,
+                "satisfied_conditions": cond_stats["satisfied"] or 0,
+                "cleared_orders": cleared_orders,
             }
         )
 

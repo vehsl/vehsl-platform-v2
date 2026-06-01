@@ -9,14 +9,14 @@ import {
     Truck, Bell, HelpCircle, Eye, Factory, Star,
     MessageCircle, ChevronRight, CheckCircle2, Zap,
     EyeOff, X, FileText, Award, Search, FlaskConical,
-    Building2, ClipboardCheck,
+    Building2, ClipboardCheck, ShieldCheck, Clock,
 } from 'lucide-react';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { FONT, EASE, GLASS, GLASS_ELEVATED, fmt } from './seller-dashboard-data';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type StepId = 'request' | 'samples' | 'inspection' | 'live';
+type StepId = 'request' | 'compliance' | 'samples' | 'inspection' | 'live';
 type FullStep = 'welcome' | StepId | 'done';
 
 interface ProductDraft {
@@ -69,6 +69,7 @@ const CATEGORIES = [
 
 const MILESTONES: { id: StepId; Icon: React.ElementType; label: string; tip: string }[] = [
     { id: 'request', Icon: FileText,       label: 'Request',  tip: 'Submit your listing' },
+    { id: 'compliance', Icon: Shield,      label: 'Compliance', tip: 'Compliance verification' },
     { id: 'samples', Icon: Package,        label: 'Samples',  tip: 'We collect samples'  },
     { id: 'inspection', Icon: Factory,     label: 'Inspect',  tip: 'Factory visit'        },
     { id: 'live',    Icon: Star,           label: 'Rated & Live', tip: 'Published with rating' },
@@ -269,6 +270,9 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
     const [extraPhotoUrls, setExtraPhotoUrls] = useState<string[]>([]);
 
     const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; name: string }>>([]);
+    const [categoryLoading, setCategoryLoading] = useState(true);
+    const [categoryQuery, setCategoryQuery] = useState("");
+    const [showAllCategories, setShowAllCategories] = useState(false);
 
     const apiBase = useCallback(() => {
         const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
@@ -293,15 +297,28 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         let cancelled = false;
         (async () => {
             try {
+                if (!cancelled) setCategoryLoading(true);
                 const res = await fetch(`${apiBase()}/api/v1/categories/explore/`);
                 if (!res.ok) return;
                 const data = await res.json().catch(() => null);
                 const rows = Array.isArray(data?.categories) ? data.categories : [];
-                const top = rows
-                    .map((c: any) => ({ id: Number(c?.id || 0), name: String(c?.name || '').trim() }))
-                    .filter((c: any) => c.id && c.name);
-                if (!cancelled) setCategoryOptions(top);
-            } catch { }
+                const flat: Array<{ id: number; name: string }> = [];
+                for (const c of rows) {
+                    const topId = Number((c as any)?.id || 0);
+                    const topName = String((c as any)?.name || '').trim();
+                    if (topId && topName) flat.push({ id: topId, name: topName });
+                    const children = Array.isArray((c as any)?.children) ? (c as any).children : [];
+                    for (const ch of children) {
+                        const chId = Number((ch as any)?.id || 0);
+                        const chName = String((ch as any)?.name || '').trim();
+                        if (chId && chName) flat.push({ id: chId, name: `${topName} · ${chName}`.trim() });
+                    }
+                }
+                if (!cancelled) setCategoryOptions(flat);
+            } catch { 
+            } finally {
+                if (!cancelled) setCategoryLoading(false);
+            }
         })();
         return () => {
             cancelled = true;
@@ -406,16 +423,19 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
 
                 const stage = (active.stage || '').toString().toLowerCase();
                 if (stage === 'samples') {
-                    setCompleted(new Set(['request']));
+                    setCompleted(new Set(['request', 'compliance']));
                     setStep('samples');
+                } else if (stage === 'compliance') {
+                    setCompleted(new Set(['request']));
+                    setStep('compliance');
                 } else if (stage === 'inspection') {
-                    setCompleted(new Set(['request', 'samples']));
+                    setCompleted(new Set(['request', 'compliance', 'samples']));
                     setStep('inspection');
                 } else if (stage === 'live') {
-                    setCompleted(new Set(['request', 'samples', 'inspection']));
+                    setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
                     setStep('live');
                 } else if (stage === 'done') {
-                    setCompleted(new Set(['request', 'samples', 'inspection', 'live']));
+                    setCompleted(new Set(['request', 'compliance', 'samples', 'inspection', 'live']));
                     setStep('done');
                 }
             } catch { }
@@ -1218,9 +1238,23 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                         {/* Category */}
                                         <div>
                                             <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CATEGORY</p>
-                                            <div className="flex flex-wrap gap-2">
-                                                {categoryOptions.length ? (
-                                                    categoryOptions.map(cat => (
+                                            <div className="space-y-3">
+                                                <input
+                                                    type="text"
+                                                    placeholder="Search categories..."
+                                                    value={categoryQuery}
+                                                    onChange={(e) => { setCategoryQuery(e.target.value); setShowAllCategories(false); }}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                                <div className="flex flex-wrap gap-2">
+                                                {categoryOptions.length ? (() => {
+                                                    const q = categoryQuery.trim().toLowerCase();
+                                                    const filtered = q ? categoryOptions.filter((c) => c.name.toLowerCase().includes(q)) : categoryOptions;
+                                                    const visible = showAllCategories ? filtered : filtered.slice(0, 24);
+                                                    return (
+                                                        <>
+                                                            {visible.map(cat => (
                                                         <button
                                                             key={cat.id}
                                                             onClick={() =>
@@ -1238,10 +1272,39 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                                         >
                                                             {cat.name}
                                                         </button>
-                                                    ))
-                                                ) : (
+                                                            ))}
+                                                            {!showAllCategories && filtered.length > 24 ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setShowAllCategories(true)}
+                                                                    className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                                                    style={{
+                                                                        background: 'rgba(0,0,0,0.02)',
+                                                                        borderColor: 'rgba(0,0,0,0.07)',
+                                                                        color: 'rgba(26,26,26,0.42)',
+                                                                    }}
+                                                                >
+                                                                    Show {filtered.length - 24} more
+                                                                </button>
+                                                            ) : null}
+                                                        </>
+                                                    );
+                                                })() : categoryLoading ? (
                                                     <span className="text-[12px] font-semibold text-[#1A1A1A]/30">Loading categories…</span>
+                                                ) : (
+                                                    <div className="w-full space-y-2">
+                                                        <span className="text-[12px] font-semibold text-[#1A1A1A]/30">No categories found.</span>
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Enter category"
+                                                            value={product.category}
+                                                            onChange={e => setProduct(p => ({ ...p, category: e.target.value, categoryId: null }))}
+                                                            className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                            style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                        />
+                                                    </div>
                                                 )}
+                                                </div>
                                             </div>
                                         </div>
 
@@ -2022,7 +2085,77 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         </motion.div>
     );
 
-    // ── STEP 2: SAMPLE COLLECTION ─────────────────────────────────────────────
+    // ── STEP 2: COMPLIANCE REVIEW ─────────────────────────────────────────────
+
+    const complianceStep = (
+        <motion.div
+            key="compliance"
+            initial={{ opacity: 0, x: 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -18 }}
+            transition={{ duration: 0.42, ease: EASE }}
+        >
+            <div className="mb-6">
+                <p className="text-[12px] font-bold text-[#D97706]/55 tracking-widest mb-1.5">STEP 2 OF 5 · IN REVIEW</p>
+                <h2 className="text-[30px] md:text-[34px] font-black text-[#1A1A1A]/88 tracking-tight leading-tight">
+                    Compliance &<br />Review
+                </h2>
+                <p className="text-[14px] font-medium text-[#1A1A1A]/40 mt-2 leading-relaxed">
+                    Our team is currently verifying your product details and certifications. This typically takes 24-48 hours.
+                </p>
+            </div>
+
+            <div
+                className="rounded-[28px] overflow-hidden"
+                style={{
+                    background: 'rgba(255,255,255,0.80)',
+                    backdropFilter: 'blur(28px)',
+                    border: '0.5px solid rgba(255,255,255,0.65)',
+                    boxShadow: GLASS_ELEVATED,
+                }}
+            >
+                <div className="p-12 flex flex-col items-center justify-center text-center">
+                    <div
+                        className="w-20 h-20 rounded-full flex items-center justify-center mb-6"
+                        style={{ background: 'rgba(217,119,6,0.1)' }}
+                    >
+                        <ShieldCheck size={40} color="#D97706" />
+                    </div>
+                    <h3 className="text-[20px] font-black text-[#1A1A1A]/88 mb-2">Awaiting Verification</h3>
+                    <p className="text-[14px] font-medium text-[#1A1A1A]/42 max-w-[320px] leading-relaxed">
+                        We&apos;re checking your HS Code, Origin Location, and required documents. You&apos;ll be notified once this stage is complete.
+                    </p>
+
+                    <div className="mt-8 pt-8 border-t border-black/[0.04] w-full">
+                        <div className="flex items-center justify-center gap-2 mb-4">
+                            <Clock size={14} color="rgba(26,26,26,0.35)" />
+                            <span className="text-[12px] font-bold text-[#1A1A1A]/35 uppercase tracking-widest">Typical Timeline</span>
+                        </div>
+                        <div className="flex justify-between max-w-[280px] mx-auto text-[11px] font-bold text-[#1A1A1A]/25 uppercase tracking-tighter">
+                            <span>Reviewing</span>
+                            <ArrowRight size={10} />
+                            <span>Vetted</span>
+                            <ArrowRight size={10} />
+                            <span>Approved</span>
+                        </div>
+                    </div>
+
+                    <button
+                        onClick={() => refreshStatus()}
+                        className="mt-10 px-8 py-3.5 rounded-full text-[14px] font-bold cursor-pointer transition-all border-none text-white"
+                        style={{
+                            background: 'linear-gradient(135deg, #D97706 0%, #B45309 100%)',
+                            boxShadow: '0 6px 20px rgba(217,119,6,0.25)',
+                        }}
+                    >
+                        {refreshingStatus ? 'Checking...' : 'Check Status'}
+                    </button>
+                </div>
+            </div>
+        </motion.div>
+    );
+
+    // ── STEP 3: SAMPLE COLLECTION ─────────────────────────────────────────────
 
     const samplesStep = (
         <motion.div
@@ -2767,6 +2900,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                         {journeyArc}
                         <AnimatePresence mode="wait">
                             {step === 'request' && requestStep}
+                            {step === 'compliance' && complianceStep}
                             {step === 'samples' && samplesStep}
                             {step === 'inspection' && inspectionStep}
                             {step === 'live' && liveStep}

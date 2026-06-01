@@ -23,6 +23,7 @@ interface BounceButtonProps {
   size?: "sm" | "md" | "lg";
   icon?: React.ReactNode;
   energyWeight?: number;
+  disabled?: boolean;
 }
 
 const variantStyles: Record<string, string> = {
@@ -52,10 +53,12 @@ export function BounceButton({
   size = "md",
   icon,
   energyWeight = 1,
+  disabled = false,
 }: BounceButtonProps) {
   const { addEnergy, getIntensity } = useBounce();
 
   const handleClick = () => {
+    if (disabled) return;
     addEnergy(energyWeight);
     onClick?.();
   };
@@ -64,15 +67,18 @@ export function BounceButton({
 
   return (
     <motion.button
-      className={`inline-flex items-center justify-center cursor-pointer transition-all duration-400 ${variantStyles[variant]} ${sizeStyles[size]} ${className}`}
+      className={`inline-flex items-center justify-center transition-all duration-400 ${variantStyles[variant]} ${sizeStyles[size]} ${className} ${
+        disabled ? "opacity-40 cursor-not-allowed grayscale-[0.5]" : "cursor-pointer"
+      }`}
       onClick={handleClick}
-      whileTap={{
+      whileTap={disabled ? {} : {
         scale: 1 - 0.03 * intensity,
       }}
-      whileHover={{
+      whileHover={disabled ? {} : {
         scale: 1 + 0.01 * intensity,
         y: -0.5,
       }}
+      disabled={disabled}
       transition={{
         type: "spring",
         stiffness: 350,

@@ -1733,17 +1733,15 @@ class AdminPlatformOverviewView(APIView):
         }
 
         try:
+            # New "Right Flow" ListingRequest stages
+            lr_base = ListingRequest.objects.all()
+            lr_stage_counts = lr_base.values("stage").annotate(count=Count("id"))
+            lr_stages = {row["stage"]: row["count"] for row in lr_stage_counts}
+
             products_base = Product.objects.filter(deleted_at__isnull=True).exclude(status=Product.Status.ARCHIVED)
             pending_products = products_base.filter(status=Product.Status.PENDING).count()
             rejected_products = products_base.filter(status=Product.Status.REJECTED).count()
-            rejected_with_reason = 0
-            try:
-                rejected_with_reason = products_base.filter(
-                    status=Product.Status.REJECTED, detail_config__review__rejection_reason__gt=""
-                ).count()
-            except Exception:
-                rejected_with_reason = 0
-
+            
             missing_hs_code = products_base.filter(Q(hs_code="") | Q(hs_code__isnull=True)).count()
             missing_images = (
                 products_base.annotate(
@@ -1768,9 +1766,9 @@ class AdminPlatformOverviewView(APIView):
                 .count()
             )
         except Exception:
+            lr_stages = {}
             pending_products = 0
             rejected_products = 0
-            rejected_with_reason = 0
             missing_hs_code = 0
             missing_images = 0
             missing_docs = 0
@@ -1778,10 +1776,16 @@ class AdminPlatformOverviewView(APIView):
         pipelines["listings"] = {
             "pending_products": int(pending_products),
             "rejected_products": int(rejected_products),
-            "rejected_with_reason": int(rejected_with_reason),
             "missing_hs_code": int(missing_hs_code),
             "missing_images": int(missing_images),
             "missing_documents": int(missing_docs),
+            # New flow stages
+            "samples": int(lr_stages.get("samples", 0)),
+            "compliance": int(lr_stages.get("compliance", 0)),
+            "inspection": int(lr_stages.get("inspection", 0)),
+            "inbound": int(lr_stages.get("inbound", 0)),
+            "live": int(lr_stages.get("live", 0)),
+            "done": int(lr_stages.get("done", 0)),
         }
 
         if Shipment is not None:
@@ -4077,18 +4081,23 @@ class AdminVerificationUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMi
                 default=Value(0),
                 output_field=IntegerField(),
             )
-        ).annotate(
-            trust_score=Case(
-                When(rejected_docs__gt=0, then=Value(30) + F("kyc_level") * Value(10)),
-                When(under_review_docs__gt=0, then=Value(45) + F("kyc_level") * Value(10)),
-                When(pending_docs__gt=0, then=Value(50) + F("kyc_level") * Value(10)),
-                When(verified_docs__gt=0, then=Value(70) + F("kyc_level") * Value(10)),
+        )
+
+        # Simplified trust score calculation to avoid complex SQL errors in aggregate
+        trust_qs = qs_annotated.annotate(
+            ts=Case(
+                When(rejected_docs__gt=0, then=Value(30)),
+                When(under_review_docs__gt=0, then=Value(45)),
+                When(pending_docs__gt=0, then=Value(50)),
+                When(verified_docs__gt=0, then=Value(70)),
                 default=Value(50),
                 output_field=IntegerField(),
             )
         )
+        avg_trust_base = trust_qs.aggregate(v=Avg("ts"))["v"] or 0
+        avg_kyc = qs_annotated.aggregate(v=Avg("kyc_level"))["v"] or 0
+        avg_trust = float(avg_trust_base) + (float(avg_kyc) * 10)
 
-        avg_trust = qs_annotated.aggregate(v=Avg("trust_score"))["v"] or 0
         kyc_level_3 = qs_annotated.filter(verified_docs__gte=3).count()
         # fingerprint_enrolled = qs.filter(two_factor_enabled=True).count()
         # face_id_enrolled = 0
@@ -4483,6 +4492,9 @@ class SellerDashboardViewSet(viewsets.ViewSet):
                 "unit_price": float(item.unit_price) if item else 0,
                 "buyer": f"{o.buyer.first_name} {o.buyer.last_name}",
                 "destination": destination,
+                "shipping_method": (getattr(o, "shipping_method", "") or "").strip(),
+                "shipping_cost": str(getattr(o, "shipping_cost", 0) or 0),
+                "currency": (getattr(o, "currency", "") or "USD").strip().upper(),
                 "production_step": production_step,
                 "timeline_step": timeline_step,
             })
@@ -5733,6 +5745,14 @@ class WarehouseDashboardViewSet(viewsets.ViewSet):
             return Response({"detail": "Release already authorized."}, status=status.HTTP_400_BAD_REQUEST)
         if o.release_declined_at is not None:
             return Response({"detail": "Release already declined."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check release conditions
+        from apps.orders.models import ReleaseCondition
+        pending = o.release_conditions.filter(
+            status__in=[ReleaseCondition.Status.PENDING, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.FAILED]
+        ).exists()
+        if pending:
+            return Response({"detail": "Cannot authorize release while conditions are pending or failed."}, status=status.HTTP_400_BAD_REQUEST)
 
         body = request.data or {}
         warehouse_id = str(body.get("warehouse_id") or "").strip()

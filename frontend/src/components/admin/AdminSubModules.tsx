@@ -1607,7 +1607,17 @@ export function AdminProducts() {
     navigate({ search: params.toString() ? `?${params.toString()}` : "" });
   };
 
-  const publishListingRequest = async (id: number) => {
+  const publishListingRequest = async (lr: any) => {
+    const id = Number(lr.id);
+    if (!lr.compliance_verified) {
+      setActionError("Cannot publish: Compliance documents must be verified first.");
+      return;
+    }
+    if (!lr.inspected) {
+      setActionError("Cannot publish: Quality inspection must be completed first.");
+      return;
+    }
+
     try {
       const raw = window.prompt("Rating (0–5). Leave blank for default 4.8") || "";
       const rating = raw.trim() ? Number(raw.trim()) : undefined;
@@ -1622,6 +1632,23 @@ export function AdminProducts() {
       refreshProducts();
     } catch (e: any) {
       setActionError(e?.message || "Publish failed.");
+    }
+  };
+
+  const verifyCompliance = async (lr: any) => {
+    const id = Number(lr.id);
+    if (!id) return;
+    try {
+      setActionError("");
+      const notes = (window.prompt("Compliance notes (optional)") || "").trim();
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/verify_compliance/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verified: true, notes }),
+      });
+      refreshListingRequests();
+    } catch (e: any) {
+      setActionError(e?.message || "Compliance verification failed.");
     }
   };
 
@@ -2066,8 +2093,10 @@ export function AdminProducts() {
                 >
                   <option value="all">All stages</option>
                   <option value="samples">Samples</option>
+                  <option value="compliance">Compliance</option>
                   <option value="inspection">Inspection</option>
-                  <option value="live">Approved</option>
+                  <option value="inbound">Inbound</option>
+                  <option value="live">Live</option>
                   <option value="done">Done</option>
                 </select>
                 <select
@@ -2113,14 +2142,52 @@ export function AdminProducts() {
                         <div className="text-[0.8125rem] text-foreground/80">{lr.seller_label || lr.seller_email || "—"}</div>
                         <div className="text-[0.75rem] text-muted-foreground/60">{lr.seller_email || "—"}</div>
                       </div>
-                      <div className="col-span-2">
-                        <StatusPill status={lr.stage === "done" ? "success" : lr.stage === "inspection" ? "pending" : "warning"} label={(lr.stage || "—").toString()} />
+                      <div className="col-span-2 flex items-center gap-2">
+                        <StatusPill 
+                          status={
+                            lr.stage === "done" ? "success" : 
+                            lr.stage === "live" ? "success" :
+                            lr.stage === "inbound" ? "info" :
+                            lr.stage === "inspection" ? "info" :
+                            lr.stage === "compliance" ? "warning" :
+                            "pending"
+                          } 
+                          label={(lr.stage || "—").toString()} 
+                        />
+                        <div className="flex gap-1">
+                          {lr.compliance_verified ? (
+                            <div className="w-5 h-5 rounded-full bg-emerald-500/10 flex items-center justify-center" title="Compliance Verified">
+                              <ShieldCheck size={12} className="text-emerald-500" />
+                            </div>
+                          ) : (
+                            <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center" title="Compliance Pending">
+                              <Shield size={12} className="text-amber-500" />
+                            </div>
+                          )}
+                          {lr.inspected ? (
+                            <div className="w-5 h-5 rounded-full bg-emerald-500/10 flex items-center justify-center" title="Inspected">
+                              <CheckCircle2 size={12} className="text-emerald-500" />
+                            </div>
+                          ) : (
+                            <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center" title={lr.inspector_name ? `Inspector Assigned: ${lr.inspector_name}` : "Inspection Pending"}>
+                              <Search size={12} className="text-amber-500" />
+                            </div>
+                          )}
+                          {!!lr.inbound_request_id && (
+                            <div
+                              className="w-5 h-5 rounded-full bg-blue-500/10 flex items-center justify-center"
+                              title={`Inbound Request #${lr.inbound_request_id}${lr.inbound_request_status ? ` · ${lr.inbound_request_status}` : ""}${lr.inbound_request_warehouse_name ? ` · ${lr.inbound_request_warehouse_name}` : ""}`}
+                            >
+                              <Truck size={12} className="text-blue-500" />
+                            </div>
+                          )}
+                        </div>
                       </div>
                       <div className="col-span-2 text-[0.8125rem] text-muted-foreground/70 tabular-nums">
                         {(lr.created_at || "").toString().slice(0, 10) || "—"}
                       </div>
                       <div className="col-span-1 flex justify-end gap-2">
-                        {lr.stage === "inspection" || lr.stage === "live" ? (
+                        {lr.stage === "compliance" ? (
                           <>
                             <button
                               type="button"
@@ -2131,8 +2198,35 @@ export function AdminProducts() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => publishListingRequest(Number(lr.id))}
+                              onClick={() => verifyCompliance(lr)}
                               className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                            >
+                              Verify
+                            </button>
+                          </>
+                        ) : lr.stage === "live" || lr.stage === "inbound" || lr.stage === "inspection" ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => requestChangesForListing(Number(lr.id))}
+                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              Changes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => publishListingRequest(lr)}
+                              disabled={!lr.compliance_verified || !lr.inspected}
+                              className={`px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold transition-all ${
+                                lr.compliance_verified && lr.inspected
+                                  ? "bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15"
+                                  : "bg-muted/10 border border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                              }`}
+                              title={
+                                !lr.compliance_verified ? "Needs Compliance Verification" :
+                                !lr.inspected ? "Needs Quality Inspection" :
+                                "Publish to Marketplace"
+                              }
                             >
                               Publish
                             </button>
@@ -2140,10 +2234,10 @@ export function AdminProducts() {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => publishListingRequest(Number(lr.id))}
+                            onClick={() => publishListingRequest(lr)}
                             className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
                           >
-                            Publish
+                            View
                           </button>
                         )}
                       </div>

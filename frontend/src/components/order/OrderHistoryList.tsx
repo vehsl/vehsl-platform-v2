@@ -216,6 +216,14 @@ export function OrderHistoryList({ orders, currentOrderId, onSelectOrder }: Orde
                                                         <span className="tabular-nums">ORD-{order.id}</span>
                                                         <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/15" />
                                                         <span>{new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                                                        {((order as any).shipping_method || Number((order as any).shipping_cost || 0) > 0) ? (
+                                                            <>
+                                                                <span className="w-[3px] h-[3px] rounded-full bg-[#1A1A1A]/15" />
+                                                                <span className="truncate">
+                                                                    Shipped via: {String((order as any).shipping_method || '—')} ({order.currency} {Number((order as any).shipping_cost || 0).toLocaleString()})
+                                                                </span>
+                                                            </>
+                                                        ) : null}
                                                     </div>
                                                     {/* Meta row 2: units */}
                                                     <div className="flex items-center gap-2 mt-1">

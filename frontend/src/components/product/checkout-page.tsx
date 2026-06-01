@@ -49,6 +49,9 @@ export function CheckoutPage() {
   const [addresses, setAddresses] = useState<BuyerAddress[]>([]);
   const [addressId, setAddressId] = useState<number | null>(null);
   const [hasAccessToken, setHasAccessToken] = useState(false);
+  const [shippingQuotes, setShippingQuotes] = useState<Record<number, any[]>>({});
+  const [selectedShipping, setSelectedShipping] = useState<Record<number, string>>({});
+  const [quotesLoading, setQuotesLoading] = useState(false);
 
   useEffect(() => {
     void refresh();
@@ -118,8 +121,6 @@ export function CheckoutPage() {
     void fetchAddresses();
   }, [fetchAddresses]);
 
-  const currency = useMemo(() => items[0]?.currency || "USD", [items]);
-
   const groups = useMemo(() => {
     const map = new Map<number, typeof items>();
     for (const it of items) {
@@ -127,6 +128,42 @@ export function CheckoutPage() {
     }
     return [...map.entries()].map(([sellerId, rows]) => ({ sellerId, rows }));
   }, [items]);
+
+  const fetchQuotes = useCallback(async () => {
+    if (items.length === 0 || !addressId) return;
+    setQuotesLoading(true);
+    const newQuotes: Record<number, any[]> = {};
+    try {
+      for (const g of groups) {
+        // For simplicity, fetch quote based on the first item in the group
+        const it = g.rows[0];
+        const params = new URLSearchParams({
+          product_id: String(it.product_id),
+          quantity: String(it.quantity),
+          address_id: String(addressId),
+        });
+        const data = await fetchJsonAuthed(`/api/v1/catalog/shipping-quotes/?${params.toString()}`);
+        if (Array.isArray(data)) {
+          newQuotes[g.sellerId] = data;
+          // Auto-select first method if none selected
+          if (!selectedShipping[g.sellerId] && data.length > 0) {
+            setSelectedShipping(prev => ({ ...prev, [g.sellerId]: data[0].method }));
+          }
+        }
+      }
+      setShippingQuotes(newQuotes);
+    } catch (e) {
+      console.error("Failed to fetch shipping quotes", e);
+    } finally {
+      setQuotesLoading(false);
+    }
+  }, [addressId, groups, selectedShipping]);
+
+  useEffect(() => {
+    void fetchQuotes();
+  }, [addressId, items.length]); // Re-fetch when address or cart changes
+
+  const currency = useMemo(() => items[0]?.currency || "USD", [items]);
 
   const selectedAddress = useMemo(() => addresses.find((a) => a.id === addressId) || null, [addressId, addresses]);
   const selectedAddressLine = useMemo(() => {
@@ -167,6 +204,9 @@ export function CheckoutPage() {
     setPlacing(true);
     try {
       for (const g of groups) {
+        const methodKey = selectedShipping[g.sellerId];
+        const quote = shippingQuotes[g.sellerId]?.find(q => q.method === methodKey);
+
         const payload = {
           items: g.rows.map((it) => ({
             product_id: it.product_id,
@@ -175,6 +215,8 @@ export function CheckoutPage() {
           })),
           payment_method: paymentMethod,
           address_id: addressId,
+          shipping_method: methodKey || "",
+          shipping_cost: quote?.rate || "0.00",
         };
         await fetchJsonAuthed("/api/v1/orders/", {
           method: "POST",
@@ -192,6 +234,18 @@ export function CheckoutPage() {
       setPlacing(false);
     }
   }, [addressId, clearCart, groups, paymentMethod, placing, router, t, validationError]);
+
+  const totalShippingCost = useMemo(() => {
+    let sum = 0;
+    for (const g of groups) {
+      const method = selectedShipping[g.sellerId];
+      const quote = shippingQuotes[g.sellerId]?.find(q => q.method === method);
+      sum += Number(quote?.rate || 0);
+    }
+    return sum;
+  }, [groups, selectedShipping, shippingQuotes]);
+
+  const finalTotal = useMemo(() => Number(totalPrice) + totalShippingCost, [totalPrice, totalShippingCost]);
 
   return (
     <div className="min-h-dvh bg-white">
@@ -341,8 +395,55 @@ export function CheckoutPage() {
                 <span className="font-semibold text-[#0f1115]">{totalQuantity}</span>
               </div>
               <div className="mt-2 flex items-center justify-between text-[12px] text-[#7c7f87]">
+                <span>{t("Shipping", "运费")}</span>
+                <span className="font-semibold text-[#0f1115]">{fmtMoney(currency, String(totalShippingCost))}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[12px] text-[#7c7f87]">
                 <span>{t("Total", "合计")}</span>
-                <span className="font-extrabold text-[#0f1115]">{fmtMoney(currency, String(totalPrice))}</span>
+                <span className="font-extrabold text-[#0f1115]">{fmtMoney(currency, String(finalTotal))}</span>
+              </div>
+
+              <div className="mt-5">
+                <div className="text-[12px] font-bold text-[#0f1115]">{t("Shipping methods", "配送方式")}</div>
+                {quotesLoading ? (
+                  <div className="mt-2 rounded-2xl border border-black/[0.06] bg-black/[0.02] p-3 text-[12px] text-[#7c7f87]">
+                    {t("Calculating shipping…", "正在计算运费…")}
+                  </div>
+                ) : groups.length === 0 ? null : (
+                  <div className="mt-2 space-y-4">
+                    {groups.map(g => (
+                      <div key={g.sellerId} className="space-y-2">
+                        <div className="text-[11px] font-bold text-[#7c7f87] uppercase tracking-wider">
+                          {g.rows[0].seller_name || t("Seller", "卖家")}
+                        </div>
+                        {shippingQuotes[g.sellerId]?.map(q => {
+                          const selected = selectedShipping[g.sellerId] === q.method;
+                          return (
+                            <button
+                              key={q.method}
+                              type="button"
+                              onClick={() => setSelectedShipping(prev => ({ ...prev, [g.sellerId]: q.method }))}
+                              className={`w-full rounded-2xl border p-3 text-left transition ${
+                                selected ? "border-black/20 bg-black/[0.02]" : "border-black/[0.06] bg-white hover:bg-black/[0.02]"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="text-[12px] font-bold text-[#0f1115]">{q.label}</div>
+                                <div className="text-[12px] font-extrabold text-[#0f1115]">{fmtMoney(currency, q.rate)}</div>
+                              </div>
+                              <div className="mt-1 text-[11px] text-[#7c7f87]">{q.transit_days} {t("days", "天")}</div>
+                            </button>
+                          );
+                        })}
+                        {(!shippingQuotes[g.sellerId] || shippingQuotes[g.sellerId].length === 0) && (
+                          <div className="text-[11px] text-amber-600">
+                            {addressId ? t("No shipping methods available for this address.", "该地址暂无配送方式。") : t("Select an address to see shipping rates.", "选择地址以查看运费。")}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="mt-5">

@@ -10,7 +10,7 @@ import {
     Check, MapPin, Fingerprint, Car, UserCheck, Clock,
     Calendar, ArrowUpRight, Package, DollarSign, Warehouse as WarehouseIcon,
     Copy, Phone, Star, User, PenLine, FileText, Hash, Download, Share2,
-    Lock, ShieldCheck, Layers
+    Lock, ShieldCheck, Layers, Truck, ArrowRight
 } from 'lucide-react';
 import {
     Warehouse, InventoryItem, ReleaseRequest, ReleaseRecord
@@ -260,6 +260,82 @@ function StatusBadge({ isOpen, hoursLabel }: { isOpen: boolean; hoursLabel: stri
                 {isOpen ? 'Open' : 'Closed'}
             </span>
             <span className="text-[10px] font-medium text-[#1A1A1A]/20">{hoursLabel}</span>
+        </div>
+    );
+}
+
+
+// ═══════════════════════════════════════════
+// LISTING STATUS STEPPER — onboarding progress
+// ═══════════════════════════════════════════
+function ListingStatusStepper({ lr }: { lr: any }) {
+    const stages = [
+        { key: 'samples', label: 'Samples', icon: <Package size={14} /> },
+        { key: 'compliance', label: 'Compliance', icon: <ShieldCheck size={14} /> },
+        { key: 'inspection', label: 'Inspection', icon: <Search size={14} /> },
+        { key: 'inbound', label: 'Inbound', icon: <Truck size={14} /> },
+        { key: 'live', label: 'Live', icon: <Check size={14} /> },
+    ];
+
+    const currentStageIndex = stages.findIndex(s => s.key === lr.stage);
+    
+    return (
+        <div className="flex items-center gap-6 mt-4">
+            {stages.map((stage, i) => {
+                const isCompleted = i < currentStageIndex || (lr.stage === 'done');
+                const isCurrent = i === currentStageIndex && lr.stage !== 'done';
+                
+                return (
+                    <React.Fragment key={stage.key}>
+                        <div className="flex flex-col items-center gap-1.5 relative">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-500 ${
+                                isCompleted ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' :
+                                isCurrent ? 'bg-[#0171E3] text-white shadow-lg shadow-[#0171E3]/20 scale-110' :
+                                'bg-[#1A1A1A]/[0.04] text-[#1A1A1A]/25'
+                            }`}>
+                                {isCompleted ? <Check size={18} strokeWidth={3} /> : stage.icon}
+                            </div>
+                            <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                                isCurrent ? 'text-[#0171E3]' : 'text-[#1A1A1A]/30'
+                            }`}>
+                                {stage.label}
+                            </span>
+                            
+                            {stage.key === 'compliance' && lr.compliance_verified && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10">
+                                    <Check size={10} strokeWidth={4} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'compliance' && !lr.compliance_verified && lr.stage === 'compliance' && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse">
+                                    <Clock size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+
+                            {stage.key === 'inspection' && lr.inspected && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10">
+                                    <Check size={10} strokeWidth={4} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'inspection' && lr.inspector_name && !lr.inspected && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10" title={`Inspector Assigned: ${lr.inspector_name}`}>
+                                    <User size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'inspection' && !lr.inspector_name && !lr.inspected && lr.stage === 'inspection' && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse">
+                                    <Clock size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+                        </div>
+                        {i < stages.length - 1 && (
+                            <div className={`h-[2px] w-12 -mt-5 rounded-full transition-all duration-700 ${
+                                isCompleted ? 'bg-emerald-500' : 'bg-[#1A1A1A]/[0.06]'
+                            }`} />
+                        )}
+                    </React.Fragment>
+                );
+            })}
         </div>
     );
 }
@@ -1657,18 +1733,20 @@ function ReleaseSheet({ item, onClose, onSubmit, prefill, productColor }: {
 // ═══════════════════════════════════════════
 // MAIN VIEW
 // ═══════════════════════════════════════════
-type ViewState = 'select' | 'inventory';
+type ViewState = 'select' | 'inventory' | 'inbound' | 'onboarding';
 
 export function WarehouseView() {
     const [mounted, setMounted] = useState(false);
     useEffect(() => { setMounted(true); }, []);
 
-    const { isSeller } = useRole();
+    const { isSeller, isAdmin, isLogistics } = useRole();
     const [view, setView] = useState<ViewState>('select');
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [inventory, setInventory] = useState<InventoryItem[]>([]);
+    const [inboundRequests, setInboundRequests] = useState<any[]>([]);
+    const [listingRequests, setListingRequests] = useState<any[]>([]);
     const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]);
     const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -1679,11 +1757,13 @@ export function WarehouseView() {
     const fetchWarehouseData = useCallback(async () => {
         try {
             setLoading(true);
-            const [wRes, rRes, recRes, autoRes] = await Promise.all([
+            const [wRes, rRes, recRes, autoRes, inRes, lrRes] = await Promise.all([
                 authedFetch('/api/v1/warehouse/dashboard/list_warehouses/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_requests/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_records/'),
                 authedFetch('/api/v1/warehouse/dashboard/auto_order_settings/'),
+                authedFetch('/api/v1/catalog/inbound-requests/'),
+                authedFetch('/api/v1/catalog/listing-requests/'),
             ]);
 
             if (wRes.ok) {
@@ -1709,6 +1789,16 @@ export function WarehouseView() {
                 const raw = await recRes.json();
                 const mapped = Array.isArray(raw) ? raw.map(mapReleaseRecord).filter((x): x is ReleaseRecord => !!x) : [];
                 setReleaseRecords(mapped);
+            }
+
+            if (inRes.ok) {
+                const raw = await inRes.json();
+                setInboundRequests(Array.isArray(raw) ? raw : []);
+            }
+
+            if (lrRes.ok) {
+                const raw = await lrRes.json();
+                setListingRequests(Array.isArray(raw) ? raw : []);
             }
 
             if (autoRes.ok) {
@@ -2083,7 +2173,7 @@ export function WarehouseView() {
                         })}
                     </div>
                 </motion.div>
-            ) : (
+            ) : view === 'inventory' ? (
                 /* ═══ INVENTORY DASHBOARD ═══ */
                 <div className="space-y-5">
 
@@ -2136,10 +2226,40 @@ export function WarehouseView() {
                     </motion.div>
 
                     {/* ── 2-column content ── */}
-                    <div className="flex flex-col lg:flex-row gap-5 items-start">
+                    <div className="flex flex-col lg:flex-row gap-5 items-start mt-6">
 
                         {/* Left: Requests + Inventory */}
                         <div className="flex-1 w-full min-w-0 space-y-5">
+                            {/* Tabs */}
+                            <div className="flex items-center gap-6 mb-2 border-b border-[#1A1A1A]/[0.03]">
+                                <button
+                                    onClick={() => setView('inventory')}
+                                    className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                        (view as string) === 'inventory' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                    }`}
+                                >
+                                    Inventory
+                                    {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                                </button>
+                                <button
+                                    onClick={() => setView('inbound')}
+                                    className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                        (view as string) === 'inbound' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                    }`}
+                                >
+                                    Inbound
+                                    {(view as string) === 'inbound' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                                </button>
+                                <button
+                                    onClick={() => setView('onboarding')}
+                                    className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                        (view as string) === 'onboarding' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                    }`}
+                                >
+                                    Onboarding
+                                    {(view as string) === 'onboarding' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                                </button>
+                            </div>
 
                             {/* Requests */}
                             {releaseRequests.length > 0 && (
@@ -2295,7 +2415,6 @@ export function WarehouseView() {
                                                     const { minThreshold, maxCapacity, enabled: autoOrderEnabled } = settings;
                                                     
                                                     const percent = Math.round((currentStock / totalStock) * 100);
-                                                    const needsReorder = currentStock < minThreshold;
                                                     const [cr, cg, cb] = productColorMap[item.id] ? parseRgb(productColorMap[item.id]) : [150, 150, 150];
                                                     
                                                     return (
@@ -2861,6 +2980,201 @@ export function WarehouseView() {
                                 ))}
                             </Glass>
                         </motion.div>
+                    </div>
+                </div>
+            ) : view === 'onboarding' ? (
+                /* ═══ ONBOARDING DASHBOARD ═══ */
+                <div className="flex flex-col lg:flex-row gap-5 items-start">
+                    <div className="flex-1 w-full min-w-0 space-y-5">
+                        <div className="flex items-center gap-6 mb-2 border-b border-[#1A1A1A]/[0.03]">
+                            <button
+                                onClick={() => setView('inventory')}
+                                className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                    (view as string) === 'inventory' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                }`}
+                            >
+                                Inventory
+                                {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                            </button>
+                            <button
+                                onClick={() => setView('inbound')}
+                                className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                    (view as string) === 'inbound' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                }`}
+                            >
+                                Inbound
+                                {(view as string) === 'inbound' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                            </button>
+                            <button
+                                onClick={() => setView('onboarding')}
+                                className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                    (view as string) === 'onboarding' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                }`}
+                            >
+                                Onboarding
+                                {(view as string) === 'onboarding' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                            </button>
+                        </div>
+
+                        <div className="space-y-4">
+                            {listingRequests.length === 0 ? (
+                                <div className="py-20 text-center">
+                                    <div className="w-16 h-16 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-4">
+                                        <PenLine size={24} className="text-[#1A1A1A]/10" />
+                                    </div>
+                                    <h3 className="text-[16px] font-bold text-[#1A1A1A]/40">No active listing requests</h3>
+                                    <p className="text-[13px] text-[#1A1A1A]/25 mt-1">Submit your first product for onboarding.</p>
+                                </div>
+                            ) : listingRequests.map((lr, i) => (
+                                <motion.div
+                                    key={lr.id}
+                                    initial={{ opacity: 0, y: 8 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: i * 0.05 }}
+                                    className="p-6 rounded-[22px] bg-white/45 border border-[#1A1A1A]/[0.06]"
+                                >
+                                    <div className="flex items-center justify-between mb-6">
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-12 h-12 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04]">
+                                                {lr.photos?.[0] ? (
+                                                    <img src={lr.photos[0].file} alt={lr.product_name} className="w-full h-full object-cover" />
+                                                ) : (
+                                                    <Package size={20} className="text-[#1A1A1A]/20" />
+                                                )}
+                                            </div>
+                                            <div>
+                                                <h4 className="text-[15px] font-bold text-[#1A1A1A]">{lr.product_name}</h4>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                    <span className="text-[11px] font-medium text-[#1A1A1A]/35">{lr.category_label || 'Uncategorized'}</span>
+                                                    <span className="w-1 h-1 rounded-full bg-[#1A1A1A]/10" />
+                                                    <span className="text-[11px] font-bold text-[#1A1A1A]/30">#{lr.id}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-col items-end gap-1.5">
+                                            <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                                lr.stage === 'live' || lr.stage === 'done' ? 'bg-emerald-500/10 text-emerald-600' :
+                                                lr.stage === 'inspection' ? 'bg-amber-500/10 text-amber-600' :
+                                                'bg-[#0171E3]/10 text-[#0171E3]'
+                                            }`}>
+                                                {lr.stage}
+                                            </span>
+                                            <span className="text-[10px] font-medium text-[#1A1A1A]/20">
+                                                Submitted {new Date(lr.created_at).toLocaleDateString()}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="h-px bg-[#1A1A1A]/[0.04] mb-6" />
+                                    
+                                    <div className="flex flex-col items-center">
+                                        <ListingStatusStepper lr={lr} />
+                                        
+                                        {lr.compliance_notes && (
+                                            <div className="mt-6 w-full p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 flex gap-3">
+                                                <FileText size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                                                <div>
+                                                    <span className="text-[11px] font-bold text-amber-600/80 uppercase tracking-wider block mb-1">Admin Feedback</span>
+                                                    <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">{lr.compliance_notes}</p>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </motion.div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                /* ═══ INBOUND DASHBOARD ═══ */
+                <div className="space-y-5">
+                    <div className="flex items-center gap-6 mb-2 border-b border-[#1A1A1A]/[0.03]">
+                        <button
+                            onClick={() => setView('inventory')}
+                            className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                (view as string) === 'inventory' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                            }`}
+                        >
+                            Inventory
+                            {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                        </button>
+                        <button
+                            onClick={() => setView('inbound')}
+                            className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                (view as string) === 'inbound' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                            }`}
+                        >
+                            Inbound
+                            {(view as string) === 'inbound' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                        </button>
+                    </div>
+
+                    <div className="space-y-4">
+                        {inboundRequests.length === 0 ? (
+                            <div className="py-20 text-center">
+                                <div className="w-16 h-16 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <Package size={24} className="text-[#1A1A1A]/10" />
+                                </div>
+                                <h3 className="text-[16px] font-bold text-[#1A1A1A]/40">No inbound requests</h3>
+                                <p className="text-[13px] text-[#1A1A1A]/25 mt-1">Start by sending products to our warehouse.</p>
+                            </div>
+                        ) : inboundRequests.map((req, i) => (
+                            <motion.div
+                                key={req.id}
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: i * 0.05 }}
+                                className="p-5 rounded-[22px] bg-white/45 border border-[#1A1A1A]/[0.06] flex items-center justify-between"
+                            >
+                                <div className="flex items-center gap-4">
+                                    <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center shadow-sm">
+                                        <Truck size={18} className="text-[#1A1A1A]/40" />
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <h4 className="text-[14px] font-bold text-[#1A1A1A]/80">#{req.id} · {req.warehouse_name}</h4>
+                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                                req.status === 'received' ? 'bg-emerald-500/10 text-emerald-600' :
+                                                req.status === 'shipped' ? 'bg-blue-500/10 text-blue-600' :
+                                                'bg-amber-500/10 text-amber-600'
+                                            }`}>
+                                                {req.status}
+                                            </span>
+                                        </div>
+                                        <p className="text-[12px] text-[#1A1A1A]/35 mt-0.5">
+                                            {(req.items?.length || 0) > 0 ? `${req.items.length} products` : (req.listing_request_product_name || "0 products")} · Sent by {req.seller_name}
+                                        </p>
+                                    </div>
+                                </div>
+                                {(isAdmin || isLogistics) && req.status === 'shipped' && (
+                                    <button
+                                        onClick={async () => {
+                                            try {
+                                                const res = await authedFetch(`/api/v1/catalog/inbound-requests/${req.id}/receive/`, {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                        items: req.items.map((it: any) => ({
+                                                            id: it.id,
+                                                            quantity_received: it.quantity_expected
+                                                        }))
+                                                    })
+                                                });
+                                                if (res.ok) {
+                                                    toast.success('Inbound received & stock updated');
+                                                    fetchWarehouseData();
+                                                }
+                                            } catch (e) {
+                                                toast.error('Failed to receive');
+                                            }
+                                        }}
+                                        className="px-4 py-2 rounded-full bg-emerald-500 text-white text-[12px] font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all"
+                                    >
+                                        Confirm Receipt
+                                    </button>
+                                )}
+                            </motion.div>
+                        ))}
                     </div>
                 </div>
             )}

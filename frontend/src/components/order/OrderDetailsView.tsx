@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from 'react';
 import type { ApiOrder, ApiOrderItem } from './order-types';
-import { Copy, CheckCircle2, MapPin, CreditCard, Phone, Package as PackageIcon, Ban, FlaskConical } from 'lucide-react';
+import { Copy, CheckCircle2, MapPin, CreditCard, Phone, Package as PackageIcon, Ban, FlaskConical, Truck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
 import { toast } from 'sonner';
@@ -228,6 +228,9 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
     const shipStreet1 = String(ship.street1 || ship.street || '').trim();
     const shipStreet2 = String(ship.street2 || '').trim();
     const shipPostal = String(ship.postal_code || ship.zip || '').trim();
+    const shipMethod = String((order as any).shipping_method || '').trim();
+    const shipCostRaw = (order as any).shipping_cost;
+    const shipCost = Number(shipCostRaw || 0);
 
     return (
         <motion.div
@@ -382,6 +385,14 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
                                 <div className="flex gap-3 items-center mt-2 ml-[1px]">
                                     <Phone size={12} strokeWidth={2} className="text-[#1A1A1A]/28 flex-shrink-0" />
                                     <p className="text-[11px] font-medium text-[#1A1A1A]/40">{shipPhone}</p>
+                                </div>
+                            ) : null}
+                            {(shipMethod || shipCost > 0) ? (
+                                <div className="flex gap-3 items-center mt-2 ml-[1px]">
+                                    <Truck size={12} strokeWidth={2} className="text-[#1A1A1A]/28 flex-shrink-0" />
+                                    <p className="text-[11px] font-medium text-[#1A1A1A]/40">
+                                        Shipped via: {shipMethod || '—'} ({fmtMoney(order.currency, shipCost)})
+                                    </p>
                                 </div>
                             ) : null}
                         </div>

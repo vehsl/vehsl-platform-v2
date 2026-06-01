@@ -111,7 +111,9 @@ def _listing_request_upload_to(instance, filename: str) -> str:
 class ListingRequest(models.Model):
     class Stage(models.TextChoices):
         SAMPLES = "samples", "Samples"
+        COMPLIANCE = "compliance", "Compliance"
         INSPECTION = "inspection", "Inspection"
+        INBOUND = "inbound", "Inbound"
         LIVE = "live", "Live"
         DONE = "done", "Done"
 
@@ -133,7 +135,19 @@ class ListingRequest(models.Model):
     pickup_contact_name = models.CharField(max_length=160, blank=True)
     pickup_phone = models.CharField(max_length=32, blank=True)
 
+    product_meta = models.JSONField(default=dict, blank=True)
+
     stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.SAMPLES)
+    inspector = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="listing_inspections",
+    )
+    inspected = models.BooleanField(default=False)
+    compliance_verified = models.BooleanField(default=False)
+    compliance_notes = models.TextField(blank=True)
     rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     created_product = models.ForeignKey("Product", on_delete=models.SET_NULL, null=True, blank=True, related_name="created_from_listing_requests")
 
@@ -413,3 +427,46 @@ class WarehouseStock(models.Model):
 
     def __str__(self):
         return f"warehouse_stock:{self.warehouse_id}:{self.product_id}:{self.id}"
+
+
+class InboundRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SHIPPED = "shipped", "Shipped"
+        RECEIVED = "received", "Received"
+        CANCELLED = "cancelled", "Cancelled"
+
+    listing_request = models.OneToOneField(
+        "ListingRequest",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="inbound_request",
+    )
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="inbound_requests")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name="inbound_requests")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    tracking_number = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["seller", "status"]),
+            models.Index(fields=["warehouse", "status"]),
+        ]
+
+    def __str__(self):
+        return f"inbound:{self.id}:{self.seller_id}"
+
+
+class InboundRequestItem(models.Model):
+    inbound_request = models.ForeignKey(InboundRequest, on_delete=models.CASCADE, related_name="items")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    variation = models.ForeignKey(ProductVariation, on_delete=models.SET_NULL, null=True, blank=True)
+    quantity_expected = models.PositiveIntegerField()
+    quantity_received = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return f"inbound_item:{self.id}"

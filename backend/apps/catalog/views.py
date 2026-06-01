@@ -21,6 +21,8 @@ from apps.accounts.models import Notification, User
 from .models import (
     Category,
     ComplianceRule,
+    InboundRequest,
+    InboundRequestItem,
     ListingRequest,
     ListingRequestPhoto,
     PricingTier,
@@ -38,6 +40,8 @@ from .serializers import (
     AdminListingRequestSerializer,
     CategorySerializer,
     ComplianceRuleSerializer,
+    InboundRequestSerializer,
+    InboundRequestItemSerializer,
     ListingRequestCreateSerializer,
     ListingRequestSerializer,
     PricingTierSerializer,
@@ -48,6 +52,47 @@ from .serializers import (
     WarehouseSerializer,
     WarehouseStockSerializer,
 )
+
+def _ensure_seed_categories():
+    try:
+        has_real = (
+            Category.objects.filter(deleted_at__isnull=True)
+            .exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
+            .exists()
+        )
+    except Exception:
+        has_real = True
+    if has_real:
+        return
+
+    defaults: list[tuple[str, list[str]]] = [
+        ("Vehicles", ["SUV", "Electric", "Accessories", "Heavy Vehicles", "Bike", "E Bikes", "Ships", "Helicopters", "Drones"]),
+        ("Industrial", ["Machinery", "Raw Materials", "Industrial Chemicals", "Packaging", "Safety Gear", "Power Tools", "Construction Equipment", "Factory Automation"]),
+        ("Hardware", ["Hand Tools", "Power Tools", "Fasteners", "Plumbing", "Electrical", "Paint", "Adhesives"]),
+        ("Electronics", ["Laptops", "Phones", "Tablets", "Audio", "Wearables", "Components"]),
+        ("Furniture", ["Living Room", "Bedroom", "Office", "Outdoor", "Kitchen"]),
+        ("Energy", ["Solar Systems", "Batteries", "Inverters", "Generators", "EV Charging"]),
+        ("Apparel", ["Men's Wear", "Women's Wear", "Kids", "Footwear", "Sportswear"]),
+        ("Beauty", ["Skincare", "Hair Care", "Makeup", "Fragrance"]),
+        ("Mining", ["Industrial Minerals", "Metals & Ores", "Excavation", "Safety"]),
+        ("Agriculture", ["Farming Equipment", "Seeds", "Fertilizers", "Vegetables", "Fruits"]),
+        ("Sports", ["Gym Equipment", "Outdoor Gear", "Team Sports", "Water Sports"]),
+    ]
+
+    for p_idx, (parent_name, children) in enumerate(defaults, start=1):
+        parent, _ = Category.objects.get_or_create(
+            name=parent_name,
+            parent=None,
+            defaults={"display_order": p_idx, "sort_order": 0},
+        )
+        if parent.display_order != p_idx:
+            Category.objects.filter(id=parent.id).update(display_order=p_idx)
+        for c_idx, child_name in enumerate(children, start=1):
+            Category.objects.get_or_create(
+                name=child_name,
+                parent=parent,
+                defaults={"display_order": c_idx, "sort_order": 0},
+            )
 
 
 def _create_product_from_listing_request(lr: ListingRequest) -> Product:
@@ -278,13 +323,17 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="explore")
     def explore(self, request):
-        base_qs = Category.objects.filter(deleted_at__isnull=True).exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
+        _ensure_seed_categories()
+        base_all = Category.objects.filter(deleted_at__isnull=True)
+        base_qs = base_all.exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
         top = list(base_qs.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
+        if not top:
+            top = list(base_all.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
         if not top:
             return Response({"categories": [], "total_products": 0})
 
         top_ids = [c.id for c in top]
-        children = list(base_qs.filter(parent_id__in=top_ids).order_by("display_order", "sort_order", "name"))
+        children = list(base_all.filter(parent_id__in=top_ids).order_by("display_order", "sort_order", "name"))
         all_cat_ids = top_ids + [c.id for c in children]
 
         product_qs = Product.objects.filter(
@@ -912,6 +961,12 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        if not lr.compliance_verified:
+            return Response({"detail": "Compliance must be verified before publish."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if lr.inspector and not lr.inspected:
+            return Response({"detail": "Inspection must be completed before publish."}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             rating = float(request.data.get("rating")) if request.data.get("rating") is not None else float(lr.rating or 4.8)
         except Exception:
@@ -939,6 +994,117 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             target_type="listing_request",
             target_id=str(lr.id),
             payload={"stage": lr.stage, "created_product_id": str(p.id), "seller_id": str(lr.seller_id)},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="verify_compliance")
+    def verify_compliance(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        verified = request.data.get("verified", False)
+        notes = (request.data.get("notes") or "").strip()
+
+        lr.compliance_verified = verified
+        lr.compliance_notes = notes
+        if verified:
+            lr.stage = ListingRequest.Stage.INSPECTION
+        lr.save(update_fields=["compliance_verified", "compliance_notes", "stage", "updated_at"])
+
+        inbound_created = False
+        inbound_id = None
+        if verified:
+            try:
+                inbound = getattr(lr, "inbound_request", None)
+            except Exception:
+                inbound = None
+            if inbound is None:
+                wh = Warehouse.objects.filter(active=True).order_by("id").first() or Warehouse.objects.order_by("id").first()
+                if wh is None:
+                    try:
+                        wh = Warehouse.objects.create(name="Main Warehouse", active=True)
+                    except Exception:
+                        wh = None
+                if wh is not None:
+                    try:
+                        inbound = InboundRequest.objects.create(seller=lr.seller, warehouse=wh, listing_request=lr)
+                        inbound_created = True
+                        inbound_id = inbound.id
+                    except Exception:
+                        inbound_created = False
+
+        audit(
+            request.user,
+            action="admin_listing_request_compliance_verified",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"verified": verified, "inbound_created": inbound_created, "inbound_id": str(inbound_id or "")},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="assign_inspector")
+    def assign_inspector(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        inspector_id = request.data.get("inspector_id")
+        if not inspector_id:
+            return Response({"detail": "inspector_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        inspector = User.objects.filter(id=inspector_id, role=User.Role.ADMIN).first()
+        if not inspector:
+            return Response({"detail": "Invalid inspector."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.inspector = inspector
+        lr.save(update_fields=["inspector", "updated_at"])
+
+        audit(
+            request.user,
+            action="admin_listing_request_inspector_assigned",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"inspector_id": str(inspector.id)},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="complete_inspection")
+    def complete_inspection(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        inspected = request.data.get("inspected", False)
+        lr.inspected = inspected
+        if inspected:
+            lr.stage = ListingRequest.Stage.INBOUND
+        lr.save(update_fields=["inspected", "stage", "updated_at"])
+
+        audit(
+            request.user,
+            action="admin_listing_request_inspected",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"inspected": inspected},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="complete_inbound")
+    def complete_inbound(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        lr.stage = ListingRequest.Stage.LIVE
+        lr.save(update_fields=["stage", "updated_at"])
+
+        audit(
+            request.user,
+            action="admin_listing_request_inbound_completed",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage},
         )
         return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 
@@ -2107,14 +2273,27 @@ class AdminProductViewSet(viewsets.GenericViewSet):
     def bulk_status(self, request):
         ids = request.data.get("ids") or []
         next_status = (request.data.get("status") or "").strip().lower()
-        allowed = {Product.Status.DRAFT, Product.Status.PENDING, Product.Status.APPROVED, Product.Status.REJECTED, Product.Status.ACTIVE, Product.Status.ARCHIVED}
+        allowed = {
+            Product.Status.DRAFT,
+            Product.Status.PENDING,
+            Product.Status.APPROVED,
+            Product.Status.REJECTED,
+            Product.Status.ACTIVE,
+            Product.Status.ARCHIVED,
+        }
         if next_status not in allowed:
             return Response({"status": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         qs = Product.objects.filter(deleted_at__isnull=True, id__in=ids)
         updated = qs.update(status=next_status)
-        audit(request.user, action="admin_products_bulk_status", target_type="product_bulk", target_id="", payload={"count": updated, "status": next_status})
+        audit(
+            request.user,
+            action="admin_products_bulk_status",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "status": next_status},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/category")
@@ -2129,7 +2308,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         updated = Product.objects.filter(deleted_at__isnull=True, id__in=ids).update(category_id=category_id)
-        audit(request.user, action="admin_products_bulk_category", target_type="product_bulk", target_id="", payload={"count": updated, "category_id": category_id})
+        audit(
+            request.user,
+            action="admin_products_bulk_category",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "category_id": category_id},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/hs-code")
@@ -2139,7 +2324,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         updated = Product.objects.filter(deleted_at__isnull=True, id__in=ids).update(hs_code=hs_code)
-        audit(request.user, action="admin_products_bulk_hs_code", target_type="product_bulk", target_id="", payload={"count": updated, "hs_code": hs_code})
+        audit(
+            request.user,
+            action="admin_products_bulk_hs_code",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "hs_code": hs_code},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/stock")
@@ -2170,7 +2361,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                 low_stock_flag=(0 < qty < threshold),
             )
             updated += 1
-        audit(request.user, action="admin_products_bulk_stock", target_type="product_bulk", target_id="", payload={"count": updated, "stock_units": qty})
+        audit(
+            request.user,
+            action="admin_products_bulk_stock",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "stock_units": qty},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/export")
@@ -2180,7 +2377,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         qs = self.get_queryset().filter(id__in=ids)
-        audit(request.user, action="admin_products_bulk_exported", target_type="product_bulk", target_id="", payload={"count": qs.count()})
+        audit(
+            request.user,
+            action="admin_products_bulk_exported",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": qs.count()},
+        )
         resp = HttpResponse(content_type="text/csv")
         resp["Content-Disposition"] = 'attachment; filename="admin_products_selected.csv"'
         w = csv.writer(resp)
@@ -2305,3 +2508,91 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                 ]
             )
         return resp
+
+
+class InboundRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = InboundRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = InboundRequest.objects.select_related("seller", "warehouse").prefetch_related("items", "items__product")
+        if user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin":
+            return qs
+        if getattr(user, "account_type", "") == "seller":
+            return qs.filter(seller=user)
+        return qs.none()
+
+    def perform_create(self, serializer):
+        serializer.save(seller=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        items_data = data.pop("items", []) if "items" in data else []
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        inbound = serializer.save(seller=request.user)
+
+        for item_data in items_data:
+            try:
+                InboundRequestItem.objects.create(
+                    inbound_request=inbound,
+                    product_id=item_data.get("product"),
+                    variation_id=item_data.get("variation"),
+                    quantity_expected=int(item_data.get("quantity_expected") or 0),
+                )
+            except Exception:
+                continue
+
+        return Response(self.get_serializer(inbound).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="ship")
+    def ship(self, request, pk=None):
+        obj = self.get_object()
+        if obj.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if obj.status != InboundRequest.Status.PENDING:
+            return Response({"detail": "Only pending requests can be shipped."}, status=status.HTTP_400_BAD_REQUEST)
+
+        obj.tracking_number = (request.data.get("tracking_number") or "").strip()
+        obj.status = InboundRequest.Status.SHIPPED
+        obj.save(update_fields=["status", "tracking_number", "updated_at"])
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], url_path="receive")
+    def receive(self, request, pk=None):
+        user_role = getattr(request.user, "role", None)
+        if not (request.user.is_staff or user_role in ["admin", "logistics"]):
+            return Response({"detail": "Only admins or logistics staff can mark as received."}, status=status.HTTP_403_FORBIDDEN)
+
+        obj = self.get_object()
+        if obj.status != InboundRequest.Status.SHIPPED:
+            return Response({"detail": "Only shipped requests can be received."}, status=status.HTTP_400_BAD_REQUEST)
+
+        items_data = request.data.get("items") or []
+        if not isinstance(items_data, list):
+            return Response({"detail": "items must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update received quantities and actual stock
+        for item_update in items_data:
+            item_id = item_update.get("id")
+            received = int(item_update.get("quantity_received") or 0)
+            item = obj.items.filter(id=item_id).first()
+            if item:
+                item.quantity_received = received
+                item.save(update_fields=["quantity_received"])
+
+                # Update WarehouseStock
+                stock, _ = WarehouseStock.objects.get_or_create(
+                    warehouse=obj.warehouse,
+                    seller=obj.seller,
+                    product=item.product,
+                    variation=item.variation,
+                )
+                stock.quantity_units = (stock.quantity_units or 0) + received
+                stock.save()
+
+        obj.status = InboundRequest.Status.RECEIVED
+        obj.save(update_fields=["status", "updated_at"])
+        return Response(self.get_serializer(obj).data)

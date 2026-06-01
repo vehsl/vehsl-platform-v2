@@ -73,6 +73,8 @@ type Product = {
   seller_name?: string;
   hero_image_url?: string;
   detail_config?: Record<string, unknown>;
+  quantity_available?: number;
+  stock_status?: string;
 };
 
 type BuyerAddress = {
@@ -936,8 +938,9 @@ export function ProductPage() {
     const needsVariation = normalizedGroups.length > 0;
     const allSelected = normalizedGroups.every((g) => Boolean(selectedAttrs[g.key]));
     const variationOk = needsVariation ? allSelected && Boolean(selectedVariationId) : true;
-    return variationOk;
-  }, [normalizedGroups, selectedAttrs, selectedVariationId]);
+    const stockOk = (product?.quantity_available ?? 0) >= qty;
+    return variationOk && stockOk;
+  }, [normalizedGroups, selectedAttrs, selectedVariationId, product?.quantity_available, qty]);
 
   const copyShareLink = useCallback(async () => {
     try {
@@ -1787,7 +1790,11 @@ export function ProductPage() {
                     onClick={() => void addThisToCart()}
                     className="mt-2 h-11 w-full rounded-full bg-black px-6 text-[12px] font-semibold text-white disabled:bg-black/10 disabled:text-[#1A1A1A]/35"
                   >
-                    {canAddToCart ? t("Add to cart", "加入购物车") : t("Select options above", "请先选择规格")}
+                    {product.stock_status === "out_of_stock" || (product.quantity_available ?? 0) < qty
+                      ? t("Out of Stock", "暂时缺货")
+                      : canAddToCart
+                        ? t("Add to cart", "加入购物车")
+                        : t("Select options above", "请先选择规格")}
                   </button>
 
                   <div className="mt-2 text-center text-[11px] text-[#1A1A1A]/35">

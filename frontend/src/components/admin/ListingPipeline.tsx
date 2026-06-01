@@ -9,7 +9,7 @@ import {
   Truck, Eye, ThumbsUp, ThumbsDown, AlertCircle, Sparkles,
   Clock, FileText, MessageCircle, Image as ImageIcon, Boxes,
   CircleCheck, CircleDot, Circle, ChevronLeft, Flag,
-  TrendingUp, Zap, Send
+  TrendingUp, Zap, Send, ShieldCheck, Search
 } from "lucide-react";
 import { BounceButton } from "./BounceButton";
 import { StatusPill } from "./StatusPill";
@@ -23,7 +23,7 @@ import type { CostBreakdown } from "./CostLedger";
 
 // ─── Types ──────────────────────────────────────────────
 
-type ListingStage = "received" | "sample_pickup" | "quality_testing" | "legal_review" | "photography" | "published";
+type ListingStage = "samples" | "compliance" | "inspection" | "inbound" | "live" | "done";
 
 interface ListingRequest {
   id: string;
@@ -38,6 +38,9 @@ interface ListingRequest {
   leadTime: string;
   certifications: string[];
   stage: ListingStage;
+  compliance_verified?: boolean;
+  inspected?: boolean;
+  inspector_name?: string;
   submittedDate: string;
   lastUpdated: string;
   image: string;
@@ -46,7 +49,7 @@ interface ListingRequest {
   legalStatus?: "pending" | "approved" | "needs_revision";
   legalMarkets?: string[];
   legalNotes?: string;
-  photos?: string[];
+  photos?: any[];
   b2bReady: boolean;
   b2cReady: boolean;
   urgency: "normal" | "high" | "urgent";
@@ -60,12 +63,12 @@ interface ListingRequest {
 // ─── Stage Configuration ────────────────────────────────
 
 const stages: { key: ListingStage; label: string; shortLabel: string; icon: React.ReactNode; color: string; description: string }[] = [
-  { key: "received", label: "Request Received", shortLabel: "Received", icon: <Package size={18} />, color: "#3B82F6", description: "Review product details & capacity" },
-  { key: "sample_pickup", label: "Sample Pickup", shortLabel: "Sample", icon: <Truck size={18} />, color: "#8B5CF6", description: "Collect sample from seller" },
-  { key: "quality_testing", label: "Quality Testing", shortLabel: "Quality", icon: <ClipboardCheck size={18} />, color: "#0171E3", description: "Test & rate product quality" },
-  { key: "legal_review", label: "Legal Clearance", shortLabel: "Legal", icon: <Scale size={18} />, color: "#D97706", description: "Export & compliance approval" },
-  { key: "photography", label: "Photography", shortLabel: "Photos", icon: <Camera size={18} />, color: "#EC4899", description: "Product photography for listing" },
-  { key: "published", label: "Published", shortLabel: "Live", icon: <CheckCircle2 size={18} />, color: "#30A46C", description: "Live on marketplace" },
+  { key: "samples", label: "Sample Submission", shortLabel: "Samples", icon: <Package size={18} />, color: "#3B82F6", description: "Collect and verify product samples" },
+  { key: "compliance", label: "Compliance Review", shortLabel: "Compliance", icon: <Shield size={18} />, color: "#D97706", description: "Export & compliance document approval" },
+  { key: "inspection", label: "Quality Inspection", shortLabel: "Inspection", icon: <Search size={18} />, color: "#0171E3", description: "Test and rate product quality" },
+  { key: "inbound", label: "Inventory Inbound", shortLabel: "Inbound", icon: <Truck size={18} />, color: "#8B5CF6", description: "Ship to and receive at warehouse" },
+  { key: "live", label: "Go Live", shortLabel: "Live", icon: <CheckCircle2 size={18} />, color: "#30A46C", description: "Approve and publish to marketplace" },
+  { key: "done", label: "Completed", shortLabel: "Done", icon: <CircleCheck size={18} />, color: "#6366F1", description: "Onboarding process completed" },
 ];
 
 const stageIndex = (s: ListingStage) => stages.findIndex((st) => st.key === s);
@@ -85,7 +88,9 @@ const mockListings: ListingRequest[] = [
     moq: "500 units",
     leadTime: "7–10 days",
     certifications: ["USDA Organic", "JAS Certified", "Fair Trade"],
-    stage: "received",
+    stage: "samples",
+    compliance_verified: false,
+    inspected: false,
     submittedDate: "Mar 11, 2026",
     lastUpdated: "2 hours ago",
     image: "https://images.unsplash.com/photo-1728977627308-1100ae430cef?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxvcmdhbmljJTIwaGVyYmFsJTIwdGVhJTIwcHJvZHVjdCUyMHBhY2thZ2luZ3xlbnwxfHx8fDE3NzM0MDEyMTZ8MA&ixlib=rb-4.1.0&q=80&w=1080",
@@ -93,12 +98,10 @@ const mockListings: ListingRequest[] = [
     b2cReady: true,
     urgency: "high",
     assignments: [
-      { stage: "received", stageLabel: "Request Received", assignedWorker: mockWorkers[0], status: "in-progress" },
-      { stage: "sample_pickup", stageLabel: "Sample Pickup", assignedWorker: mockWorkers[1], status: "pending" },
-      { stage: "quality_testing", stageLabel: "Quality Testing", assignedWorker: mockWorkers[3], status: "pending" },
-      { stage: "legal_review", stageLabel: "Legal Clearance", status: "pending" },
-      { stage: "photography", stageLabel: "Photography", assignedWorker: mockWorkers[5], status: "pending" },
-      { stage: "published", stageLabel: "Published", status: "pending" },
+      { stage: "samples", stageLabel: "Sample Submission", assignedWorker: mockWorkers[0], status: "in-progress" },
+      { stage: "compliance", stageLabel: "Compliance Review", assignedWorker: mockWorkers[1], status: "pending" },
+      { stage: "inspection", stageLabel: "Quality Inspection", assignedWorker: mockWorkers[3], status: "pending" },
+      { stage: "live", stageLabel: "Go Live", assignedWorker: mockWorkers[5], status: "pending" },
     ],
     auditLog: mockAuditLog.slice(0, 2),
     costs: { logistics: 85, testing: 120, platform: 50, photography: 40, total: 295 },
@@ -116,7 +119,10 @@ const mockListings: ListingRequest[] = [
     moq: "1,000 units",
     leadTime: "14–21 days",
     certifications: ["ISO 9001", "CE Marked", "UL Listed"],
-    stage: "quality_testing",
+    stage: "inspection",
+    compliance_verified: true,
+    inspected: false,
+    inspector_name: "Kenji Sato",
     submittedDate: "Mar 5, 2026",
     lastUpdated: "30 min ago",
     image: "https://images.unsplash.com/photo-1731317734838-12da6c9a6139?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxpbmR1c3RyaWFsJTIwZmlsdGVyJTIwbWV0YWwlMjBwcm9kdWN0fGVufDF8fHx8MTc3MzQwMTIxN3ww&ixlib=rb-4.1.0&q=80&w=1080",
@@ -126,12 +132,10 @@ const mockListings: ListingRequest[] = [
     b2cReady: false,
     urgency: "normal",
     assignments: [
-      { stage: "received", stageLabel: "Request Received", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Mar 5, 2026" },
-      { stage: "sample_pickup", stageLabel: "Sample Pickup", assignedWorker: mockWorkers[1], status: "completed", completedDate: "Mar 7, 2026" },
-      { stage: "quality_testing", stageLabel: "Quality Testing", assignedWorker: mockWorkers[3], status: "in-progress", scheduledDate: "Mar 13, 2026" },
-      { stage: "legal_review", stageLabel: "Legal Clearance", status: "pending" },
-      { stage: "photography", stageLabel: "Photography", assignedWorker: mockWorkers[5], status: "pending" },
-      { stage: "published", stageLabel: "Published", status: "pending" },
+      { stage: "samples", stageLabel: "Sample Submission", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Mar 5, 2026" },
+      { stage: "compliance", stageLabel: "Compliance Review", assignedWorker: mockWorkers[1], status: "completed", completedDate: "Mar 7, 2026" },
+      { stage: "inspection", stageLabel: "Quality Inspection", assignedWorker: mockWorkers[3], status: "in-progress", scheduledDate: "Mar 13, 2026" },
+      { stage: "live", stageLabel: "Go Live", assignedWorker: mockWorkers[5], status: "pending" },
     ],
     auditLog: mockAuditLog,
     costs: { logistics: 95, testing: 180, platform: 50, photography: 40, total: 365 },
@@ -149,7 +153,7 @@ const mockListings: ListingRequest[] = [
     moq: "200 units",
     leadTime: "10–14 days",
     certifications: ["RoHS", "CE", "FCC", "Energy Star"],
-    stage: "legal_review",
+    stage: "compliance",
     submittedDate: "Feb 28, 2026",
     lastUpdated: "1 day ago",
     image: "https://images.unsplash.com/photo-1587569087747-addba755bda6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxMRUQlMjBsaWdodCUyMHBhbmVsJTIwZWxlY3Ryb25pY3N8ZW58MXx8fHwxNzczNDAxMjE3fDA&ixlib=rb-4.1.0&q=80&w=1080",
@@ -161,12 +165,10 @@ const mockListings: ListingRequest[] = [
     b2cReady: true,
     urgency: "normal",
     assignments: [
-      { stage: "received", stageLabel: "Request Received", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Feb 28, 2026" },
-      { stage: "sample_pickup", stageLabel: "Sample Pickup", assignedWorker: mockWorkers[7], status: "completed", completedDate: "Mar 2, 2026" },
-      { stage: "quality_testing", stageLabel: "Quality Testing", assignedWorker: mockWorkers[4], status: "completed", completedDate: "Mar 6, 2026" },
-      { stage: "legal_review", stageLabel: "Legal Clearance", status: "assigned", scheduledDate: "Mar 10, 2026" },
-      { stage: "photography", stageLabel: "Photography", assignedWorker: mockWorkers[5], status: "pending" },
-      { stage: "published", stageLabel: "Published", status: "pending" },
+      { stage: "samples", stageLabel: "Sample Submission", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Feb 28, 2026" },
+      { stage: "compliance", stageLabel: "Compliance Review", status: "assigned", scheduledDate: "Mar 10, 2026" },
+      { stage: "inspection", stageLabel: "Quality Inspection", assignedWorker: mockWorkers[4], status: "pending" },
+      { stage: "live", stageLabel: "Go Live", assignedWorker: mockWorkers[5], status: "pending" },
     ],
     auditLog: mockAuditLog,
     costs: { logistics: 65, testing: 150, platform: 50, photography: 40, total: 305 },
@@ -184,7 +186,10 @@ const mockListings: ListingRequest[] = [
     moq: "300 packs",
     leadTime: "5–7 days",
     certifications: ["FDA Registered", "Halal", "Gluten-Free Certified"],
-    stage: "photography",
+    stage: "live",
+    compliance_verified: true,
+    inspected: true,
+    inspector_name: "Sarah Chen",
     submittedDate: "Feb 20, 2026",
     lastUpdated: "3 hours ago",
     image: "https://images.unsplash.com/photo-1704650311540-e3b58fa6dc74?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwcm90ZWluJTIwZW5lcmd5JTIwYmFyJTIwZm9vZCUyMHByb2R1Y3R8ZW58MXx8fHwxNzczNDAxMjE4fDA&ixlib=rb-4.1.0&q=80&w=1080",
@@ -195,12 +200,10 @@ const mockListings: ListingRequest[] = [
     b2cReady: true,
     urgency: "urgent",
     assignments: [
-      { stage: "received", stageLabel: "Request Received", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Feb 20, 2026" },
-      { stage: "sample_pickup", stageLabel: "Sample Pickup", assignedWorker: mockWorkers[1], status: "completed", completedDate: "Feb 22, 2026" },
-      { stage: "quality_testing", stageLabel: "Quality Testing", assignedWorker: mockWorkers[3], status: "completed", completedDate: "Feb 26, 2026" },
-      { stage: "legal_review", stageLabel: "Legal Clearance", status: "completed", completedDate: "Mar 4, 2026" },
-      { stage: "photography", stageLabel: "Photography", assignedWorker: mockWorkers[5], status: "in-progress", scheduledDate: "Mar 13, 2026" },
-      { stage: "published", stageLabel: "Published", status: "pending" },
+      { stage: "samples", stageLabel: "Sample Submission", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Feb 20, 2026" },
+      { stage: "compliance", stageLabel: "Compliance Review", status: "completed", completedDate: "Mar 4, 2026" },
+      { stage: "inspection", stageLabel: "Quality Inspection", assignedWorker: mockWorkers[3], status: "completed", completedDate: "Feb 26, 2026" },
+      { stage: "live", stageLabel: "Go Live", assignedWorker: mockWorkers[5], status: "in-progress", scheduledDate: "Mar 13, 2026" },
     ],
     auditLog: mockAuditLog,
     costs: { logistics: 45, testing: 200, platform: 50, photography: 40, total: 335 },
@@ -218,7 +221,7 @@ const mockListings: ListingRequest[] = [
     moq: "50 sheets",
     leadTime: "21–30 days",
     certifications: ["AS9100", "ISO 14001", "REACH Compliant"],
-    stage: "sample_pickup",
+    stage: "samples",
     submittedDate: "Mar 9, 2026",
     lastUpdated: "5 hours ago",
     image: "https://images.unsplash.com/photo-1593499881934-2a652f450a85?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjb21wb3NpdGUlMjBtYXRlcmlhbCUyMHNoZWV0JTIwaW5kdXN0cmlhbHxlbnwxfHx8fDE3NzM0MDEyMTh8MA&ixlib=rb-4.1.0&q=80&w=1080",
@@ -226,12 +229,10 @@ const mockListings: ListingRequest[] = [
     b2cReady: false,
     urgency: "normal",
     assignments: [
-      { stage: "received", stageLabel: "Request Received", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Mar 9, 2026" },
-      { stage: "sample_pickup", stageLabel: "Sample Pickup", assignedWorker: mockWorkers[1], status: "assigned", scheduledDate: "Mar 13, 2026" },
-      { stage: "quality_testing", stageLabel: "Quality Testing", assignedWorker: mockWorkers[4], status: "pending" },
-      { stage: "legal_review", stageLabel: "Legal Clearance", status: "pending" },
-      { stage: "photography", stageLabel: "Photography", status: "pending" },
-      { stage: "published", stageLabel: "Published", status: "pending" },
+      { stage: "samples", stageLabel: "Sample Submission", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Mar 9, 2026" },
+      { stage: "compliance", stageLabel: "Compliance Review", assignedWorker: mockWorkers[1], status: "assigned", scheduledDate: "Mar 13, 2026" },
+      { stage: "inspection", stageLabel: "Quality Inspection", assignedWorker: mockWorkers[4], status: "pending" },
+      { stage: "live", stageLabel: "Go Live", status: "pending" },
     ],
     auditLog: mockAuditLog.slice(0, 3),
     costs: { logistics: 220, testing: 350, platform: 75, photography: 40, total: 685 },
@@ -249,7 +250,7 @@ const mockListings: ListingRequest[] = [
     moq: "100 sets",
     leadTime: "14–18 days",
     certifications: ["FDA Food Contact", "Lead-Free Certified"],
-    stage: "published",
+    stage: "done",
     submittedDate: "Feb 10, 2026",
     lastUpdated: "Published Feb 24",
     image: "https://images.unsplash.com/photo-1767476106226-ff48f2e12286?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxoYW5kbWFkZSUyMGNlcmFtaWMlMjBwb3R0ZXJ5JTIwYXJ0aXNhbnxlbnwxfHx8fDE3NzM0MDEyMTh8MA&ixlib=rb-4.1.0&q=80&w=1080",
@@ -260,12 +261,11 @@ const mockListings: ListingRequest[] = [
     b2cReady: true,
     urgency: "normal",
     assignments: [
-      { stage: "received", stageLabel: "Request Received", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Feb 10, 2026" },
-      { stage: "sample_pickup", stageLabel: "Sample Pickup", assignedWorker: mockWorkers[2], status: "completed", completedDate: "Feb 13, 2026" },
-      { stage: "quality_testing", stageLabel: "Quality Testing", assignedWorker: mockWorkers[3], status: "completed", completedDate: "Feb 17, 2026" },
-      { stage: "legal_review", stageLabel: "Legal Clearance", status: "completed", completedDate: "Feb 20, 2026" },
-      { stage: "photography", stageLabel: "Photography", assignedWorker: mockWorkers[5], status: "completed", completedDate: "Feb 23, 2026" },
-      { stage: "published", stageLabel: "Published", status: "completed", completedDate: "Feb 24, 2026" },
+      { stage: "samples", stageLabel: "Sample Submission", assignedWorker: mockWorkers[0], status: "completed", completedDate: "Feb 10, 2026" },
+      { stage: "compliance", stageLabel: "Compliance Review", assignedWorker: mockWorkers[3], status: "completed", completedDate: "Feb 20, 2026" },
+      { stage: "inspection", stageLabel: "Quality Inspection", assignedWorker: mockWorkers[3], status: "completed", completedDate: "Feb 17, 2026" },
+      { stage: "live", stageLabel: "Go Live", assignedWorker: mockWorkers[5], status: "completed", completedDate: "Feb 23, 2026" },
+      { stage: "done", stageLabel: "Completed", status: "completed", completedDate: "Feb 24, 2026" },
     ],
     auditLog: mockAuditLog,
     costs: { logistics: 55, testing: 90, platform: 50, photography: 40, total: 235 },
@@ -405,6 +405,29 @@ function ListingCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="flex gap-1">
+                    {listing.compliance_verified ? (
+                      <div className="w-4 h-4 rounded-full bg-[#30A46C]/10 flex items-center justify-center" title="Compliance Verified">
+                        <ShieldCheck size={10} className="text-[#30A46C]" />
+                      </div>
+                    ) : (
+                      <div className="w-4 h-4 rounded-full bg-[#D97706]/10 flex items-center justify-center" title="Compliance Pending">
+                        <Shield size={10} className="text-[#D97706]" />
+                      </div>
+                    )}
+                    {listing.inspected ? (
+                      <div className="w-4 h-4 rounded-full bg-[#30A46C]/10 flex items-center justify-center" title="Inspected">
+                        <CheckCircle2 size={10} className="text-[#30A46C]" />
+                      </div>
+                    ) : (
+                      <div className="w-4 h-4 rounded-full bg-[#D97706]/10 flex items-center justify-center" title={listing.inspector_name ? `Inspector Assigned: ${listing.inspector_name}` : "Inspection Pending"}>
+                        <Search size={10} className="text-[#D97706]" />
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[0.625rem] font-medium text-muted-foreground/40 tabular-nums">#{listing.id}</span>
+                </div>
                 <h3 className="text-foreground tracking-tight truncate">{listing.productName}</h3>
                 <p className="text-muted-foreground text-[0.8125rem] mt-0.5 flex items-center gap-1.5">
                   <User size={12} />
@@ -442,7 +465,7 @@ function ListingCard({
                   {stage.label}
                 </span>
               </div>
-              {listing.stage !== "published" && (
+              {listing.stage !== "done" && (
                 <span className="text-[0.6875rem] text-primary flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   {nextAction} <ArrowRight size={11} />
                 </span>
@@ -457,12 +480,13 @@ function ListingCard({
 
 function getNextAction(stage: ListingStage): string {
   switch (stage) {
-    case "received": return "Review & Accept";
-    case "sample_pickup": return "Schedule Pickup";
-    case "quality_testing": return "Rate Quality";
-    case "legal_review": return "Check Status";
-    case "photography": return "Upload Photos";
-    case "published": return "View Listing";
+    case "samples": return "Collect Sample";
+    case "compliance": return "Verify Documents";
+    case "inspection": return "Rate Quality";
+    case "inbound": return "Receive Stock";
+    case "live": return "View Listing";
+    case "done": return "Archived";
+    default: return "Review";
   }
 }
 
@@ -546,7 +570,7 @@ function ListingDetail({
           </div>
 
           {/* Current Stage Action Card — THE focal point */}
-          {listing.stage !== "published" && (
+          {listing.stage !== "done" && (
             <motion.div
               className="rounded-3xl p-6 border-2 relative overflow-hidden"
               style={{ borderColor: `${currentStageObj.color}20`, background: `${currentStageObj.color}03` }}
@@ -567,14 +591,14 @@ function ListingDetail({
               </div>
 
               {/* Stage-specific content */}
-              {listing.stage === "received" && (
+              {listing.stage === "samples" && (
                 <div className="space-y-4">
                   <p className="text-[0.8125rem] text-muted-foreground leading-relaxed">
-                    Review the product details below. If everything looks good, accept this listing to schedule a sample pickup from the seller.
+                    Review product details and coordinate sample collection. Confirming pickup will move this listing to compliance review.
                   </p>
                   <div className="flex gap-2">
-                    <BounceButton variant="primary" size="md" icon={<ThumbsUp size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={3}>
-                      Accept & Schedule Pickup
+                    <BounceButton variant="primary" size="md" icon={<Truck size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={3}>
+                      Confirm Sample Received
                     </BounceButton>
                     <BounceButton variant="secondary" size="md" icon={<MessageCircle size={16} />}>
                       Ask Seller
@@ -583,30 +607,23 @@ function ListingDetail({
                 </div>
               )}
 
-              {listing.stage === "sample_pickup" && (
+              {listing.stage === "compliance" && (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-muted/20">
-                    <MapPin size={16} className="text-muted-foreground flex-shrink-0" />
-                    <div>
-                      <p className="text-[0.8125rem] text-foreground">Pickup from: {listing.seller}</p>
-                      <p className="text-[0.6875rem] text-muted-foreground">{listing.sellerLocation}</p>
-                    </div>
-                  </div>
                   <p className="text-[0.8125rem] text-muted-foreground leading-relaxed">
-                    Assign a driver to collect the product sample. The seller has been notified and the sample is being prepared.
+                    Verify compliance documents, HS codes, and export certifications. This step ensures the product is legally ready for international trade.
                   </p>
                   <div className="flex gap-2">
-                    <BounceButton variant="primary" size="md" icon={<Truck size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={2}>
-                      Confirm Sample Collected
+                    <BounceButton variant="primary" size="md" icon={<ShieldCheck size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={4}>
+                      Verify & Approve Compliance
                     </BounceButton>
-                    <BounceButton variant="secondary" size="md" icon={<Calendar size={16} />}>
-                      Reschedule
+                    <BounceButton variant="secondary" size="md" icon={<AlertCircle size={16} />}>
+                      Request Documents
                     </BounceButton>
                   </div>
                 </div>
               )}
 
-              {listing.stage === "quality_testing" && (
+              {listing.stage === "inspection" && (
                 <div className="space-y-5">
                   <p className="text-[0.8125rem] text-muted-foreground leading-relaxed">
                     Test the sample and provide your quality assessment. This rating determines if the product meets our marketplace standards.
@@ -644,11 +661,11 @@ function ListingDetail({
                     <BounceButton
                       variant="primary"
                       size="md"
-                      icon={<Send size={16} />}
+                      icon={<Truck size={16} />}
                       onClick={() => setShowAdvanceConfirm(true)}
                       energyWeight={3}
                     >
-                      Submit & Send to Legal
+                      Approve for Inbound
                     </BounceButton>
                     <BounceButton variant="secondary" size="md" icon={<ThumbsDown size={16} />}>
                       Reject Sample
@@ -657,86 +674,55 @@ function ListingDetail({
                 </div>
               )}
 
-              {listing.stage === "legal_review" && (
+              {listing.stage === "inbound" && (
                 <div className="space-y-4">
-                  {listing.legalStatus === "pending" && (
-                    <>
-                      <div className="flex items-center gap-3 p-4 rounded-2xl bg-[#D97706]/5 border border-[#D97706]/10">
-                        <Clock size={18} className="text-[#D97706] flex-shrink-0" />
-                        <div>
-                          <p className="text-[0.8125rem] text-foreground">Waiting for Legal Department</p>
-                          <p className="text-[0.6875rem] text-muted-foreground">Sent for review on Mar 10, 2026 · Usually takes 1–2 business days</p>
-                        </div>
-                      </div>
-                      {listing.legalNotes && (
-                        <div className="p-3.5 rounded-2xl bg-muted/20">
-                          <p className="text-[0.6875rem] text-muted-foreground mb-1">Legal Note</p>
-                          <p className="text-[0.8125rem] text-foreground">{listing.legalNotes}</p>
-                        </div>
-                      )}
-                      <div className="flex gap-2">
-                        <BounceButton variant="secondary" size="md" icon={<MessageCircle size={16} />}>
-                          Message Legal Team
-                        </BounceButton>
-                      </div>
-                    </>
-                  )}
-                  {listing.legalStatus === "approved" && (
-                    <>
-                      <div className="flex items-center gap-3 p-4 rounded-2xl bg-[#30A46C]/5 border border-[#30A46C]/10">
-                        <CheckCircle2 size={18} className="text-[#30A46C] flex-shrink-0" />
-                        <div>
-                          <p className="text-[0.8125rem] text-foreground">Approved by Legal</p>
-                          <p className="text-[0.6875rem] text-muted-foreground">
-                            Cleared for export to: {listing.legalMarkets?.join(", ")}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <BounceButton variant="primary" size="md" icon={<Camera size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={3}>
-                          Proceed to Photography
-                        </BounceButton>
-                      </div>
-                    </>
-                  )}
+                  <p className="text-[0.8125rem] text-muted-foreground leading-relaxed">
+                    Coordinate with the seller to ship inventory to our warehouse. Once received and verified, the product can go live.
+                  </p>
+                  <div className="flex gap-2">
+                    <BounceButton variant="primary" size="md" icon={<Boxes size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={4}>
+                      Confirm Receipt & Verify Stock
+                    </BounceButton>
+                    <BounceButton variant="secondary" size="md" icon={<MapPin size={16} />}>
+                      Assign Warehouse
+                    </BounceButton>
+                  </div>
                 </div>
               )}
 
-              {listing.stage === "photography" && (
+              {listing.stage === "live" && (
                 <div className="space-y-4">
+                  <div className="flex flex-col gap-3 mb-4">
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-muted/20 border border-border/30">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck size={16} className={listing.compliance_verified ? "text-[#30A46C]" : "text-muted-foreground/30"} />
+                        <span className="text-[0.8125rem]">Compliance Verified</span>
+                      </div>
+                      <StatusPill status={listing.compliance_verified ? "success" : "pending"} label={listing.compliance_verified ? "Verified" : "Pending"} />
+                    </div>
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-muted/20 border border-border/30">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 size={16} className={listing.inspected ? "text-[#30A46C]" : "text-muted-foreground/30"} />
+                        <span className="text-[0.8125rem]">Quality Inspected</span>
+                      </div>
+                      <StatusPill status={listing.inspected ? "success" : "pending"} label={listing.inspected ? "Completed" : "Pending"} />
+                    </div>
+                  </div>
+
                   <p className="text-[0.8125rem] text-muted-foreground leading-relaxed">
-                    Upload product photographs for the marketplace listing. Aim for clean, well-lit images showing the product from multiple angles.
+                    Final review before publishing to the marketplace. Ensure images are high quality and details are accurate.
                   </p>
 
-                  {/* Upload Area */}
-                  <div className="border-2 border-dashed border-border/40 rounded-2xl p-8 flex flex-col items-center gap-3 hover:border-primary/30 hover:bg-primary/2 transition-all cursor-pointer">
-                    <div className="w-14 h-14 rounded-2xl bg-muted/30 flex items-center justify-center">
-                      <Upload size={24} className="text-muted-foreground" />
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[0.8125rem] text-foreground">Drop photos here or click to browse</p>
-                      <p className="text-[0.6875rem] text-muted-foreground mt-0.5">JPG, PNG up to 10MB · Recommended: 2000×2000px</p>
-                    </div>
-                  </div>
-
-                  {/* Mock uploaded photos */}
-                  <div className="grid grid-cols-3 gap-3">
-                    {[listing.image].map((img, i) => (
-                      <div key={i} className="aspect-square rounded-2xl overflow-hidden bg-muted/20 relative group/img">
-                        <ImageWithFallback src={img} alt="Product" className="w-full h-full object-cover" />
-                        <div className="absolute inset-0 bg-black/0 group-hover/img:bg-black/20 transition-colors flex items-center justify-center">
-                          <Eye size={20} className="text-white opacity-0 group-hover/img:opacity-100 transition-opacity" />
-                        </div>
-                      </div>
-                    ))}
-                    <div className="aspect-square rounded-2xl border-2 border-dashed border-border/30 flex items-center justify-center cursor-pointer hover:border-primary/30 transition-colors">
-                      <Camera size={20} className="text-muted-foreground/30" />
-                    </div>
-                  </div>
-
                   <div className="flex gap-2">
-                    <BounceButton variant="primary" size="md" icon={<Sparkles size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={5}>
-                      Publish Listing
+                    <BounceButton 
+                      variant="primary" 
+                      size="md" 
+                      icon={<Sparkles size={16} />} 
+                      onClick={() => setShowAdvanceConfirm(true)} 
+                      energyWeight={5}
+                      disabled={!listing.compliance_verified || !listing.inspected}
+                    >
+                      Go Live & Notify Seller
                     </BounceButton>
                     <BounceButton variant="secondary" size="md" icon={<Eye size={16} />}>
                       Preview
@@ -748,7 +734,7 @@ function ListingDetail({
           )}
 
           {/* Published Success */}
-          {listing.stage === "published" && (
+          {listing.stage === "done" && (
             <motion.div
               className="rounded-3xl p-8 bg-[#30A46C]/5 border border-[#30A46C]/15 text-center"
               initial={{ opacity: 0, scale: 0.95 }}

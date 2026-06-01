@@ -156,6 +156,9 @@ export function SellerDashboard() {
                     unitPrice: Number(o.unit_price),
                     buyer: o.buyer,
                     destination: o.destination,
+                    shippingMethod: o.shipping_method,
+                    shippingCost: o.shipping_cost,
+                    currency: o.currency,
                     message: o.message,
                     capacityPct: o.capacity_pct,
                     availableBy: o.available_by,
@@ -819,6 +822,11 @@ export function SellerDashboard() {
                                                             </p>
                                                             {/* Badge removed — section divider handles categorization */}
                                                         </div>
+                                                        {(order.shippingMethod || Number(order.shippingCost || 0) > 0) ? (
+                                                            <p className="text-[11px] font-medium text-[#1A1A1A]/30 mt-1 truncate">
+                                                                Shipped via: {String(order.shippingMethod || '—')} ({String(order.currency || 'USD')} {Number(order.shippingCost || 0).toLocaleString()})
+                                                            </p>
+                                                        ) : null}
                                                     </div>
                                                 </div>
 

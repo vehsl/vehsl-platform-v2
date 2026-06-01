@@ -1,8 +1,10 @@
 from decimal import Decimal
 
+from django.db.models import F, Sum, Value, IntegerField
+from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
-from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price, WarehouseStock
 from apps.catalog.serializers import ProductMediaSerializer
 
 from .models import (
@@ -185,6 +187,8 @@ class OrderCreateSerializer(serializers.Serializer):
     items = serializers.ListField(child=OrderCreateItemInputSerializer(), allow_empty=False)
     payment_method = serializers.ChoiceField(choices=Order.PaymentMethod.choices, required=False)
     address_id = serializers.IntegerField(required=False)
+    shipping_method = serializers.CharField(required=False, allow_blank=True)
+    shipping_cost = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
 
     def validate_items(self, items):
         seen = set()
@@ -260,6 +264,8 @@ class OrderCreateSerializer(serializers.Serializer):
             payment_method=payment_method,
             payment_status=payment_status,
             shipping_address=shipping_address,
+            shipping_method=validated_data.get("shipping_method") or "",
+            shipping_cost=validated_data.get("shipping_cost") or Decimal("0"),
         )
 
         total = Decimal("0")
@@ -273,6 +279,16 @@ class OrderCreateSerializer(serializers.Serializer):
             unit_price, resolved_currency = resolve_unit_price(p, var, qty)
             if unit_price is None:
                 raise serializers.ValidationError("Could not resolve unit price.")
+
+            # Real-time stock check
+            stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
+            available = stock_qs.aggregate(
+                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
+            )["total"]
+
+            if qty > available:
+                raise serializers.ValidationError(f"Not enough stock for {p.name}. Available: {available}")
+
             if resolved_currency and resolved_currency != currency:
                 raise serializers.ValidationError("Pricing tier currency mismatch.")
             OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=unit_price)
@@ -304,6 +320,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "payment_method",
             "payment_status",
             "shipping_address",
+            "shipping_method",
+            "shipping_cost",
             "deadline_at",
             "extension_reason",
             "extension_fee",

@@ -3,9 +3,10 @@ from rest_framework import serializers
 import json
 
 from django.db.models import Q
+from django.core.exceptions import ObjectDoesNotExist
 from django.core.files.storage import default_storage
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark, Warehouse, WarehouseStock
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark, Warehouse, WarehouseStock, InboundRequest, InboundRequestItem
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -238,6 +239,8 @@ class ProductSerializer(serializers.ModelSerializer):
     variations = ProductVariationSerializer(many=True, read_only=True)
     pricing_tiers = PricingTierSerializer(many=True, read_only=True)
     detail_config = serializers.JSONField(required=False)
+    quantity_available = serializers.SerializerMethodField()
+    stock_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -273,9 +276,24 @@ class ProductSerializer(serializers.ModelSerializer):
             "vehsl_rating",
             "seller_rating",
             "ip_protection_level",
+            "quantity_available",
+            "stock_status",
             "created_at",
             "updated_at",
         ]
+
+    def get_quantity_available(self, obj: Product):
+        from django.db.models import Sum, F, Value, IntegerField
+        from django.db.models.functions import Coalesce
+
+        res = obj.warehouse_stocks.filter(deleted_at__isnull=True).aggregate(
+            total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
+        )
+        return max(0, res["total"])
+
+    def get_stock_status(self, obj: Product):
+        avail = self.get_quantity_available(obj)
+        return "in_stock" if avail > 0 else "out_of_stock"
 
     def get_seller_name(self, obj: Product):
         s = getattr(obj, "seller", None)
@@ -468,12 +486,24 @@ class ListingRequestPhotoSerializer(serializers.ModelSerializer):
 
 class ListingRequestSerializer(serializers.ModelSerializer):
     photos = ListingRequestPhotoSerializer(many=True, read_only=True)
+    inspector_name = serializers.SerializerMethodField()
+    inbound_request_id = serializers.SerializerMethodField()
+    inbound_request_status = serializers.SerializerMethodField()
+    inbound_request_warehouse_name = serializers.SerializerMethodField()
 
     class Meta:
         model = ListingRequest
         fields = [
             "id",
             "stage",
+            "compliance_verified",
+            "compliance_notes",
+            "inspected",
+            "inspector",
+            "inspector_name",
+            "inbound_request_id",
+            "inbound_request_status",
+            "inbound_request_warehouse_name",
             "rating",
             "product_name",
             "company_name",
@@ -495,9 +525,38 @@ class ListingRequestSerializer(serializers.ModelSerializer):
             "photos",
         ]
 
+    def get_inspector_name(self, obj: ListingRequest):
+        inspector = getattr(obj, "inspector", None)
+        if not inspector:
+            return ""
+        full_name = f"{(getattr(inspector, 'first_name', '') or '').strip()} {(getattr(inspector, 'last_name', '') or '').strip()}".strip()
+        return full_name or (getattr(inspector, "email", "") or "")
+
+    def get_inbound_request_id(self, obj: ListingRequest):
+        try:
+            inbound = getattr(obj, "inbound_request", None)
+        except ObjectDoesNotExist:
+            inbound = None
+        return getattr(inbound, "id", None) if inbound else None
+
+    def get_inbound_request_status(self, obj: ListingRequest):
+        try:
+            inbound = getattr(obj, "inbound_request", None)
+        except ObjectDoesNotExist:
+            inbound = None
+        return getattr(inbound, "status", "") if inbound else ""
+
+    def get_inbound_request_warehouse_name(self, obj: ListingRequest):
+        try:
+            inbound = getattr(obj, "inbound_request", None)
+        except ObjectDoesNotExist:
+            inbound = None
+        wh = getattr(inbound, "warehouse", None) if inbound else None
+        return getattr(wh, "name", "") if wh else ""
+
 
 class AdminListingRequestSerializer(ListingRequestSerializer):
-    seller_id = serializers.IntegerField(source="seller_id", read_only=True)
+    seller_id = serializers.IntegerField(read_only=True)
     seller_email = serializers.CharField(source="seller.email", read_only=True)
     seller_label = serializers.SerializerMethodField()
 
@@ -896,7 +955,60 @@ class AdminProductWriteSerializer(serializers.Serializer):
             category_id = attrs.get("category_id")
             if not Category.objects.filter(id=category_id).exists():
                 raise serializers.ValidationError({"category_id": "Category not found."})
-
-        attrs["hs_code"] = (attrs.get("hs_code") or "").strip()
-
         return attrs
+
+
+class InboundRequestItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source="product.name", read_only=True)
+    variation_attributes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InboundRequestItem
+        fields = [
+            "id",
+            "product",
+            "product_name",
+            "variation",
+            "variation_attributes",
+            "quantity_expected",
+            "quantity_received",
+        ]
+
+    def get_variation_attributes(self, obj: InboundRequestItem):
+        v = getattr(obj, "variation", None)
+        if not v:
+            return {}
+        a = getattr(v, "attributes", None)
+        return a if isinstance(a, dict) else {}
+
+
+class InboundRequestSerializer(serializers.ModelSerializer):
+    items = InboundRequestItemSerializer(many=True, read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    listing_request_product_name = serializers.CharField(source="listing_request.product_name", read_only=True)
+
+    class Meta:
+        model = InboundRequest
+        fields = [
+            "id",
+            "listing_request",
+            "listing_request_product_name",
+            "seller",
+            "seller_name",
+            "warehouse",
+            "warehouse_name",
+            "status",
+            "tracking_number",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["seller", "status", "created_at", "updated_at"]
+
+    def get_seller_name(self, obj: InboundRequest):
+        s = getattr(obj, "seller", None)
+        if not s:
+            return ""
+        full = f"{(getattr(s, 'first_name', '') or '').strip()} {(getattr(s, 'last_name', '') or '').strip()}".strip()
+        return full or getattr(s, "email", "") or getattr(s, "phone", "")

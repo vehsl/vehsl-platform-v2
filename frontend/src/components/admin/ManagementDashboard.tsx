@@ -10,6 +10,8 @@ import {
   Users,
   ArrowRight,
   CheckCircle2,
+  ShieldCheck,
+  Search,
   AlertTriangle,
   Box,
   Layers,
@@ -174,11 +176,12 @@ export function ManagementDashboard() {
 
   const listingSummaryWired = useMemo(() => {
     return [
-      { stage: "Pending", count: Number(listings?.pending_products || 0), color: "#3B82F6", icon: <Package size={14} /> , path: "/admin/management/listings?status=pending"},
+      { stage: "Samples", count: Number(listings?.samples || 0), color: "#3B82F6", icon: <Package size={14} /> , path: "/admin/management/listings?mode=requests&rs=samples"},
+      { stage: "Compliance", count: Number(listings?.compliance || 0), color: "#8B5CF6", icon: <ShieldCheck size={14} /> , path: "/admin/management/listings?mode=requests&rs=compliance"},
+      { stage: "Inspection", count: Number(listings?.inspection || 0), color: "#0171E3", icon: <Search size={14} /> , path: "/admin/management/listings?mode=requests&rs=inspection"},
+      { stage: "Inbound", count: Number(listings?.inbound || 0), color: "#8B5CF6", icon: <Truck size={14} /> , path: "/admin/management/listings?mode=requests&rs=inbound"},
+      { stage: "Live", count: Number(listings?.live || 0), color: "#30A46C", icon: <CheckCircle2 size={14} /> , path: "/admin/management/listings?mode=requests&rs=live"},
       { stage: "Rejected", count: Number(listings?.rejected_products || 0), color: "#E5484D", icon: <AlertTriangle size={14} /> , path: "/admin/management/listings?status=rejected"},
-      { stage: "Missing Images", count: Number(listings?.missing_images || 0), color: "#D97706", icon: <Camera size={14} /> , path: "/admin/management/listings"},
-      { stage: "Missing Docs", count: Number(listings?.missing_docs || 0), color: "#8B5CF6", icon: <Scale size={14} /> , path: "/admin/management/listings"},
-      { stage: "Missing HS Code", count: Number(listings?.missing_hs_code || 0), color: "#0171E3", icon: <Hash size={14} /> , path: "/admin/management/listings"},
     ];
   }, [listings]);
 
