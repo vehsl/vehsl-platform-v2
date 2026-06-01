@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { Search, Package, Truck, CheckCircle2, XCircle, ChevronRight, RefreshCw, ArrowLeft } from "lucide-react";
 import { OrderApp } from "@/components/order/OrderApp";
-import { safeJsonParse } from "@/lib/utils";
+import { safeJsonParse, fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 
 type OrderStatus =
   | "created"
@@ -133,13 +133,7 @@ function readUser() {
 }
 
 function fmtMoney(currency: string, amount: string) {
-  const num = Number(amount);
-  if (!Number.isFinite(num)) return `${currency} ${amount}`;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(num);
-  } catch {
-    return `${currency} ${num.toFixed(2)}`;
-  }
+  return fmtMoneyUtil(amount, currency);
 }
 
 function statusLabel(status: OrderStatus) {

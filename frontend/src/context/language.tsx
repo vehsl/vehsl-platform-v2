@@ -87,6 +87,12 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
       const stored = window.sessionStorage.getItem(GUEST_STORAGE_KEY) as AppLanguage | null;
       if (stored === "en" || stored === "zh") setLanguageState(stored);
     } catch {}
+
+    try {
+      const raw = (window.localStorage.getItem("vehsl.platform_language") || "").toString().trim().toLowerCase();
+      if (raw === "en" || raw === "english") setLanguageState("en");
+      if (raw === "zh" || raw === "chinese" || raw === "中文") setLanguageState("zh");
+    } catch {}
   }, []);
 
   useEffect(() => {

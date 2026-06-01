@@ -725,6 +725,8 @@ export function VerificationCenter() {
   const [profiles, setProfiles] = useState<VerificationProfile[]>([]);
   const [userStats, setUserStats] = useState<any>(null);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersCount, setUsersCount] = useState<number | null>(null);
   const [releaseLoading, setReleaseLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [missingGroups, setMissingGroups] = useState<string[] | null>(null);
@@ -825,6 +827,11 @@ export function VerificationCenter() {
   };
 
   const toCount = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const usersPageSize = 10;
+
+  useEffect(() => {
+    setUsersPage(1);
+  }, [filterType, filterStatus]);
 
   const refreshUserStats = async () => {
     try {
@@ -861,8 +868,12 @@ export function VerificationCenter() {
       const params = new URLSearchParams();
       if (filterType !== "all") params.set("type", filterType);
       if (filterStatus !== "all") params.set("status", filterStatus);
+      params.set("page", String(Math.max(1, usersPage)));
+      params.set("page_size", String(usersPageSize));
       const list = await fetchJson(`/api/v1/admin/verification/users/?${params.toString()}`);
       const rows = Array.isArray(list) ? list : Array.isArray(list?.results) ? list.results : [];
+      const cnt = typeof list?.count === "number" ? Number(list.count) : Array.isArray(list) ? list.length : null;
+      setUsersCount(Number.isFinite(cnt as any) ? (cnt as number) : null);
       setProfiles(
         rows.map((p: any) => ({
           ...p,
@@ -870,6 +881,7 @@ export function VerificationCenter() {
         }))
       );
     } catch (e: any) {
+      setUsersCount(null);
       setError(e?.message || "Failed to load users.");
     } finally {
       setUsersLoading(false);
@@ -883,9 +895,13 @@ export function VerificationCenter() {
 
   useEffect(() => {
     if (activeTab === "users") refreshUsers();
-  }, [activeTab, filterType, filterStatus]);
+  }, [activeTab, filterType, filterStatus, usersPage]);
 
   const filtered = useMemo(() => profiles, [profiles]);
+  const usersTotal = typeof usersCount === "number" ? usersCount : filtered.length;
+  const usersTotalPages = Math.max(1, Math.ceil(Math.max(0, usersTotal) / usersPageSize));
+  const usersStartIdx = usersTotal === 0 ? 0 : (usersPage - 1) * usersPageSize + 1;
+  const usersEndIdx = usersTotal === 0 ? 0 : Math.min(usersPage * usersPageSize, usersTotal);
 
   const pendingCount =
     toCount(userStats?.pending_review) ||
@@ -1355,6 +1371,34 @@ export function VerificationCenter() {
                   </div>
                 </motion.div>
               ))}
+              {!usersLoading && usersTotal > 0 && (
+                <div className="pt-2 flex items-center justify-between gap-3 text-[0.75rem] text-muted-foreground/60">
+                  <div>
+                    {usersCount != null ? `Showing ${usersStartIdx}-${usersEndIdx} of ${usersTotal}` : `Showing ${usersStartIdx}-${usersEndIdx}`}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 disabled:opacity-50"
+                      onClick={() => setUsersPage((p) => Math.max(1, p - 1))}
+                      disabled={usersPage <= 1}
+                    >
+                      Prev
+                    </button>
+                    <div className="px-2">
+                      Page {usersPage} / {usersTotalPages}
+                    </div>
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl bg-muted/20 hover:bg-muted/30 disabled:opacity-50"
+                      onClick={() => setUsersPage((p) => Math.min(usersTotalPages, p + 1))}
+                      disabled={usersPage >= usersTotalPages}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}

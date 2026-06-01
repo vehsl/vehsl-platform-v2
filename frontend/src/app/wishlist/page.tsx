@@ -6,7 +6,7 @@ import { Toaster, toast } from "sonner";
 import { Heart, Search, Trash2, RefreshCw, ArrowLeft } from "lucide-react";
 import { ImageWithFallback } from "@/components/landing/figma/ImageWithFallback";
 import { authedFetch, fetchJsonAuthed } from "@/lib/api";
-import { safeJsonParse } from "@/lib/utils";
+import { safeJsonParse, fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 
 type WishlistItem = {
   id: number;
@@ -30,13 +30,7 @@ type ProductSearchResult = {
 };
 
 function fmtMoney(currency: string, amount: string) {
-  const num = Number(amount);
-  if (!Number.isFinite(num)) return `${currency} ${amount}`;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD" }).format(num);
-  } catch {
-    return `${currency} ${amount}`;
-  }
+  return fmtMoneyUtil(amount, currency);
 }
 
 export default function Page() {

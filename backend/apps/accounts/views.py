@@ -10,6 +10,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from django.conf import settings as django_settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.db.models import CharField, Count, DecimalField, Q, Sum
 from django.utils import timezone
@@ -23,6 +24,11 @@ import hashlib
 import hmac
 import time
 import csv
+import json
+import re
+import urllib.request
+import urllib.parse
+import urllib.error
 
 from django.core.files.storage import default_storage
 from django.contrib.auth.hashers import make_password, check_password
@@ -38,6 +44,7 @@ from django.db.models.functions import Coalesce, TruncDay, TruncHour, TruncMonth
 from .models import (
     AdminProfile,
     AdminPlatformSettings,
+    admin_platform_settings_defaults,
     AdminUiNotificationState,
     AuditLog,
     BuyerAddress,
@@ -76,6 +83,7 @@ from .serializers import (
     UserSerializer,
     UserSettingsSerializer,
     VehslTokenObtainPairSerializer,
+    validate_password_for_platform,
 )
 from .dashboard_serializers import (
     SellerDashboardMetricsSerializer,
@@ -304,37 +312,31 @@ class AdminPlatformSettingsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def _defaults(self):
-        return {
-            "general": {
-                "platform_name": "Vehsl",
-                "default_currency": "USD",
-                "timezone": "UTC",
-                "language": "English",
-            },
-            "notifications": {
-                "email_notifications": True,
-                "push_notifications": True,
-                "sms_alerts": False,
-                "daily_digest": True,
-            },
-            "security": {
-                "two_factor_auth": True,
-                "session_timeout_minutes": 30,
-                "ip_whitelisting": False,
-                "password_policy": "strong_12_chars",
-            },
-        }
+        return admin_platform_settings_defaults()
 
     def _integrations(self):
-        stripe = bool(getattr(django_settings, "STRIPE_SECRET_KEY", "") or getattr(django_settings, "STRIPE_API_KEY", ""))
-        sendgrid = bool(getattr(django_settings, "SENDGRID_API_KEY", ""))
-        twilio = bool(getattr(django_settings, "TWILIO_AUTH_TOKEN", "") and getattr(django_settings, "TWILIO_ACCOUNT_SID", ""))
-        google_maps = bool(getattr(django_settings, "GOOGLE_MAPS_API_KEY", ""))
+        defaults = self._defaults()
+        obj, _ = AdminPlatformSettings.objects.get_or_create(key="global")
+        general = {**defaults["general"], **(obj.general or {})}
+        enabled_map = general.get("integrations_enabled") if isinstance(general.get("integrations_enabled"), dict) else dict(defaults["general"]["integrations_enabled"])
+        creds = general.get("integration_credentials") if isinstance(general.get("integration_credentials"), dict) else dict(defaults["general"]["integration_credentials"])
+
+        stripe_key = str(creds.get("stripe_secret_key") or "").strip() or str(getattr(django_settings, "STRIPE_SECRET_KEY", "") or getattr(django_settings, "STRIPE_API_KEY", "") or "").strip()
+        sendgrid_key = str(creds.get("sendgrid_api_key") or "").strip() or str(getattr(django_settings, "SENDGRID_API_KEY", "") or "").strip()
+        twilio_sid = str(creds.get("twilio_account_sid") or "").strip() or str(getattr(django_settings, "TWILIO_ACCOUNT_SID", "") or "").strip()
+        twilio_token = str(creds.get("twilio_auth_token") or "").strip() or str(getattr(django_settings, "TWILIO_AUTH_TOKEN", "") or "").strip()
+        gmaps_key = str(creds.get("google_maps_api_key") or "").strip() or str(getattr(django_settings, "GOOGLE_MAPS_API_KEY", "") or "").strip()
+
+        def status_for(k: str, has_conf: bool) -> str:
+            if not bool(enabled_map.get(k, True)):
+                return "disabled"
+            return "connected" if has_conf else "not_connected"
+
         return {
-            "stripe_payments": "connected" if stripe else "not_connected",
-            "sendgrid_email": "connected" if sendgrid else "not_connected",
-            "twilio_sms": "connected" if twilio else "not_connected",
-            "google_maps": "connected" if google_maps else "not_connected",
+            "stripe_payments": status_for("stripe_payments", bool(stripe_key)),
+            "sendgrid_email": status_for("sendgrid_email", bool(sendgrid_key)),
+            "twilio_sms": status_for("twilio_sms", bool(twilio_sid and twilio_token)),
+            "google_maps": status_for("google_maps", bool(gmaps_key)),
         }
 
     def get(self, request):
@@ -343,9 +345,19 @@ class AdminPlatformSettingsView(APIView):
         general = {**defaults["general"], **(obj.general or {})}
         notifications = {**defaults["notifications"], **(obj.notifications or {})}
         security = {**defaults["security"], **(obj.security or {})}
+        creds = general.get("integration_credentials") if isinstance(general.get("integration_credentials"), dict) else dict(defaults["general"]["integration_credentials"])
+        general_out = dict(general)
+        general_out.pop("integration_credentials", None)
+        general_out["integration_credentials_set"] = {
+            "stripe_secret_key_set": bool(str(creds.get("stripe_secret_key") or "").strip()),
+            "sendgrid_api_key_set": bool(str(creds.get("sendgrid_api_key") or "").strip()),
+            "twilio_account_sid_set": bool(str(creds.get("twilio_account_sid") or "").strip()),
+            "twilio_auth_token_set": bool(str(creds.get("twilio_auth_token") or "").strip()),
+            "google_maps_api_key_set": bool(str(creds.get("google_maps_api_key") or "").strip()),
+        }
         return Response(
             {
-                "general": general,
+                "general": general_out,
                 "notifications": notifications,
                 "security": security,
                 "integrations": self._integrations(),
@@ -354,6 +366,8 @@ class AdminPlatformSettingsView(APIView):
         )
 
     def patch(self, request):
+        if not _is_super_admin(request.user):
+            return Response({"detail": "Only super admins can update platform settings."}, status=status.HTTP_403_FORBIDDEN)
         if request.data is None:
             return Response({"detail": "Invalid payload."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -384,6 +398,26 @@ class AdminPlatformSettingsView(APIView):
                 current["timezone"] = str(incoming_general.get("timezone") or "").strip() or defaults["general"]["timezone"]
             if "language" in incoming_general:
                 current["language"] = str(incoming_general.get("language") or "").strip() or defaults["general"]["language"]
+            if "integrations_enabled" in incoming_general:
+                raw = incoming_general.get("integrations_enabled")
+                if isinstance(raw, dict):
+                    enabled = dict(current.get("integrations_enabled") or defaults["general"].get("integrations_enabled") or {})
+                    for k in ["stripe_payments", "sendgrid_email", "twilio_sms", "google_maps"]:
+                        if k in raw:
+                            enabled[k] = bool(raw.get(k))
+                    current["integrations_enabled"] = enabled
+            if "integration_credentials" in incoming_general:
+                allow_db_secrets = bool(os.environ.get("ALLOW_DB_SECRETS") in {"1", "true", "yes"} or getattr(django_settings, "ALLOW_DB_SECRETS", False))
+                if not allow_db_secrets:
+                    return Response({"general": {"integration_credentials": ["Server does not allow saving secrets in DB. Set env ALLOW_DB_SECRETS=1."]}}, status=status.HTTP_400_BAD_REQUEST)
+                raw = incoming_general.get("integration_credentials")
+                if not isinstance(raw, dict):
+                    return Response({"general": {"integration_credentials": ["integration_credentials must be an object."]}}, status=status.HTTP_400_BAD_REQUEST)
+                existing = dict(current.get("integration_credentials") or defaults["general"].get("integration_credentials") or {})
+                for k in ["stripe_secret_key", "sendgrid_api_key", "twilio_account_sid", "twilio_auth_token", "google_maps_api_key"]:
+                    if k in raw:
+                        existing[k] = str(raw.get(k) or "").strip()
+                current["integration_credentials"] = existing
             obj.general = current
 
         if incoming_notifications is not None:
@@ -402,15 +436,34 @@ class AdminPlatformSettingsView(APIView):
                     n = int(incoming_security.get("session_timeout_minutes"))
                 except Exception:
                     n = defaults["security"]["session_timeout_minutes"]
-                current["session_timeout_minutes"] = max(5, min(24 * 60, n))
+                current["session_timeout_minutes"] = max(0, min(24 * 60, n))
             if "ip_whitelisting" in incoming_security:
                 current["ip_whitelisting"] = bool(incoming_security.get("ip_whitelisting"))
+            if "ip_whitelist" in incoming_security:
+                raw = incoming_security.get("ip_whitelist")
+                if isinstance(raw, str):
+                    parts = [p.strip() for p in raw.replace("\n", ",").split(",")]
+                    current["ip_whitelist"] = [p for p in parts if p]
+                elif isinstance(raw, list):
+                    cleaned = []
+                    for item in raw:
+                        if not isinstance(item, str):
+                            continue
+                        v = item.strip()
+                        if v:
+                            cleaned.append(v)
+                    current["ip_whitelist"] = cleaned
+                elif raw is None:
+                    current["ip_whitelist"] = []
             if "password_policy" in incoming_security:
                 current["password_policy"] = str(incoming_security.get("password_policy") or "").strip() or defaults["security"]["password_policy"]
+            if current.get("ip_whitelisting") and not (current.get("ip_whitelist") or []):
+                return Response({"security": {"ip_whitelist": ["Add at least one IP before enabling IP whitelisting."]}}, status=status.HTTP_400_BAD_REQUEST)
             obj.security = current
 
         obj.updated_by = request.user
         obj.save(update_fields=["general", "notifications", "security", "updated_at", "updated_by"])
+        cache.delete("admin_platform_settings:global")
         _audit(
             request.user,
             action="admin_platform_settings_updated",
@@ -422,6 +475,15 @@ class AdminPlatformSettingsView(APIView):
         general = {**defaults["general"], **(obj.general or {})}
         notifications = {**defaults["notifications"], **(obj.notifications or {})}
         security = {**defaults["security"], **(obj.security or {})}
+        creds = general.get("integration_credentials") if isinstance(general.get("integration_credentials"), dict) else dict(defaults["general"]["integration_credentials"])
+        general.pop("integration_credentials", None)
+        general["integration_credentials_set"] = {
+            "stripe_secret_key_set": bool(str(creds.get("stripe_secret_key") or "").strip()),
+            "sendgrid_api_key_set": bool(str(creds.get("sendgrid_api_key") or "").strip()),
+            "twilio_account_sid_set": bool(str(creds.get("twilio_account_sid") or "").strip()),
+            "twilio_auth_token_set": bool(str(creds.get("twilio_auth_token") or "").strip()),
+            "google_maps_api_key_set": bool(str(creds.get("google_maps_api_key") or "").strip()),
+        }
         return Response(
             {
                 "general": general,
@@ -431,6 +493,177 @@ class AdminPlatformSettingsView(APIView):
                 "updated_at": obj.updated_at,
             }
         )
+
+
+class AdminIntegrationTestView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request, key: str):
+        key = (key or "").strip().lower()
+        if key not in {"stripe_payments", "sendgrid_email", "twilio_sms", "google_maps"}:
+            return Response({"detail": "Unknown integration."}, status=status.HTTP_400_BAD_REQUEST)
+
+        defaults = admin_platform_settings_defaults()
+        obj, _ = AdminPlatformSettings.objects.get_or_create(key="global")
+        general = {**defaults["general"], **(obj.general or {})}
+        enabled_map = general.get("integrations_enabled") if isinstance(general.get("integrations_enabled"), dict) else dict(defaults["general"]["integrations_enabled"])
+        enabled = bool(enabled_map.get(key, True))
+        if not enabled:
+            return Response({"key": key, "enabled": False, "connected": False, "details": "Disabled in platform settings."})
+
+        creds = general.get("integration_credentials") if isinstance(general.get("integration_credentials"), dict) else dict(defaults["general"]["integration_credentials"])
+
+        stripe_key = str(creds.get("stripe_secret_key") or "").strip() or str(getattr(django_settings, "STRIPE_SECRET_KEY", "") or getattr(django_settings, "STRIPE_API_KEY", "") or "").strip()
+        sendgrid_key = str(creds.get("sendgrid_api_key") or "").strip() or str(getattr(django_settings, "SENDGRID_API_KEY", "") or "").strip()
+        twilio_sid = str(creds.get("twilio_account_sid") or "").strip() or str(getattr(django_settings, "TWILIO_ACCOUNT_SID", "") or "").strip()
+        twilio_token = str(creds.get("twilio_auth_token") or "").strip() or str(getattr(django_settings, "TWILIO_AUTH_TOKEN", "") or "").strip()
+        gmaps_key = str(creds.get("google_maps_api_key") or "").strip() or str(getattr(django_settings, "GOOGLE_MAPS_API_KEY", "") or "").strip()
+
+        def _json(url: str, headers: dict | None = None):
+            req = urllib.request.Request(url, headers=headers or {}, method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw = resp.read().decode("utf-8")
+                    return resp.getcode(), json.loads(raw) if raw else None
+            except urllib.error.HTTPError as e:
+                try:
+                    raw = e.read().decode("utf-8")
+                    return int(getattr(e, "code", 0) or 0), json.loads(raw) if raw else None
+                except Exception:
+                    return int(getattr(e, "code", 0) or 0), None
+            except Exception:
+                return 0, None
+
+        if key == "stripe_payments":
+            if not stripe_key:
+                return Response({"key": key, "enabled": True, "connected": False, "details": "Missing Stripe secret key."})
+            auth = base64.b64encode(f"{stripe_key}:".encode("utf-8")).decode("utf-8")
+            code, data = _json("https://api.stripe.com/v1/account", headers={"Authorization": f"Basic {auth}"})
+            if code == 200 and isinstance(data, dict) and data.get("id"):
+                return Response({"key": key, "enabled": True, "connected": True, "details": f"Stripe OK (account {data.get('id')})."})
+            if code in {401, 403}:
+                return Response({"key": key, "enabled": True, "connected": False, "details": "Stripe auth failed (invalid key or permissions)."})
+            return Response({"key": key, "enabled": True, "connected": False, "details": f"Stripe test failed (status {code})."})
+
+        if key == "sendgrid_email":
+            if not sendgrid_key:
+                return Response({"key": key, "enabled": True, "connected": False, "details": "Missing SendGrid API key."})
+            code, data = _json("https://api.sendgrid.com/v3/user/account", headers={"Authorization": f"Bearer {sendgrid_key}"})
+            if code == 200:
+                return Response({"key": key, "enabled": True, "connected": True, "details": "SendGrid OK."})
+            if code in {401, 403}:
+                return Response({"key": key, "enabled": True, "connected": False, "details": "SendGrid auth failed (invalid key or permissions)."})
+            return Response({"key": key, "enabled": True, "connected": False, "details": f"SendGrid test failed (status {code})."})
+
+        if key == "twilio_sms":
+            if not (twilio_sid and twilio_token):
+                return Response({"key": key, "enabled": True, "connected": False, "details": "Missing Twilio Account SID/Auth Token."})
+            auth = base64.b64encode(f"{twilio_sid}:{twilio_token}".encode("utf-8")).decode("utf-8")
+            code, data = _json(f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(twilio_sid)}.json", headers={"Authorization": f"Basic {auth}"})
+            if code == 200:
+                return Response({"key": key, "enabled": True, "connected": True, "details": "Twilio OK."})
+            if code in {401, 403}:
+                return Response({"key": key, "enabled": True, "connected": False, "details": "Twilio auth failed (invalid SID/token or permissions)."})
+            return Response({"key": key, "enabled": True, "connected": False, "details": f"Twilio test failed (status {code})."})
+
+        if not gmaps_key:
+            return Response({"key": key, "enabled": True, "connected": False, "details": "Missing Google Maps API key."})
+        url = f"https://maps.googleapis.com/maps/api/geocode/json?{urllib.parse.urlencode({'address': 'New York', 'key': gmaps_key})}"
+        code, data = _json(url)
+        status_val = (data or {}).get("status") if isinstance(data, dict) else None
+        if code == 200 and status_val in {"OK", "ZERO_RESULTS"}:
+            return Response({"key": key, "enabled": True, "connected": True, "details": f"Google Maps OK ({status_val})."})
+        if status_val in {"REQUEST_DENIED", "INVALID_REQUEST"}:
+            msg = (data or {}).get("error_message") if isinstance(data, dict) else ""
+            return Response({"key": key, "enabled": True, "connected": False, "details": f"Google Maps denied. {msg}".strip()})
+        return Response({"key": key, "enabled": True, "connected": False, "details": f"Google Maps test failed (status {code})."})
+
+
+class AdminNotificationTestView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        channel = str(request.data.get("channel") or "").strip().lower()
+        if channel not in {"email", "sms", "push", "in_app"}:
+            return Response({"detail": "channel must be one of: in_app, email, sms, push."}, status=status.HTTP_400_BAD_REQUEST)
+
+        defaults = admin_platform_settings_defaults()
+        obj, _ = AdminPlatformSettings.objects.get_or_create(key="global")
+        notifications = {**defaults["notifications"], **(obj.notifications or {})}
+        general = {**defaults["general"], **(obj.general or {})}
+        enabled_map = general.get("integrations_enabled") if isinstance(general.get("integrations_enabled"), dict) else dict(defaults["general"]["integrations_enabled"])
+        creds = general.get("integration_credentials") if isinstance(general.get("integration_credentials"), dict) else dict(defaults["general"]["integration_credentials"])
+
+        if channel == "email":
+            if not bool(notifications.get("email_notifications")):
+                return Response({"ok": False, "detail": "Email notifications are disabled in platform settings."}, status=status.HTTP_400_BAD_REQUEST)
+            to_email = (getattr(request.user, "email", "") or "").strip()
+            if not to_email:
+                return Response({"ok": False, "detail": "Current user has no email address."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                send_mail(
+                    subject="Vehsl notification test",
+                    message="This is a test email from Vehsl admin settings.",
+                    from_email=getattr(django_settings, "DEFAULT_FROM_EMAIL", None) or "no-reply@vehsl.local",
+                    recipient_list=[to_email],
+                    fail_silently=False,
+                )
+            except Exception as e:
+                return Response({"ok": False, "detail": f"Email send failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"ok": True, "detail": f"Test email sent to {to_email}."})
+
+        if channel == "sms":
+            if not bool(notifications.get("sms_alerts")):
+                return Response({"ok": False, "detail": "SMS alerts are disabled in platform settings."}, status=status.HTTP_400_BAD_REQUEST)
+            if not bool(enabled_map.get("twilio_sms", True)):
+                return Response({"ok": False, "detail": "Twilio SMS is disabled in platform settings."}, status=status.HTTP_400_BAD_REQUEST)
+            to_phone = str(request.data.get("to") or getattr(request.user, "phone", "") or "").strip()
+            if not to_phone:
+                return Response({"ok": False, "detail": "Provide 'to' or set a phone number on your account."}, status=status.HTTP_400_BAD_REQUEST)
+            if not re.match(r"^\+?[1-9]\d{7,14}$", to_phone.replace(" ", "")):
+                return Response({"ok": False, "detail": "Phone must be a valid E.164 number."}, status=status.HTTP_400_BAD_REQUEST)
+
+            sid = str(creds.get("twilio_account_sid") or "").strip() or str(getattr(django_settings, "TWILIO_ACCOUNT_SID", "") or "").strip()
+            token = str(creds.get("twilio_auth_token") or "").strip() or str(getattr(django_settings, "TWILIO_AUTH_TOKEN", "") or "").strip()
+            from_phone = str(getattr(django_settings, "TWILIO_FROM_NUMBER", "") or os.environ.get("TWILIO_FROM_NUMBER") or "").strip()
+            if not (sid and token and from_phone):
+                return Response({"ok": False, "detail": "Twilio not configured (needs SID, auth token, TWILIO_FROM_NUMBER)."}, status=status.HTTP_400_BAD_REQUEST)
+
+            body = str(request.data.get("message") or "Vehsl SMS test message").strip()
+            payload = urllib.parse.urlencode({"To": to_phone, "From": from_phone, "Body": body}).encode("utf-8")
+            auth = base64.b64encode(f"{sid}:{token}".encode("utf-8")).decode("utf-8")
+            url = f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(sid)}/Messages.json"
+            req = urllib.request.Request(url, data=payload, headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp_body = resp.read().decode("utf-8")
+                    data = json.loads(resp_body) if resp_body else {}
+                    sid_out = (data or {}).get("sid") if isinstance(data, dict) else None
+                    return Response({"ok": True, "detail": f"Test SMS queued via Twilio{f' (sid {sid_out})' if sid_out else ''}."})
+            except urllib.error.HTTPError as e:
+                raw = ""
+                try:
+                    raw = e.read().decode("utf-8")
+                except Exception:
+                    raw = ""
+                return Response({"ok": False, "detail": f"Twilio send failed (status {getattr(e, 'code', '')}): {raw or 'error'}"}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                return Response({"ok": False, "detail": f"Twilio send failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if channel == "push":
+            if not bool(notifications.get("push_notifications")):
+                return Response({"ok": False, "detail": "Push notifications are disabled in platform settings."}, status=status.HTTP_400_BAD_REQUEST)
+            Notification.objects.create(
+                user=request.user,
+                channel=Notification.Channel.PUSH,
+                event_type="push_test",
+                payload={"title": "Push test", "body": "This is a push test notification."},
+                status=Notification.Status.SENT,
+                sent_at=timezone.now(),
+            )
+            return Response({"ok": True, "detail": "Push test created (in-app push placeholder)."})
+
+        return Response({"ok": True, "detail": "In-app notifications are supported."})
 
 
 class AdminPlatformOverviewView(APIView):
@@ -1762,6 +1995,14 @@ class PasswordResetConfirmView(APIView):
         if not check_password(token, str(token_hash)):
             return Response({"detail": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            validate_password_for_platform(new_password)
+        except Exception as e:
+            detail = getattr(e, "detail", None)
+            if isinstance(detail, (list, dict)):
+                return Response({"new_password": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"new_password": [str(e)]}, status=status.HTTP_400_BAD_REQUEST)
+
         user.set_password(new_password)
         user.save(update_fields=["password"])
 
@@ -2080,7 +2321,7 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
     def opt(kind: str, label: str):
         return {"kind": kind, "label": label}
 
-    identity_required = 2 if is_seller else 1
+    identity_required = 3
     groups = [
         {
             "key": "identity",
@@ -2097,7 +2338,7 @@ def _kyc_requirement_groups_for_user(user: User) -> list[dict]:
             "key": "address",
             "label": "Proof of Address",
             "required": True,
-            "required_count": 1,
+            "required_count": 2,
             "options": [
                 opt(KycDocument.Kind.BANK_STATEMENT, "Bank Statement"),
                 opt(KycDocument.Kind.UTILITY_BILL, "Utility Bill"),
@@ -2197,6 +2438,30 @@ def _kyc_requirements_payload(user: User, request) -> dict:
         if g.get("required") and not has_verified_enough:
             unverified_groups.append(g["key"])
 
+        is_required = bool(g.get("required")) and required_count > 0
+        if not is_required:
+            status_val = (
+                "rejected"
+                if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
+                else "pending"
+                if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
+                else "verified"
+                if uploaded_count > 0 and verified_count == uploaded_count
+                else "optional"
+            )
+        else:
+            status_val = (
+                "missing"
+                if not has_enough
+                else "rejected"
+                if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
+                else "pending"
+                if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
+                else "verified"
+                if has_verified_enough
+                else "pending"
+            )
+
         out_groups.append(
             {
                 "key": g["key"],
@@ -2207,17 +2472,7 @@ def _kyc_requirements_payload(user: User, request) -> dict:
                 "verified_count": verified_count,
                 "options": g.get("options") or [],
                 "documents": KycDocumentSelfSerializer(gdocs, many=True, context={"request": request}).data,
-                "status": (
-                    "missing"
-                    if not has_enough
-                    else "rejected"
-                    if any(d.review_status == KycDocument.ReviewStatus.REJECTED for d in gdocs)
-                    else "pending"
-                    if any(d.review_status in [KycDocument.ReviewStatus.PENDING, KycDocument.ReviewStatus.UNDER_REVIEW] for d in gdocs)
-                    else "verified"
-                    if has_verified_enough
-                    else "pending"
-                ),
+                "status": status_val,
             }
         )
 
@@ -2806,7 +3061,20 @@ class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
-        return Notification.objects.filter(user=self.request.user).order_by("-created_at")
+        qs = Notification.objects.filter(user=self.request.user).order_by("-created_at")
+        since_id = (self.request.query_params.get("since_id") or "").strip()
+        if since_id.isdigit():
+            qs = qs.filter(id__gt=int(since_id))
+        since = (self.request.query_params.get("since") or "").strip()
+        if since:
+            try:
+                dt = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+                if timezone.is_naive(dt):
+                    dt = timezone.make_aware(dt, timezone=timezone.get_current_timezone())
+                qs = qs.filter(created_at__gt=dt)
+            except Exception:
+                pass
+        return qs
 
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):
@@ -3250,6 +3518,13 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             return Response({"phone": ["A user with this phone already exists."]}, status=status.HTTP_400_BAD_REQUEST)
         if not password:
             return Response({"password": ["Password is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_password_for_platform(password)
+        except Exception as e:
+            detail = getattr(e, "detail", None)
+            if isinstance(detail, (list, dict)):
+                return Response({"password": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"password": [str(e)]}, status=status.HTTP_400_BAD_REQUEST)
 
         user = User(
             email=email,
@@ -3327,7 +3602,15 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         if "status" in data:
             user.status = data.get("status")
         if "password" in data and (data.get("password") or "").strip():
-            user.set_password((data.get("password") or "").strip())
+            new_pw = (data.get("password") or "").strip()
+            try:
+                validate_password_for_platform(new_pw)
+            except Exception as e:
+                detail = getattr(e, "detail", None)
+                if isinstance(detail, (list, dict)):
+                    return Response({"password": detail}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"password": [str(e)]}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_password(new_pw)
 
         if email_in and User.objects.filter(email__iexact=email_in).exclude(id=user.id).exists():
             return Response({"email": ["A user with this email already exists."]}, status=status.HTTP_400_BAD_REQUEST)
@@ -3682,12 +3965,14 @@ class AdminUserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
-        total_users = User.objects.count()
-        suspended = User.objects.filter(status=User.Status.SUSPENDED).count()
-        pending_review = User.objects.filter(status=User.Status.ACTIVE, seller_profile__verification_status="pending").count()
-        review = User.objects.filter(status=User.Status.ACTIVE, seller_profile__verification_status="rejected").count()
+        qs = self.get_queryset()
+
+        total_users = qs.count()
+        suspended = qs.filter(status=User.Status.SUSPENDED).count()
+        pending_review = qs.filter(status=User.Status.ACTIVE, seller_profile__verification_status="pending").count()
+        review = qs.filter(status=User.Status.ACTIVE, seller_profile__verification_status="rejected").count()
         active = (
-            User.objects.exclude(status=User.Status.SUSPENDED)
+            qs.exclude(status=User.Status.SUSPENDED)
             .exclude(status=User.Status.DELETED)
             .filter(Q(seller_profile__isnull=True) | ~Q(seller_profile__verification_status__in=["pending", "rejected"]))
             .count()

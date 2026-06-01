@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Eye } from "lucide-react";
+import { Eye, Search, ShoppingCart, User } from "lucide-react";
 import { toast } from "sonner";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -23,6 +23,7 @@ import { SavingsSection } from "@/components/marketplace/SavingsSection";
 import { WeeklyProducts } from "@/components/marketplace/WeeklyProducts";
 import { SustainabilitySection } from "@/components/marketplace/SustainabilitySection";
 import { Footer } from "@/components/marketplace/Footer";
+import { useCart } from "@/components/product/cart-context";
 
 
 export function HomeShell() {
@@ -34,6 +35,21 @@ export function HomeShell() {
   const router = useRouter();
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
+  const { totalQuantity } = useCart();
+
+  const [authed, setAuthed] = useState(false);
+  useEffect(() => {
+    const read = () => {
+      try {
+        setAuthed(Boolean(window.localStorage.getItem("vehsl.access") || ""));
+      } catch {
+        setAuthed(false);
+      }
+    };
+    read();
+    window.addEventListener("storage", read);
+    return () => window.removeEventListener("storage", read);
+  }, []);
 
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -77,6 +93,10 @@ export function HomeShell() {
   const [otpCode, setOtpCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+
+  useEffect(() => {
+    if (authed && signInOpen) setSignInOpen(false);
+  }, [authed, signInOpen]);
 
   useEffect(() => {
     if (!signInOpen) {
@@ -192,6 +212,7 @@ export function HomeShell() {
       } catch { }
 
       setSignInOpen(false);
+      setAuthed(true);
       setRequiresOtp(false);
       setOtpCode("");
       toast.success("Signed in.");
@@ -268,9 +289,38 @@ export function HomeShell() {
             onCategoryEnter={openMenu}
             onCategoryLeave={scheduleClose}
             signInSlot={
-              <PopoverTrigger asChild>
-                {signInAnchor}
-              </PopoverTrigger>
+              authed ? (
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <Link
+                    href="/explore"
+                    className="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90"
+                    aria-label="Search"
+                  >
+                    <Search className="h-4 w-4 sm:h-5 sm:w-5 text-[#1f2330]" strokeWidth={1.5} />
+                  </Link>
+                  <Link
+                    href="/checkout"
+                    className="relative flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90"
+                    aria-label="Cart"
+                  >
+                    <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5 text-[#1f2330]" strokeWidth={1.5} />
+                    {totalQuantity > 0 ? (
+                      <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
+                        {totalQuantity > 99 ? "99+" : totalQuantity}
+                      </span>
+                    ) : null}
+                  </Link>
+                  <Link
+                    href="/explore?profileSettings=1"
+                    className="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90"
+                    aria-label="Profile"
+                  >
+                    <User className="h-4 w-4 sm:h-5 sm:w-5 text-[#1f2330]" strokeWidth={1.5} />
+                  </Link>
+                </div>
+              ) : (
+                <PopoverTrigger asChild>{signInAnchor}</PopoverTrigger>
+              )
             }
           />
 

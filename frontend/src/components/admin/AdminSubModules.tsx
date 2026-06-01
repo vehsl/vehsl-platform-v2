@@ -253,18 +253,38 @@ export function AdminUsers() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchJson("/api/v1/admin/users/stats");
-        if (!cancelled) setStats(data);
-      } catch (e: any) {
-        if (!cancelled) setStats(null);
-      }
-    })();
+    const controller = new AbortController();
+    const t = window.setTimeout(() => {
+      (async () => {
+        try {
+          const params = new URLSearchParams();
+          const s = search.trim();
+          if (s) params.set("q", s);
+          if (activeNow) params.set("active_now", "1");
+          else if (activePeriod) params.set("active_period", activePeriod);
+          if (roleFilter !== "all") {
+            if (roleFilter === "manager") {
+              params.set("role", "admin");
+              params.set("admin_role", "manager");
+            } else {
+              params.set("role", roleFilter);
+            }
+          }
+          if (statusFilter !== "all") params.set("admin_status", statusFilter);
+          const qs = params.toString();
+          const data = await fetchJson(`/api/v1/admin/users/stats${qs ? `?${qs}` : ""}`, { signal: controller.signal } as any);
+          if (!cancelled) setStats(data);
+        } catch (e: any) {
+          if (!cancelled) setStats(null);
+        }
+      })();
+    }, 250);
     return () => {
       cancelled = true;
+      controller.abort();
+      window.clearTimeout(t);
     };
-  }, []);
+  }, [fetchJson, search, activeNow, activePeriod, roleFilter, statusFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5389,9 +5409,27 @@ export function AdminSettings() {
 
   const platformDefaults = useMemo(
     () => ({
-      general: { platform_name: "Vehsl", default_currency: "USD", timezone: "UTC", language: "English" },
+      general: {
+        platform_name: "Vehsl",
+        default_currency: "USD",
+        timezone: "UTC",
+        language: "English",
+        integrations_enabled: {
+          stripe_payments: true,
+          sendgrid_email: true,
+          twilio_sms: true,
+          google_maps: true,
+        },
+        integration_credentials_set: {
+          stripe_secret_key_set: false,
+          sendgrid_api_key_set: false,
+          twilio_account_sid_set: false,
+          twilio_auth_token_set: false,
+          google_maps_api_key_set: false,
+        },
+      },
       notifications: { email_notifications: true, push_notifications: true, sms_alerts: false, daily_digest: true },
-      security: { two_factor_auth: true, session_timeout_minutes: 30, ip_whitelisting: false, password_policy: "strong_12_chars" },
+      security: { two_factor_auth: false, session_timeout_minutes: 0, ip_whitelisting: false, ip_whitelist: [], password_policy: "strong_10_chars" },
       integrations: { stripe_payments: "not_connected", sendgrid_email: "not_connected", twilio_sms: "not_connected", google_maps: "not_connected" },
     }),
     []
@@ -5476,6 +5514,17 @@ export function AdminSettings() {
             if (sRes.ok) {
               const s = await sRes.json();
               setPlatformSettings(s);
+              try {
+                const g = (s && s.general) || {};
+                const pn = String(g.platform_name || "").trim();
+                const cur = String(g.default_currency || "").trim();
+                const tz = String(g.timezone || "").trim();
+                const lang = String(g.language || "").trim();
+                if (pn) window.localStorage.setItem("vehsl.platform_name", pn);
+                if (cur) window.localStorage.setItem("vehsl.platform_currency", cur);
+                if (tz) window.localStorage.setItem("vehsl.platform_timezone", tz);
+                if (lang) window.localStorage.setItem("vehsl.platform_language", lang);
+              } catch {}
             }
           } catch {}
         }
@@ -5538,6 +5587,10 @@ export function AdminSettings() {
         });
 
         if (platformSettings) {
+          const generalToSend = { ...(settingsForm.general || {}) };
+          try {
+            delete (generalToSend as any).integration_credentials_set;
+          } catch {}
           const sRes = await fetch(`${apiBase}/api/v1/admin/settings`, {
             method: "PATCH",
             headers: {
@@ -5545,7 +5598,7 @@ export function AdminSettings() {
               Authorization: `Bearer ${access}`,
             },
             body: JSON.stringify({
-              general: settingsForm.general,
+              general: generalToSend,
               notifications: settingsForm.notifications,
               security: settingsForm.security,
             }),
@@ -5557,7 +5610,20 @@ export function AdminSettings() {
             return;
           }
           const updated = await sRes.json().catch(() => null);
-          if (updated) setPlatformSettings(updated);
+          if (updated) {
+            setPlatformSettings(updated);
+            try {
+              const g = (updated && updated.general) || {};
+              const pn = String(g.platform_name || "").trim();
+              const cur = String(g.default_currency || "").trim();
+              const tz = String(g.timezone || "").trim();
+              const lang = String(g.language || "").trim();
+              if (pn) window.localStorage.setItem("vehsl.platform_name", pn);
+              if (cur) window.localStorage.setItem("vehsl.platform_currency", cur);
+              if (tz) window.localStorage.setItem("vehsl.platform_timezone", tz);
+              if (lang) window.localStorage.setItem("vehsl.platform_language", lang);
+            } catch {}
+          }
         }
       }
 
@@ -5593,6 +5659,217 @@ export function AdminSettings() {
     }
   };
 
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [totpSetup, setTotpSetup] = useState<any>(null);
+  const [totpEnableCode, setTotpEnableCode] = useState("");
+  const [totpDisableCode, setTotpDisableCode] = useState("");
+  const [totpDisableRecoveryCode, setTotpDisableRecoveryCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [integrationTests, setIntegrationTests] = useState<Record<string, any>>({});
+  const [notifTestMsg, setNotifTestMsg] = useState<string>("");
+  const [credKey, setCredKey] = useState<string | null>(null);
+  const [credDraft, setCredDraft] = useState<any>({});
+  const [credSaving, setCredSaving] = useState(false);
+
+  const postAuthed = async (path: string, body?: any) => {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${access}`,
+      },
+      body: body ? JSON.stringify(body) : JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, data };
+  };
+
+  const getAuthed = async (path: string) => {
+    const res = await fetch(`${apiBase}${path}`, {
+      headers: {
+        Authorization: `Bearer ${access}`,
+      },
+    });
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, data };
+  };
+
+  const testIntegration = async (key: string) => {
+    if (!access) return;
+    setNotifTestMsg("");
+    setError(null);
+    try {
+      const r = await getAuthed(`/api/v1/admin/integrations/${encodeURIComponent(key)}/test`);
+      if (!r.ok) {
+        const msg = (r.data && (r.data.detail || r.data.non_field_errors)) || "Integration test failed.";
+        setError(typeof msg === "string" ? msg : "Integration test failed.");
+        return;
+      }
+      setIntegrationTests((p) => ({ ...(p || {}), [key]: r.data }));
+    } catch {
+      setError("Network error.");
+    }
+  };
+
+  const testNotification = async (channel: "email" | "sms" | "push" | "in_app") => {
+    if (!access) return;
+    setNotifTestMsg("");
+    setError(null);
+    try {
+      const r = await postAuthed("/api/v1/admin/notifications/test", { channel });
+      if (!r.ok) {
+        const msg = (r.data && (r.data.detail || r.data.non_field_errors)) || "Notification test failed.";
+        setError(typeof msg === "string" ? msg : "Notification test failed.");
+        return;
+      }
+      setNotifTestMsg(String(r.data?.detail || "OK"));
+    } catch {
+      setError("Network error.");
+    }
+  };
+
+  const openCreds = (key: string) => {
+    setError(null);
+    setNotifTestMsg("");
+    setCredKey(key);
+    setCredDraft({});
+  };
+
+  const saveCreds = async () => {
+    if (!access || !credKey || credSaving) return;
+    setCredSaving(true);
+    setError(null);
+    try {
+      const patch: any = {};
+      if (credKey === "stripe_payments") {
+        patch.stripe_secret_key = String(credDraft.stripe_secret_key || "").trim();
+      } else if (credKey === "sendgrid_email") {
+        patch.sendgrid_api_key = String(credDraft.sendgrid_api_key || "").trim();
+      } else if (credKey === "twilio_sms") {
+        patch.twilio_account_sid = String(credDraft.twilio_account_sid || "").trim();
+        patch.twilio_auth_token = String(credDraft.twilio_auth_token || "").trim();
+      } else if (credKey === "google_maps") {
+        patch.google_maps_api_key = String(credDraft.google_maps_api_key || "").trim();
+      }
+
+      const res = await fetch(`${apiBase}/api/v1/admin/settings`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${access}`,
+        },
+        body: JSON.stringify({ general: { integration_credentials: patch } }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg = (data && (data.detail || data.non_field_errors)) || "Failed to save integration credentials.";
+        setError(typeof msg === "string" ? msg : "Failed to save integration credentials.");
+        return;
+      }
+      if (data) setPlatformSettings(data);
+      setCredKey(null);
+      setCredDraft({});
+    } catch {
+      setError("Network error.");
+    } finally {
+      setCredSaving(false);
+    }
+  };
+
+  const beginTotpSetup = async () => {
+    if (!access || securityBusy) return;
+    setSecurityBusy(true);
+    setError(null);
+    setRecoveryCodes(null);
+    try {
+      const r = await postAuthed("/api/v1/security/totp/setup");
+      if (!r.ok) {
+        const msg = (r.data && (r.data.detail || r.data.non_field_errors)) || "Failed to start 2FA setup.";
+        setError(typeof msg === "string" ? msg : "Failed to start 2FA setup.");
+        return;
+      }
+      setTotpSetup(r.data || null);
+    } finally {
+      setSecurityBusy(false);
+    }
+  };
+
+  const enableTotp = async () => {
+    if (!access || securityBusy) return;
+    const code = (totpEnableCode || "").trim();
+    if (!code) {
+      setError("OTP code is required.");
+      return;
+    }
+    setSecurityBusy(true);
+    setError(null);
+    try {
+      const r = await postAuthed("/api/v1/security/totp/enable", { code });
+      if (!r.ok) {
+        const msg = (r.data && (r.data.detail || r.data.code || r.data.non_field_errors)) || "Failed to enable 2FA.";
+        setError(typeof msg === "string" ? msg : "Failed to enable 2FA.");
+        return;
+      }
+      setTotpEnableCode("");
+      const next = { ...(me || {}), two_factor_enabled: true };
+      setMe(next);
+      try {
+        window.localStorage.setItem("vehsl.user", JSON.stringify(next));
+      } catch {}
+    } finally {
+      setSecurityBusy(false);
+    }
+  };
+
+  const generateRecoveryCodes = async () => {
+    if (!access || securityBusy) return;
+    setSecurityBusy(true);
+    setError(null);
+    try {
+      const r = await postAuthed("/api/v1/security/recovery-codes");
+      if (!r.ok) {
+        const msg = (r.data && (r.data.detail || r.data.non_field_errors)) || "Failed to generate recovery codes.";
+        setError(typeof msg === "string" ? msg : "Failed to generate recovery codes.");
+        return;
+      }
+      const codes = r.data?.codes;
+      setRecoveryCodes(Array.isArray(codes) ? codes : []);
+    } finally {
+      setSecurityBusy(false);
+    }
+  };
+
+  const disableTotp = async () => {
+    if (!access || securityBusy) return;
+    const code = (totpDisableCode || "").trim();
+    const recovery_code = (totpDisableRecoveryCode || "").trim();
+    if (!code && !recovery_code) {
+      setError("OTP or recovery code required.");
+      return;
+    }
+    setSecurityBusy(true);
+    setError(null);
+    try {
+      const r = await postAuthed("/api/v1/security/totp/disable", { code, recovery_code });
+      if (!r.ok) {
+        const msg = (r.data && (r.data.detail || r.data.non_field_errors)) || "Failed to disable 2FA.";
+        setError(typeof msg === "string" ? msg : "Failed to disable 2FA.");
+        return;
+      }
+      setTotpDisableCode("");
+      setTotpDisableRecoveryCode("");
+      setTotpSetup(null);
+      setRecoveryCodes(null);
+      const next = { ...(me || {}), two_factor_enabled: false };
+      setMe(next);
+      try {
+        window.localStorage.setItem("vehsl.user", JSON.stringify(next));
+      } catch {}
+    } finally {
+      setSecurityBusy(false);
+    }
+  };
+
   const Toggle = ({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) => (
     <button
       type="button"
@@ -5609,11 +5886,18 @@ export function AdminSettings() {
   const statusPill = (status: string) => {
     const s = (status || "").toLowerCase();
     const ok = s === "connected";
+    const disabled = s === "disabled";
     return (
       <span
-        className={`px-2.5 py-1 rounded-full text-[0.75rem] border ${ok ? "bg-[#30A46C]/10 text-[#30A46C] border-[#30A46C]/20" : "bg-[#E5484D]/8 text-[#E5484D] border-[#E5484D]/20"}`}
+        className={`px-2.5 py-1 rounded-full text-[0.75rem] border ${
+          ok
+            ? "bg-[#30A46C]/10 text-[#30A46C] border-[#30A46C]/20"
+            : disabled
+            ? "bg-black/[0.02] text-muted-foreground/70 border-black/[0.06]"
+            : "bg-[#E5484D]/8 text-[#E5484D] border-[#E5484D]/20"
+        }`}
       >
-        {ok ? "Connected" : "Not Connected"}
+        {ok ? "Connected" : disabled ? "Disabled" : "Not Connected"}
       </span>
     );
   };
@@ -5681,6 +5965,39 @@ export function AdminSettings() {
                     onChange={(e) => setForm((p: any) => ({ ...p, phone: e.target.value }))}
                     placeholder="+12345678900"
                     className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="sm:col-span-1">
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Nationality</label>
+                  <input
+                    value={form.nationality}
+                    onChange={(e) => setForm((p: any) => ({ ...p, nationality: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                </div>
+                <div className="sm:col-span-1">
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Gender</label>
+                  <select
+                    value={form.gender}
+                    onChange={(e) => setForm((p: any) => ({ ...p, gender: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  >
+                    <option value="">Prefer not to say</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div className="sm:col-span-1">
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Date of birth</label>
+                  <input
+                    type="date"
+                    value={form.date_of_birth || ""}
+                    onChange={(e) => setForm((p: any) => ({ ...p, date_of_birth: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                   />
                 </div>
               </div>
@@ -5753,6 +6070,144 @@ export function AdminSettings() {
           )}
         </SectionCard>
       </motion.div>
+
+      {!loading && access && (
+        <motion.div variants={stagger.item}>
+          <SectionCard>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-[#E5484D]/10">
+                <Lock size={20} className="text-[#E5484D]" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-foreground text-[0.9375rem]">Account Security</h2>
+                <p className="text-muted-foreground text-[0.75rem]">Two-factor authentication for your account</p>
+              </div>
+              <div className="ml-auto">
+                <span className="px-2.5 py-1 rounded-full text-[0.75rem] border bg-black/[0.02] border-black/[0.05] text-muted-foreground/70">
+                  {me?.two_factor_enabled ? "2FA Enabled" : "2FA Off"}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {!me?.two_factor_enabled ? (
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <BounceButton variant="primary" size="sm" onClick={securityBusy ? undefined : beginTotpSetup} className={securityBusy ? "opacity-70 pointer-events-none" : ""}>
+                    Set up 2FA
+                  </BounceButton>
+                  <BounceButton variant="ghost" size="sm" onClick={securityBusy ? undefined : generateRecoveryCodes} className={securityBusy ? "opacity-70 pointer-events-none" : ""}>
+                    Generate recovery codes
+                  </BounceButton>
+                </div>
+              ) : (
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <BounceButton variant="ghost" size="sm" onClick={securityBusy ? undefined : generateRecoveryCodes} className={securityBusy ? "opacity-70 pointer-events-none" : ""}>
+                    Regenerate recovery codes
+                  </BounceButton>
+                  <BounceButton variant="ghost" size="sm" onClick={securityBusy ? undefined : disableTotp} className={securityBusy ? "opacity-70 pointer-events-none" : ""}>
+                    Disable 2FA
+                  </BounceButton>
+                </div>
+              )}
+
+              {totpSetup && (
+                <div className="p-4 rounded-2xl bg-black/[0.012] border border-black/[0.04] space-y-3">
+                  <div className="text-[0.8125rem] text-foreground/80">
+                    Add this secret to your authenticator app, then enter the 6-digit code to enable.
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-xl bg-muted/20 border border-border/30">
+                      <div className="text-[0.6875rem] text-muted-foreground/60 mb-1">Secret</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[0.8125rem] text-foreground/90 break-all">{totpSetup?.secret || ""}</div>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl bg-black/[0.02] hover:bg-black/[0.04] text-muted-foreground/70"
+                          onClick={() => {
+                            const v = String(totpSetup?.secret || "");
+                            if (!v) return;
+                            navigator.clipboard?.writeText(v).catch(() => {});
+                          }}
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-muted/20 border border-border/30">
+                      <div className="text-[0.6875rem] text-muted-foreground/60 mb-1">OTPAuth URL</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[0.8125rem] text-foreground/90 break-all">{totpSetup?.otpauth_url || ""}</div>
+                        <button
+                          type="button"
+                          className="p-2 rounded-xl bg-black/[0.02] hover:bg-black/[0.04] text-muted-foreground/70"
+                          onClick={() => {
+                            const v = String(totpSetup?.otpauth_url || "");
+                            if (!v) return;
+                            navigator.clipboard?.writeText(v).catch(() => {});
+                          }}
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      value={totpEnableCode}
+                      onChange={(e) => setTotpEnableCode(e.target.value)}
+                      placeholder="6-digit code"
+                      inputMode="numeric"
+                      className="flex-1 px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                    <BounceButton variant="primary" size="sm" onClick={securityBusy ? undefined : enableTotp} className={securityBusy ? "opacity-70 pointer-events-none" : ""}>
+                      Enable
+                    </BounceButton>
+                  </div>
+                </div>
+              )}
+
+              {me?.two_factor_enabled && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Disable with OTP</label>
+                    <input
+                      value={totpDisableCode}
+                      onChange={(e) => setTotpDisableCode(e.target.value)}
+                      placeholder="6-digit code"
+                      inputMode="numeric"
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Or disable with recovery code</label>
+                    <input
+                      value={totpDisableRecoveryCode}
+                      onChange={(e) => setTotpDisableRecoveryCode(e.target.value)}
+                      placeholder="ABCD-EFGH"
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {recoveryCodes && (
+                <div className="p-4 rounded-2xl bg-black/[0.012] border border-black/[0.04]">
+                  <div className="text-[0.8125rem] text-foreground/80 mb-2">Recovery codes</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {recoveryCodes.map((c) => (
+                      <div key={c} className="px-3 py-2 rounded-xl bg-muted/20 border border-border/30 text-[0.8125rem] text-foreground/90 font-mono">
+                        {c}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+        </motion.div>
+      )}
 
       {isAdmin && (
         <motion.div variants={stagger.item} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -5859,6 +6314,24 @@ export function AdminSettings() {
                   />
                 </div>
               ))}
+
+              <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <BounceButton variant="ghost" size="sm" onClick={() => testNotification("email")}>
+                  Test Email
+                </BounceButton>
+                <BounceButton variant="ghost" size="sm" onClick={() => testNotification("sms")}>
+                  Test SMS
+                </BounceButton>
+                <BounceButton variant="ghost" size="sm" onClick={() => testNotification("push")}>
+                  Test Push
+                </BounceButton>
+              </div>
+
+              {!!notifTestMsg && (
+                <div className="px-4 py-3 rounded-2xl bg-black/[0.012] border border-black/[0.03] text-[0.8125rem] text-muted-foreground/70">
+                  {notifTestMsg}
+                </div>
+              )}
             </div>
           </SectionCard>
 
@@ -5890,6 +6363,26 @@ export function AdminSettings() {
                 />
               </div>
 
+              {!!settingsForm.security.ip_whitelisting && (
+                <div>
+                  <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">IP whitelist</label>
+                  <textarea
+                    rows={4}
+                    value={Array.isArray(settingsForm.security.ip_whitelist) ? settingsForm.security.ip_whitelist.join("\n") : String(settingsForm.security.ip_whitelist || "")}
+                    onChange={(e) => {
+                      const raw = e.target.value || "";
+                      const parts = raw.replace(/,/g, "\n").split("\n").map((s) => s.trim()).filter(Boolean);
+                      setSettingsForm((p: any) => ({ ...p, security: { ...(p.security || {}), ip_whitelist: parts } }));
+                    }}
+                    placeholder={"203.0.113.10\n203.0.113.0/24"}
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all resize-none"
+                  />
+                  <div className="text-muted-foreground/50 text-[0.75rem] mt-2">
+                    One per line. CIDR supported (e.g. 203.0.113.0/24).
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Session timeout</label>
                 <select
@@ -5902,9 +6395,9 @@ export function AdminSettings() {
                   }
                   className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
                 >
-                  {[15, 30, 60, 120, 240].map((m) => (
+                  {[0, 15, 30, 60, 120, 240].map((m) => (
                     <option key={m} value={String(m)}>
-                      {m} min
+                      {m === 0 ? "Never" : `${m} min`}
                     </option>
                   ))}
                 </select>
@@ -5934,7 +6427,7 @@ export function AdminSettings() {
               </div>
               <div className="min-w-0">
                 <h2 className="text-foreground text-[0.9375rem]">Integrations</h2>
-                <p className="text-muted-foreground text-[0.75rem]">Detected provider configuration</p>
+                <p className="text-muted-foreground text-[0.75rem]">Connected (env) + Enabled (platform)</p>
               </div>
             </div>
 
@@ -5946,8 +6439,61 @@ export function AdminSettings() {
                 { key: "google_maps", label: "Google Maps" },
               ].map((it) => (
                 <div key={it.key} className="flex items-center justify-between gap-4">
-                  <span className="text-[0.8125rem] text-foreground">{it.label}</span>
-                  {statusPill(settingsForm.integrations[it.key])}
+                  <div className="min-w-0">
+                    <div className="text-[0.8125rem] text-foreground">{it.label}</div>
+                    {(() => {
+                      const cs = settingsForm.general?.integration_credentials_set || {};
+                      const configured =
+                        it.key === "stripe_payments"
+                          ? !!cs.stripe_secret_key_set
+                          : it.key === "sendgrid_email"
+                          ? !!cs.sendgrid_api_key_set
+                          : it.key === "twilio_sms"
+                          ? !!cs.twilio_account_sid_set && !!cs.twilio_auth_token_set
+                          : it.key === "google_maps"
+                          ? !!cs.google_maps_api_key_set
+                          : false;
+                      return configured ? (
+                        <div className="text-[0.75rem] text-muted-foreground/60">Credentials configured</div>
+                      ) : (
+                        <div className="text-[0.75rem] text-muted-foreground/60">No credentials configured</div>
+                      );
+                    })()}
+                    {integrationTests[it.key]?.details && (
+                      <div className="text-[0.75rem] text-muted-foreground/60 truncate">
+                        {String(integrationTests[it.key]?.details || "")}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {statusPill(settingsForm.integrations[it.key])}
+                    <Toggle
+                      value={!!settingsForm.general?.integrations_enabled?.[it.key]}
+                      onChange={(v) =>
+                        setSettingsForm((p: any) => ({
+                          ...p,
+                          general: {
+                            ...(p.general || {}),
+                            integrations_enabled: { ...((p.general && p.general.integrations_enabled) || {}), [it.key]: v },
+                          },
+                        }))
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70"
+                      onClick={() => openCreds(it.key)}
+                    >
+                      Configure
+                    </button>
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl bg-black/[0.012] hover:bg-black/[0.02] text-[0.75rem] text-muted-foreground/70"
+                      onClick={() => testIntegration(it.key)}
+                    >
+                      Test
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -5966,6 +6512,116 @@ export function AdminSettings() {
           {saving ? "Saving..." : "Save Changes"}
         </BounceButton>
       </motion.div>
+
+      <AnimatePresence>
+        {credKey && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => (credSaving ? undefined : setCredKey(null))}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[560px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-foreground tracking-tight mb-1">Configure integration</h2>
+                  <p className="text-muted-foreground text-[0.8125rem]">
+                    Stored credentials require server env ALLOW_DB_SECRETS=1.
+                  </p>
+                </div>
+                <button
+                  className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60"
+                  onClick={() => (credSaving ? undefined : setCredKey(null))}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {credKey === "stripe_payments" && (
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Stripe secret key</label>
+                    <input
+                      value={credDraft.stripe_secret_key || ""}
+                      onChange={(e) => setCredDraft((p: any) => ({ ...(p || {}), stripe_secret_key: e.target.value }))}
+                      placeholder="sk_live_... or sk_test_..."
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                    <div className="text-muted-foreground/50 text-[0.75rem] mt-2">Leave blank to clear stored key.</div>
+                  </div>
+                )}
+
+                {credKey === "sendgrid_email" && (
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">SendGrid API key</label>
+                    <input
+                      value={credDraft.sendgrid_api_key || ""}
+                      onChange={(e) => setCredDraft((p: any) => ({ ...(p || {}), sendgrid_api_key: e.target.value }))}
+                      placeholder="SG...."
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                    <div className="text-muted-foreground/50 text-[0.75rem] mt-2">Leave blank to clear stored key.</div>
+                  </div>
+                )}
+
+                {credKey === "twilio_sms" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Twilio Account SID</label>
+                      <input
+                        value={credDraft.twilio_account_sid || ""}
+                        onChange={(e) => setCredDraft((p: any) => ({ ...(p || {}), twilio_account_sid: e.target.value }))}
+                        placeholder="AC..."
+                        className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Twilio Auth Token</label>
+                      <input
+                        value={credDraft.twilio_auth_token || ""}
+                        onChange={(e) => setCredDraft((p: any) => ({ ...(p || {}), twilio_auth_token: e.target.value }))}
+                        placeholder="••••••••"
+                        className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                      />
+                    </div>
+                    <div className="text-muted-foreground/50 text-[0.75rem]">Leave both blank to clear stored credentials.</div>
+                  </div>
+                )}
+
+                {credKey === "google_maps" && (
+                  <div>
+                    <label className="block text-[0.75rem] text-muted-foreground/60 mb-2">Google Maps API key</label>
+                    <input
+                      value={credDraft.google_maps_api_key || ""}
+                      onChange={(e) => setCredDraft((p: any) => ({ ...(p || {}), google_maps_api_key: e.target.value }))}
+                      placeholder="AIza..."
+                      className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                    />
+                    <div className="text-muted-foreground/50 text-[0.75rem] mt-2">Leave blank to clear stored key.</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-6 flex items-center justify-end gap-2">
+                <BounceButton variant="ghost" size="sm" onClick={credSaving ? undefined : () => setCredKey(null)} className={credSaving ? "opacity-70 pointer-events-none" : ""}>
+                  Cancel
+                </BounceButton>
+                <BounceButton variant="primary" size="sm" onClick={credSaving ? undefined : saveCreds} className={credSaving ? "opacity-70 pointer-events-none" : ""}>
+                  {credSaving ? "Saving..." : "Save credentials"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

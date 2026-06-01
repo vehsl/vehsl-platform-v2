@@ -26,8 +26,53 @@ from .models import (
     User,
     UserProfile,
     UserSettings,
+    get_admin_platform_password_policy,
 )
 
+
+def validate_password_for_platform(password: str) -> str:
+    value = str(password or "")
+    policy = (get_admin_platform_password_policy() or "").strip() or "strong_10_chars"
+
+    if policy == "strong_12_chars":
+        min_len = 12
+        require_upper = True
+        require_lower = True
+        require_number = True
+        require_special = True
+    elif policy == "standard_8_chars":
+        min_len = 8
+        require_upper = False
+        require_lower = False
+        require_number = True
+        require_special = False
+    else:
+        min_len = 10
+        require_upper = True
+        require_lower = True
+        require_number = True
+        require_special = True
+
+    checks = [(len(value) >= min_len, f"Password must be at least {min_len} characters.")]
+    if require_upper:
+        checks.append((re.search(r"[A-Z]", value) is not None, "Password must include an uppercase letter."))
+    if require_lower:
+        checks.append((re.search(r"[a-z]", value) is not None, "Password must include a lowercase letter."))
+    if require_number:
+        checks.append((re.search(r"[0-9]", value) is not None, "Password must include a number."))
+    if require_special:
+        checks.append((re.search(r"[^A-Za-z0-9]", value) is not None, "Password must include a special character."))
+
+    for ok, message in checks:
+        if not ok:
+            raise serializers.ValidationError(message)
+
+    try:
+        validate_password(value)
+    except DjangoValidationError as e:
+        raise serializers.ValidationError(list(e.messages))
+
+    return value
 
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -681,7 +726,7 @@ class RegisterSerializer(serializers.Serializer):
     first_name = serializers.CharField(required=False, allow_blank=True)
     last_name = serializers.CharField(required=False, allow_blank=True)
     account_type = serializers.ChoiceField(choices=User.AccountType.choices, required=True)
-    password = serializers.CharField(write_only=True, min_length=10)
+    password = serializers.CharField(write_only=True, min_length=8)
 
     country = serializers.CharField(required=False, allow_blank=True)
     province = serializers.CharField(required=False, allow_blank=True)
@@ -718,23 +763,7 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate_password(self, value):
-        checks = [
-            (len(value) >= 10, "Password must be at least 10 characters."),
-            (re.search(r"[A-Z]", value) is not None, "Password must include an uppercase letter."),
-            (re.search(r"[a-z]", value) is not None, "Password must include a lowercase letter."),
-            (re.search(r"[0-9]", value) is not None, "Password must include a number."),
-            (re.search(r"[^A-Za-z0-9]", value) is not None, "Password must include a special character."),
-        ]
-        for ok, message in checks:
-            if not ok:
-                raise serializers.ValidationError(message)
-
-        try:
-            validate_password(value)
-        except DjangoValidationError as e:
-            raise serializers.ValidationError(list(e.messages))
-
-        return value
+        return validate_password_for_platform(value)
 
     def validate(self, attrs):
         email = (attrs.get("email") or "").strip() or None

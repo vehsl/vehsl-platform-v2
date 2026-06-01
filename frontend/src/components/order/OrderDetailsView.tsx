@@ -6,6 +6,7 @@ import { Copy, CheckCircle2, MapPin, CreditCard, Phone, Package as PackageIcon, 
 import { motion } from 'motion/react';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
 import { toast } from 'sonner';
+import { fmtMoney as fmtMoneyUtil } from '@/lib/utils';
 import svgPaths from './imports/svg-qnvxk449z7';
 
 // --- Action Button Icons from Figma ---
@@ -164,13 +165,7 @@ interface OrderDetailsViewProps {
 }
 
 function fmtMoney(currency: string, amount: string | number) {
-    const n = Number(amount || 0);
-    if (!Number.isFinite(n)) return `${currency} ${amount}`;
-    try {
-        return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'USD' }).format(n);
-    } catch {
-        return `${currency} ${n.toLocaleString()}`;
-    }
+    return fmtMoneyUtil(amount, currency);
 }
 
 export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: OrderDetailsViewProps) {

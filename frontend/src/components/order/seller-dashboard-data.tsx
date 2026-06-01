@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useRef, useCallback } from 'react';
+import { fmtMoney as fmtMoneyUtil } from '@/lib/utils';
 import {
     Package, Send, CircleAlert,
     MessageCircle, RotateCcw, Bell, MessageSquare,
@@ -67,7 +68,7 @@ export function useBounce() {
 }
 
 export function fmt(n: number) {
-    return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    return fmtMoneyUtil(n);
 }
 
 /* -- Action orders needing seller response -- */

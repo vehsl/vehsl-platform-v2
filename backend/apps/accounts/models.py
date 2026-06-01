@@ -4,6 +4,7 @@ import re
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
+from django.core.cache import cache
 from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
@@ -412,6 +413,73 @@ class AdminPlatformSettings(models.Model):
 
     def __str__(self):
         return f"admin_platform_settings:{self.key}"
+
+
+def admin_platform_settings_defaults() -> dict:
+    return {
+        "general": {
+            "platform_name": "Vehsl",
+            "default_currency": "USD",
+            "timezone": "UTC",
+            "language": "English",
+            "integrations_enabled": {
+                "stripe_payments": True,
+                "sendgrid_email": True,
+                "twilio_sms": True,
+                "google_maps": True,
+            },
+            "integration_credentials": {
+                "stripe_secret_key": "",
+                "sendgrid_api_key": "",
+                "twilio_account_sid": "",
+                "twilio_auth_token": "",
+                "google_maps_api_key": "",
+            },
+        },
+        "notifications": {
+            "email_notifications": True,
+            "push_notifications": True,
+            "sms_alerts": False,
+            "daily_digest": True,
+        },
+        "security": {
+            "two_factor_auth": False,
+            "session_timeout_minutes": 0,
+            "ip_whitelisting": False,
+            "ip_whitelist": [],
+            "password_policy": "strong_10_chars",
+        },
+    }
+
+
+def get_admin_platform_settings(key: str = "global", *, use_cache: bool = True) -> dict:
+    cache_key = f"admin_platform_settings:{key}"
+    if use_cache:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+    defaults = admin_platform_settings_defaults()
+    obj, _ = AdminPlatformSettings.objects.get_or_create(key=key)
+    out = {
+        "general": {**defaults["general"], **(obj.general or {})},
+        "notifications": {**defaults["notifications"], **(obj.notifications or {})},
+        "security": {**defaults["security"], **(obj.security or {})},
+        "updated_at": obj.updated_at,
+    }
+    cache.set(cache_key, out, timeout=30)
+    return out
+
+
+def get_admin_platform_security_settings(*, use_cache: bool = True) -> dict:
+    s = get_admin_platform_settings(use_cache=use_cache)
+    sec = s.get("security")
+    return sec if isinstance(sec, dict) else dict(admin_platform_settings_defaults()["security"])
+
+
+def get_admin_platform_password_policy(*, use_cache: bool = True) -> str:
+    sec = get_admin_platform_security_settings(use_cache=use_cache)
+    return str(sec.get("password_policy") or "strong_10_chars").strip() or "strong_10_chars"
 
 
 class AuditLog(models.Model):
