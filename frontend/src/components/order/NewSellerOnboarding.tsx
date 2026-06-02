@@ -257,12 +257,14 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
 
     // Assigned rating (shown in live step)
     const [assignedRating, setAssignedRating] = useState<number>(4.8);
+    const [serverStage, setServerStage] = useState<string>('');
 
     const [listingId, setListingId] = useState<number | null>(null);
     const [submittingRequest, setSubmittingRequest] = useState(false);
     const [savingSample, setSavingSample] = useState(false);
     const [advancing, setAdvancing] = useState(false);
     const [publishing, setPublishing] = useState(false);
+    const didAutoCompleteRef = useRef(false);
 
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const extraPhotosRef = useRef<HTMLInputElement | null>(null);
@@ -341,6 +343,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
 
                 setListingId(active.id);
                 setAssignedRating(typeof active.rating === 'number' ? active.rating : Number(active.rating || 4.8));
+                setServerStage((active.stage || '').toString().toLowerCase());
 
                 const firstPhoto = Array.isArray(active.photos) && active.photos[0] ? active.photos[0] : null;
                 const meta = active.product_meta && typeof active.product_meta === 'object' ? active.product_meta : {};
@@ -434,6 +437,9 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 } else if (stage === 'live') {
                     setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
                     setStep('live');
+                } else if (stage === 'inbound') {
+                    setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
+                    setStep('inspection');
                 } else if (stage === 'done') {
                     setCompleted(new Set(['request', 'compliance', 'samples', 'inspection', 'live']));
                     setStep('done');
@@ -729,12 +735,22 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
             const data = await res.json().catch(() => null);
             if (!res.ok || !data) return;
             const stage = (data.stage || '').toString().toLowerCase();
+            setServerStage(stage);
             if (stage === 'samples') {
                 setCompleted(new Set(['request']));
                 setStep('samples');
+            } else if (stage === 'compliance') {
+                setCompleted(new Set(['request']));
+                setStep('compliance');
             } else if (stage === 'inspection') {
-                setCompleted(new Set(['request', 'samples']));
+                setCompleted(new Set(['request', 'compliance', 'samples']));
                 setStep('inspection');
+            } else if (stage === 'inbound') {
+                setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
+                setStep('inspection');
+            } else if (stage === 'live') {
+                setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
+                setStep('live');
             } else if (stage === 'done') {
                 setCompleted(new Set(['request', 'samples', 'inspection', 'live']));
                 if (typeof data.rating === 'number' || data.rating) {
@@ -742,14 +758,20 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     if (Number.isFinite(r)) setAssignedRating(r);
                 }
                 setStep('done');
-            } else {
-                setCompleted(new Set(['request', 'samples', 'inspection']));
-                setStep('live');
             }
         } finally {
             setRefreshingStatus(false);
         }
     }, [apiBase, assignedRating, listingId, readAuth, refreshingStatus]);
+
+    useEffect(() => {
+        if (step !== 'done') return;
+        if (didAutoCompleteRef.current) return;
+        didAutoCompleteRef.current = true;
+        toast.success('Listing is live', { description: 'Redirecting to your dashboard…' });
+        const t = window.setTimeout(() => onComplete(), 900);
+        return () => window.clearTimeout(t);
+    }, [onComplete, step]);
 
     // Clear field errors when user types
     useEffect(() => { if (product.name.trim()) setNameError(false); }, [product.name]);
@@ -2683,7 +2705,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             <Sparkles size={26} color="#5EC072" strokeWidth={1.6} />
                         </div>
                         <p className="text-[16px] font-bold text-[#1A1A1A]/80 mb-1.5">
-                            Awaiting review
+                            {(serverStage === 'live' || serverStage === 'done') ? 'Awaiting publish' : 'Awaiting review'}
                         </p>
                         <p className="text-[13px] font-medium text-[#1A1A1A]/38 mb-7 max-w-[280px] mx-auto leading-relaxed">
                             Our team will inspect and publish your listing after review. Tap refresh to check the latest status.
@@ -2702,6 +2724,21 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             {celebrating && <CelebrationBurst />}
                             <Rocket size={18} strokeWidth={2.5} />
                             {refreshingStatus ? 'Refreshing…' : 'Refresh status'}
+                        </motion.button>
+
+                        <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.96 }}
+                            onClick={() => onComplete()}
+                            className="w-full mt-3 py-4 rounded-full text-[14px] font-black cursor-pointer flex items-center justify-center gap-2"
+                            style={{
+                                background: 'rgba(26,26,26,0.06)',
+                                color: 'rgba(26,26,26,0.72)',
+                                border: '0.5px solid rgba(0,0,0,0.10)',
+                            }}
+                        >
+                            <ArrowRight size={16} strokeWidth={2.5} />
+                            Go to dashboard
                         </motion.button>
                     </div>
                 </div>

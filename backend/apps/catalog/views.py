@@ -43,6 +43,7 @@ from .serializers import (
     InboundRequestSerializer,
     InboundRequestItemSerializer,
     ListingRequestCreateSerializer,
+    ListingRequestUpdateSerializer,
     ListingRequestSerializer,
     PricingTierSerializer,
     ProductMediaSerializer,
@@ -454,6 +455,23 @@ class ProductViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(seller=self.request.user)
 
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        try:
+            obj.status = Product.Status.ARCHIVED
+            obj.save(update_fields=["status", "updated_at"])
+        except Exception:
+            obj.status = Product.Status.ARCHIVED
+            obj.save(update_fields=["status", "updated_at"])
+        audit(
+            request.user,
+            action="seller_product_deleted",
+            target_type="product",
+            target_id=str(getattr(obj, "id", "") or ""),
+            payload={"status": "archived"},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=["get"], url_path="compare")
     def compare(self, request, *args, **kwargs):
         raw = (request.query_params.get("ids") or "").strip()
@@ -766,6 +784,27 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         out = ListingRequestSerializer(lr, context={"request": request}).data
         return Response(out, status=status.HTTP_201_CREATED)
 
+    def partial_update(self, request, pk=None, *args, **kwargs):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if lr.created_product_id or lr.stage in {ListingRequest.Stage.DONE, ListingRequest.Stage.LIVE}:
+            return Response({"detail": "This listing request can no longer be edited."}, status=status.HTTP_400_BAD_REQUEST)
+        if lr.stage not in {ListingRequest.Stage.SAMPLES, ListingRequest.Stage.COMPLIANCE}:
+            return Response({"detail": "You can only edit a listing request when it is in Samples or Compliance."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ser = ListingRequestUpdateSerializer(lr, data=request.data, partial=True, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        lr = ser.save()
+        audit(
+            request.user,
+            action="seller_listing_request_updated",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage},
+        )
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
     @action(detail=True, methods=["post"], url_path="sample")
     def sample(self, request, pk=None):
         lr = self.get_queryset().filter(pk=pk).first()
@@ -799,6 +838,31 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
     def publish(self, request, pk=None):
         return Response({"detail": "Only the review team can publish listings."}, status=status.HTTP_403_FORBIDDEN)
 
+    @action(detail=True, methods=["post"], url_path="resubmit")
+    def resubmit(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if lr.created_product_id:
+            return Response({"detail": "This listing request has already been published."}, status=status.HTTP_400_BAD_REQUEST)
+        if lr.stage != ListingRequest.Stage.SAMPLES:
+            return Response({"detail": "Only listing requests in Samples can be resubmitted."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.stage = ListingRequest.Stage.COMPLIANCE
+        lr.compliance_verified = False
+        lr.compliance_notes = ""
+        lr.inspected = False
+        lr.inspector = None
+        lr.save(update_fields=["stage", "compliance_verified", "compliance_notes", "inspected", "inspector", "updated_at"])
+        audit(
+            request.user,
+            action="seller_listing_request_resubmitted",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage},
+        )
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
 
 class AdminListingRequestViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
@@ -818,7 +882,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         stage = (request.query_params.get("stage") or "").strip().lower()
         q = (request.query_params.get("q") or "").strip()
         seller = (request.query_params.get("seller") or "").strip()
-        if stage:
+        if stage and stage != "all":
             qs = qs.filter(stage=stage)
         if seller:
             qs = qs.filter(Q(seller__email__icontains=seller) | Q(seller__first_name__icontains=seller) | Q(seller__last_name__icontains=seller))
@@ -848,6 +912,10 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             return Response({"detail": "Invalid decision."}, status=status.HTTP_400_BAD_REQUEST)
 
         if decision == "approve":
+            if not lr.compliance_verified:
+                return Response({"detail": "Compliance must be verified before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            if lr.inspector and not lr.inspected:
+                return Response({"detail": "Inspection must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
             try:
                 rating = float(rating_in) if rating_in is not None else float(lr.rating or 4.8)
             except Exception:
@@ -874,6 +942,16 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             lr.rating = None
             lr.stage = ListingRequest.Stage.SAMPLES
             lr.save(update_fields=["product_meta", "rating", "stage", "updated_at"])
+            try:
+                Notification.objects.create(
+                    user=lr.seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="listing_request_changes_requested",
+                    payload={"listing_request_id": str(lr.id), "message": message, "stage": lr.stage},
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
             audit(
                 request.user,
                 action="admin_listing_request_reviewed",
@@ -905,6 +983,9 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             lr.stage = ListingRequest.Stage.DONE
             lr.save(update_fields=["stage", "updated_at"])
             return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+        if lr.stage != ListingRequest.Stage.LIVE:
+            return Response({"detail": "Listing must be approved (Live stage) before publish."}, status=status.HTTP_400_BAD_REQUEST)
 
         meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
         origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}

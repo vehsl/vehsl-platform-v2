@@ -1442,7 +1442,22 @@ export function AdminProducts() {
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
+  const [actionSuccess, setActionSuccess] = useState<string>("");
   const [requestingMedia, setRequestingMedia] = useState(false);
+  const [changesOpen, setChangesOpen] = useState(false);
+  const [changesId, setChangesId] = useState<number | null>(null);
+  const [changesMessage, setChangesMessage] = useState<string>("");
+  const [changesSaving, setChangesSaving] = useState(false);
+
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [verifyId, setVerifyId] = useState<number | null>(null);
+  const [verifyNotes, setVerifyNotes] = useState<string>("");
+  const [verifySaving, setVerifySaving] = useState(false);
+
+  const [approveOpen, setApproveOpen] = useState(false);
+  const [approveId, setApproveId] = useState<number | null>(null);
+  const [approveRating, setApproveRating] = useState<string>("");
+  const [approveSaving, setApproveSaving] = useState(false);
 
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [categoryQuery, setCategoryQuery] = useState("");
@@ -1525,7 +1540,19 @@ export function AdminProducts() {
   });
 
   const [lrSearch, setLrSearch] = useState("");
-  const [lrStage, setLrStage] = useState<string>("inspection");
+  const [lrStage, setLrStage] = useState<string>("all");
+
+  const setListingRequestStageFilter = useCallback(
+    (v: string) => {
+      const next = (v || "").toString();
+      setLrStage(next);
+      const params = new URLSearchParams(location.search);
+      if (next && next !== "all") params.set("rs", next);
+      else params.delete("rs");
+      navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+    },
+    [location.search, navigate]
+  );
 
   const lrFilters = useMemo(() => {
     const f: any = {};
@@ -1553,6 +1580,21 @@ export function AdminProducts() {
     initialPageSize: 20,
     debounceMs: 250,
   });
+
+  const didRelaxListingRequestFilterRef = useRef(false);
+  useEffect(() => {
+    if (didRelaxListingRequestFilterRef.current) return;
+    const modeFromUrl = (new URLSearchParams(location.search).get("mode") || "").trim().toLowerCase();
+    if (modeFromUrl !== "requests") return;
+    if (listingRequestsLoading) return;
+    if (lrSearch.trim()) return;
+    const params = new URLSearchParams(location.search);
+    if (!params.has("rs")) return;
+    if (listingRequestsCount !== 0) return;
+    didRelaxListingRequestFilterRef.current = true;
+    params.delete("rs");
+    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+  }, [listingRequestsCount, listingRequestsLoading, location.search, lrSearch, navigate]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -1589,7 +1631,7 @@ export function AdminProducts() {
       const rq = (params.get("rq") || "").trim();
       const rs = (params.get("rs") || "").trim().toLowerCase();
       setLrSearch(rq);
-      setLrStage(rs || "inspection");
+      setLrStage(rs || "all");
       setLrPage(1);
     }
   }, [location.search, setPage]);
@@ -1602,23 +1644,51 @@ export function AdminProducts() {
 
   const setMode = (nextMode: "products" | "requests") => {
     const params = new URLSearchParams(location.search);
-    if (nextMode === "requests") params.set("mode", "requests");
-    else params.delete("mode");
+    if (nextMode === "requests") {
+      params.set("mode", "requests");
+      params.delete("rs");
+      params.delete("rq");
+      params.delete("page");
+    } else {
+      params.delete("mode");
+      params.delete("rs");
+      params.delete("rq");
+      params.delete("page");
+    }
     navigate({ search: params.toString() ? `?${params.toString()}` : "" });
   };
 
   const publishListingRequest = async (lr: any) => {
     const id = Number(lr.id);
+    const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+    const origin = meta?.origin_location && typeof meta.origin_location === "object" ? meta.origin_location : {};
+    const missing: string[] = [];
+    if (!String(meta?.sku || "").trim()) missing.push("sku");
+    if (!String(meta?.hs_code || "").trim()) missing.push("hs_code");
+    if (!String(origin?.country || "").trim()) missing.push("origin_country");
+    if (meta?.lead_time_days == null || meta?.lead_time_days === "") missing.push("lead_time_days");
+    if (meta?.weight_grams == null || meta?.weight_grams === "") missing.push("weight_grams");
+    if (meta?.ship_time_min_days == null || meta?.ship_time_min_days === "" || meta?.ship_time_max_days == null || meta?.ship_time_max_days === "") {
+      missing.push("ship_time_range_days");
+    }
+
     if (!lr.compliance_verified) {
-      setActionError("Cannot publish: Compliance documents must be verified first.");
+      setActionError("Cannot publish: Compliance must be verified first.");
       return;
     }
-    if (!lr.inspected) {
-      setActionError("Cannot publish: Quality inspection must be completed first.");
+    const needsInspection = !!lr?.inspector;
+    if (needsInspection && !lr.inspected) {
+      setActionError("Cannot publish: Inspector is assigned but inspection is not completed yet.");
+      return;
+    }
+    if (missing.length) {
+      setActionError(`Cannot publish: Missing required fields (${missing.join(", ")}).`);
       return;
     }
 
     try {
+      setActionError("");
+      setActionSuccess("");
       const raw = window.prompt("Rating (0–5). Leave blank for default 4.8") || "";
       const rating = raw.trim() ? Number(raw.trim()) : undefined;
       const body: any = {};
@@ -1628,6 +1698,8 @@ export function AdminProducts() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      setActionSuccess("Published. Product created and listing request moved to Done.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
       refreshListingRequests();
       refreshProducts();
     } catch (e: any) {
@@ -1636,35 +1708,135 @@ export function AdminProducts() {
   };
 
   const verifyCompliance = async (lr: any) => {
-    const id = Number(lr.id);
+    const id = Number(lr?.id || 0);
     if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setVerifyId(id);
+    setVerifyNotes((lr?.compliance_notes || "").toString());
+    setVerifyOpen(true);
+  };
+
+  const approveListingRequest = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setApproveId(id);
+    setApproveRating("");
+    setApproveOpen(true);
+  };
+
+  const submitVerifyModal = async () => {
+    const id = Number(verifyId || 0);
+    if (!id) return;
+    if (verifySaving) return;
+    setVerifySaving(true);
     try {
-      setActionError("");
-      const notes = (window.prompt("Compliance notes (optional)") || "").trim();
+      const notes = (verifyNotes || "").trim();
       await fetchJson(`/api/v1/admin/listing-requests/${id}/verify_compliance/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ verified: true, notes }),
       });
+      setVerifyOpen(false);
+      setVerifyId(null);
+      setVerifyNotes("");
+      setActionSuccess("Compliance verified. Listing moved to Inspection stage.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
       refreshListingRequests();
+      if (lrStage === "compliance") setListingRequestStageFilter("inspection");
     } catch (e: any) {
       setActionError(e?.message || "Compliance verification failed.");
+    } finally {
+      setVerifySaving(false);
     }
   };
 
-  const requestChangesForListing = async (id: number) => {
+  const submitApproveModal = async () => {
+    const id = Number(approveId || 0);
+    if (!id) return;
+    if (approveSaving) return;
+    setApproveSaving(true);
     try {
-      const msg = (window.prompt("Message to seller (what to fix)") || "").trim();
+      const raw = (approveRating || "").trim();
+      const body: any = { decision: "approve" };
+      if (raw) {
+        const rating = Number(raw);
+        if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
+          setActionError("Rating must be between 0 and 5.");
+          return;
+        }
+        body.rating = rating;
+      }
       await fetchJson(`/api/v1/admin/listing-requests/${id}/review/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "needs_changes", message: msg }),
+        body: JSON.stringify(body),
       });
+      setApproveOpen(false);
+      setApproveId(null);
+      setApproveRating("");
+      setActionSuccess("Approved. Listing moved to Live stage.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
       refreshListingRequests();
+      if (lrStage === "inspection" || lrStage === "inbound") setListingRequestStageFilter("live");
+    } catch (e: any) {
+      setActionError(e?.message || "Approval failed.");
+    } finally {
+      setApproveSaving(false);
+    }
+  };
+
+  const requestChangesForListing = async (id: number, msg: string) => {
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/review/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "needs_changes", message: (msg || "").trim() }),
+      });
+      setActionSuccess("Changes requested. Listing moved to Samples stage.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      if (lrStage !== "all" && lrStage !== "samples") setListingRequestStageFilter("samples");
     } catch (e: any) {
       setActionError(e?.message || "Request changes failed.");
     }
   };
+
+  const openChangesModal = useCallback((lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+    const existing = (meta?.review_message || "").toString();
+    setChangesId(id);
+    setChangesMessage(existing);
+    setChangesOpen(true);
+  }, []);
+
+  const submitChangesModal = useCallback(async () => {
+    const id = Number(changesId || 0);
+    const msg = (changesMessage || "").trim();
+    if (!id) return;
+    if (!msg) {
+      setActionError("Please enter a message for the seller.");
+      return;
+    }
+    if (changesSaving) return;
+    setChangesSaving(true);
+    try {
+      await requestChangesForListing(id, msg);
+      setChangesOpen(false);
+      setChangesId(null);
+      setChangesMessage("");
+    } finally {
+      setChangesSaving(false);
+    }
+  }, [changesId, changesMessage, changesSaving, requestChangesForListing]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -2026,6 +2198,255 @@ export function AdminProducts() {
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
+      <AnimatePresence>
+        {changesOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !changesSaving) {
+                setChangesOpen(false);
+                setChangesId(null);
+                setChangesMessage("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[640px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Request Changes</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Tell the seller exactly what to fix.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (changesSaving) return;
+                    setChangesOpen(false);
+                    setChangesId(null);
+                    setChangesMessage("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <textarea
+                  value={changesMessage}
+                  onChange={(e) => setChangesMessage(e.target.value)}
+                  placeholder="Example: Please add HS code, upload compliance documents, and correct the origin country."
+                  rows={6}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 resize-none"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (changesSaving) return;
+                      setChangesOpen(false);
+                      setChangesId(null);
+                      setChangesMessage("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitChangesModal()}
+                    disabled={changesSaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      changesSaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {changesSaving ? "Sending…" : "Send to Seller"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {verifyOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !verifySaving) {
+                setVerifyOpen(false);
+                setVerifyId(null);
+                setVerifyNotes("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[640px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Verify Compliance</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Confirm compliance and move the listing to Inspection.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (verifySaving) return;
+                    setVerifyOpen(false);
+                    setVerifyId(null);
+                    setVerifyNotes("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <textarea
+                  value={verifyNotes}
+                  onChange={(e) => setVerifyNotes(e.target.value)}
+                  placeholder="Optional notes (e.g., documents reviewed, exceptions, requirements)."
+                  rows={5}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 resize-none"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (verifySaving) return;
+                      setVerifyOpen(false);
+                      setVerifyId(null);
+                      setVerifyNotes("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitVerifyModal()}
+                    disabled={verifySaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      verifySaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {verifySaving ? "Verifying…" : "Verify"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {approveOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !approveSaving) {
+                setApproveOpen(false);
+                setApproveId(null);
+                setApproveRating("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Approve Listing</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Set rating and move the listing to Live stage.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (approveSaving) return;
+                    setApproveOpen(false);
+                    setApproveId(null);
+                    setApproveRating("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <div className="text-[0.75rem] uppercase tracking-wide text-muted-foreground/60 mb-2">Rating (0–5)</div>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    value={approveRating}
+                    onChange={(e) => setApproveRating(e.target.value)}
+                    placeholder="Leave blank for default 4.8"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (approveSaving) return;
+                      setApproveOpen(false);
+                      setApproveId(null);
+                      setApproveRating("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitApproveModal()}
+                    disabled={approveSaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      approveSaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {approveSaving ? "Approving…" : "Approve"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-foreground tracking-tight mb-1.5">Products</h1>
@@ -2083,11 +2504,7 @@ export function AdminProducts() {
                   value={lrStage}
                   onChange={(e) => {
                     const v = (e.target.value || "").toString();
-                    setLrStage(v);
-                    const params = new URLSearchParams(location.search);
-                    if (v && v !== "all") params.set("rs", v);
-                    else params.delete("rs");
-                    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+                    setListingRequestStageFilter(v);
                   }}
                   className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
                 >
@@ -2125,16 +2542,18 @@ export function AdminProducts() {
             ) : (
               <div className="overflow-hidden rounded-2xl border border-border/30">
                 <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-muted/10 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
-                  <div className="col-span-4">Product</div>
+                  <div className="col-span-3">Product</div>
                   <div className="col-span-3">Seller</div>
                   <div className="col-span-2">Stage</div>
-                  <div className="col-span-2">Created</div>
-                  <div className="col-span-1 text-right">Actions</div>
+                  <div className="col-span-1">Created</div>
+                  <div className="col-span-1 text-right">Changes</div>
+                  <div className="col-span-1 text-right">Review</div>
+                  <div className="col-span-1 text-right">Publish</div>
                 </div>
                 <div className="divide-y divide-border/20">
                   {(listingRequests || []).map((lr: any) => (
                     <div key={lr.id} className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
-                      <div className="col-span-4">
+                      <div className="col-span-3">
                         <div className="text-[0.875rem] font-semibold text-foreground/85">{lr.product_name || "—"}</div>
                         <div className="text-[0.75rem] text-muted-foreground/60">{lr.company_name || "—"}</div>
                       </div>
@@ -2183,63 +2602,131 @@ export function AdminProducts() {
                           )}
                         </div>
                       </div>
-                      <div className="col-span-2 text-[0.8125rem] text-muted-foreground/70 tabular-nums">
+                      <div className="col-span-1 text-[0.8125rem] text-muted-foreground/70 tabular-nums whitespace-nowrap">
                         {(lr.created_at || "").toString().slice(0, 10) || "—"}
                       </div>
-                      <div className="col-span-1 flex justify-end gap-2">
-                        {lr.stage === "compliance" ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => requestChangesForListing(Number(lr.id))}
-                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              Changes
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => verifyCompliance(lr)}
-                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
-                            >
-                              Verify
-                            </button>
-                          </>
-                        ) : lr.stage === "live" || lr.stage === "inbound" || lr.stage === "inspection" ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => requestChangesForListing(Number(lr.id))}
-                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              Changes
-                            </button>
+                      <div className="col-span-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => openChangesModal(lr)}
+                          className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          Changes
+                        </button>
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        {(() => {
+                          const stageKey = String(lr?.stage || "").toLowerCase();
+                          const needsInspection = !!lr?.inspector;
+                          const isDone = stageKey === "done" || !!lr?.created_product_id;
+                          const canApprove =
+                            !!lr?.compliance_verified &&
+                            (!needsInspection || !!lr?.inspected) &&
+                            (stageKey === "inspection" || stageKey === "inbound");
+
+                          if (!isDone && !lr?.compliance_verified) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => verifyCompliance(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                                title="Verify Compliance (moves listing to Inspection stage)"
+                              >
+                                Verify
+                              </button>
+                            );
+                          }
+
+                          if (!isDone && needsInspection && !lr?.inspected) {
+                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Waiting</div>;
+                          }
+
+                          if (!isDone && canApprove) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => approveListingRequest(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                                title="Approve (sets rating and moves listing to Live stage)"
+                              >
+                                Approve
+                              </button>
+                            );
+                          }
+
+                          if (stageKey === "live") {
+                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Approved</div>;
+                          }
+                          if (isDone) {
+                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Done</div>;
+                          }
+                          return <div className="text-[0.75rem] text-muted-foreground/50">—</div>;
+                        })()}
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        {(() => {
+                          const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+                          const origin = meta?.origin_location && typeof meta.origin_location === "object" ? meta.origin_location : {};
+                          const missing: string[] = [];
+                          if (!String(meta?.sku || "").trim()) missing.push("sku");
+                          if (!String(meta?.hs_code || "").trim()) missing.push("hs_code");
+                          if (!String(origin?.country || "").trim()) missing.push("origin_country");
+                          if (meta?.lead_time_days == null || meta?.lead_time_days === "") missing.push("lead_time_days");
+                          if (meta?.weight_grams == null || meta?.weight_grams === "") missing.push("weight_grams");
+                          if (
+                            meta?.ship_time_min_days == null ||
+                            meta?.ship_time_min_days === "" ||
+                            meta?.ship_time_max_days == null ||
+                            meta?.ship_time_max_days === ""
+                          ) {
+                            missing.push("ship_time_range_days");
+                          }
+
+                          const needsInspection = !!lr?.inspector;
+                          const canPublish =
+                            !lr?.created_product_id &&
+                            String(lr?.stage || "").toLowerCase() === "live" &&
+                            !!lr?.compliance_verified &&
+                            (!needsInspection || !!lr?.inspected) &&
+                            missing.length === 0;
+
+                          const showPublish = !lr?.created_product_id && String(lr?.stage || "").toLowerCase() !== "done";
+                          const title = lr?.created_product_id
+                            ? "Already published"
+                            : String(lr?.stage || "").toLowerCase() !== "live"
+                              ? "Needs approval (Live stage) before publish"
+                              : !lr?.compliance_verified
+                                ? "Needs Compliance Verification"
+                                : needsInspection && !lr?.inspected
+                                  ? "Needs Inspection Completion"
+                                  : missing.length
+                                    ? `Missing required fields (${missing.join(", ")})`
+                                    : "Publish to Marketplace";
+
+                          return showPublish ? (
                             <button
                               type="button"
                               onClick={() => publishListingRequest(lr)}
-                              disabled={!lr.compliance_verified || !lr.inspected}
+                              disabled={!canPublish}
                               className={`px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold transition-all ${
-                                lr.compliance_verified && lr.inspected
+                                canPublish
                                   ? "bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15"
                                   : "bg-muted/10 border border-border/20 text-muted-foreground/40 cursor-not-allowed"
                               }`}
-                              title={
-                                !lr.compliance_verified ? "Needs Compliance Verification" :
-                                !lr.inspected ? "Needs Quality Inspection" :
-                                "Publish to Marketplace"
-                              }
+                              title={title}
                             >
                               Publish
                             </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => publishListingRequest(lr)}
-                            className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            View
-                          </button>
-                        )}
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => publishListingRequest(lr)}
+                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              View
+                            </button>
+                          );
+                        })()}
                       </div>
                     </div>
                   ))}
@@ -2414,6 +2901,12 @@ export function AdminProducts() {
               </button>
             </div>
           </div>
+
+          {actionSuccess && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-emerald-500/10 text-emerald-600 text-[0.8125rem]">
+              {actionSuccess}
+            </div>
+          )}
 
           {(actionError || error) && (
             <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">

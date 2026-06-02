@@ -835,6 +835,123 @@ class ListingRequestCreateSerializer(serializers.Serializer):
         return lr
 
 
+class ListingRequestUpdateSerializer(ListingRequestCreateSerializer):
+    product_name = serializers.CharField(required=False, allow_blank=False)
+    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    photo = serializers.FileField(required=False, allow_null=True)
+
+    def update(self, instance: ListingRequest, validated_data):
+        category_obj = None
+        category_text = (validated_data.pop("category", None) or "").strip() if "category" in validated_data else None
+        category_id = validated_data.pop("category_id", None) if "category_id" in validated_data else None
+        try:
+            category_id = int(category_id) if category_id is not None else None
+        except Exception:
+            category_id = None
+
+        if category_id:
+            category_obj = Category.objects.filter(id=category_id, deleted_at__isnull=True).first()
+        if category_obj is None and category_text:
+            category_obj = Category.objects.filter(Q(name__iexact=category_text) | Q(slug__iexact=category_text), deleted_at__isnull=True).first()
+
+        if category_obj is not None:
+            instance.category = category_obj
+            instance.category_label = ""
+        elif category_text is not None:
+            instance.category = None
+            instance.category_label = category_text
+
+        if "product_name" in validated_data:
+            instance.product_name = (validated_data.get("product_name") or "").strip()
+        if "company_name" in validated_data:
+            instance.company_name = (validated_data.get("company_name") or "").strip()
+        if "description" in validated_data:
+            instance.description = (validated_data.get("description") or "").strip()
+        if "monthly_capacity" in validated_data:
+            instance.monthly_capacity = (validated_data.get("monthly_capacity") or "").strip()
+        if "currency" in validated_data:
+            instance.currency = (validated_data.get("currency") or "USD").strip().upper()
+        if "unit_price" in validated_data:
+            instance.unit_price = validated_data.get("unit_price")
+        if "moq" in validated_data:
+            try:
+                instance.moq = int(validated_data.get("moq") or 1)
+            except Exception:
+                instance.moq = 1
+
+        meta = instance.product_meta if isinstance(instance.product_meta, dict) else {}
+        meta = dict(meta)
+
+        detail_cfg = validated_data.pop("detail_config", None) if "detail_config" in validated_data else None
+        if isinstance(detail_cfg, str) and detail_cfg.strip():
+            try:
+                detail_cfg = json.loads(detail_cfg)
+            except Exception:
+                detail_cfg = None
+        if isinstance(detail_cfg, dict):
+            detail_cfg = ProductSerializer().validate_detail_config(detail_cfg)
+            meta["detail_config"] = detail_cfg
+
+        currency = (instance.currency or "USD").strip().upper()
+        if "variations" in validated_data:
+            variations_clean = self._clean_variations(validated_data.pop("variations", None))
+            if variations_clean:
+                meta["variations"] = variations_clean
+            else:
+                meta.pop("variations", None)
+        if "pricing_tiers" in validated_data:
+            pricing_tiers_clean = self._clean_pricing_tiers(validated_data.pop("pricing_tiers", None), currency)
+            if pricing_tiers_clean:
+                meta["pricing_tiers"] = pricing_tiers_clean
+            else:
+                meta.pop("pricing_tiers", None)
+
+        if "sku" in validated_data:
+            meta["sku"] = (validated_data.pop("sku", "") or "").strip()
+        if "hs_code" in validated_data:
+            meta["hs_code"] = (validated_data.pop("hs_code", "") or "").strip()
+
+        origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        origin = dict(origin)
+        if "origin_country" in validated_data:
+            origin["country"] = (validated_data.pop("origin_country", "") or "").strip()
+        if "origin_region" in validated_data:
+            origin["region"] = (validated_data.pop("origin_region", "") or "").strip()
+        if "origin_city" in validated_data:
+            origin["city"] = (validated_data.pop("origin_city", "") or "").strip()
+        if origin:
+            meta["origin_location"] = origin
+
+        for k in [
+            "lead_time_days",
+            "weight_grams",
+            "ship_time_min_days",
+            "ship_time_max_days",
+            "sample_ship_days",
+        ]:
+            if k in validated_data:
+                meta[k] = validated_data.pop(k, None)
+        if "sample_available" in validated_data:
+            meta["sample_available"] = bool(validated_data.pop("sample_available", False))
+
+        if "ip_protection_level" in validated_data:
+            ip_level = (validated_data.pop("ip_protection_level", "") or "").strip().lower()
+            if ip_level:
+                meta["ip_protection_level"] = ip_level
+            else:
+                meta.pop("ip_protection_level", None)
+        if "trademark_registration_number" in validated_data:
+            trademark_reg = (validated_data.pop("trademark_registration_number", "") or "").strip()
+            if trademark_reg:
+                meta["trademark_registration_number"] = trademark_reg[:128]
+            else:
+                meta.pop("trademark_registration_number", None)
+
+        instance.product_meta = meta
+        instance.save()
+        return instance
+
+
 class AdminProductListSerializer(serializers.ModelSerializer):
     seller_name = serializers.CharField(read_only=True)
     category_name = serializers.CharField(source="category.name", read_only=True)

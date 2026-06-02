@@ -1747,6 +1747,24 @@ export function WarehouseView() {
     const [inventory, setInventory] = useState<InventoryItem[]>([]);
     const [inboundRequests, setInboundRequests] = useState<any[]>([]);
     const [listingRequests, setListingRequests] = useState<any[]>([]);
+    const [editingListingRequest, setEditingListingRequest] = useState<any | null>(null);
+    const [listingEditSaving, setListingEditSaving] = useState(false);
+    const [listingEditDraft, setListingEditDraft] = useState({
+        product_name: '',
+        company_name: '',
+        description: '',
+        unit_price: '',
+        moq: '1',
+        sku: '',
+        hs_code: '',
+        origin_country: '',
+        origin_region: '',
+        origin_city: '',
+        lead_time_days: '',
+        weight_grams: '',
+        ship_time_min_days: '',
+        ship_time_max_days: '',
+    });
     const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]);
     const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -1763,7 +1781,7 @@ export function WarehouseView() {
                 authedFetch('/api/v1/warehouse/dashboard/release_records/'),
                 authedFetch('/api/v1/warehouse/dashboard/auto_order_settings/'),
                 authedFetch('/api/v1/catalog/inbound-requests/'),
-                authedFetch('/api/v1/catalog/listing-requests/'),
+                authedFetch('/api/v1/catalog/seller/listing-requests/'),
             ]);
 
             if (wRes.ok) {
@@ -1822,6 +1840,100 @@ export function WarehouseView() {
             setLoading(false);
         }
     }, [authedFetch]);
+
+    const openListingFix = useCallback((lr: any) => {
+        const meta = lr?.product_meta && typeof lr.product_meta === 'object' ? lr.product_meta : {};
+        const origin = meta?.origin_location && typeof meta.origin_location === 'object' ? meta.origin_location : {};
+        setListingEditDraft({
+            product_name: asString(lr?.product_name),
+            company_name: asString(lr?.company_name),
+            description: asString(lr?.description),
+            unit_price: asString(lr?.unit_price),
+            moq: asString(lr?.moq ?? '1'),
+            sku: asString(meta?.sku),
+            hs_code: asString(meta?.hs_code),
+            origin_country: asString(origin?.country),
+            origin_region: asString(origin?.region),
+            origin_city: asString(origin?.city),
+            lead_time_days: asString(meta?.lead_time_days),
+            weight_grams: asString(meta?.weight_grams),
+            ship_time_min_days: asString(meta?.ship_time_min_days),
+            ship_time_max_days: asString(meta?.ship_time_max_days),
+        });
+        setEditingListingRequest(lr);
+    }, []);
+
+    const closeListingFix = useCallback(() => {
+        setEditingListingRequest(null);
+        setListingEditSaving(false);
+    }, []);
+
+    const submitListingFix = useCallback(async () => {
+        const lr = editingListingRequest;
+        const id = Number(lr?.id || 0);
+        if (!id) return;
+        if (listingEditSaving) return;
+
+        const payload: any = {
+            product_name: listingEditDraft.product_name.trim(),
+            company_name: listingEditDraft.company_name.trim(),
+            description: listingEditDraft.description.trim(),
+            unit_price: listingEditDraft.unit_price.trim(),
+            moq: listingEditDraft.moq.trim(),
+            sku: listingEditDraft.sku.trim(),
+            hs_code: listingEditDraft.hs_code.trim(),
+            origin_country: listingEditDraft.origin_country.trim(),
+            origin_region: listingEditDraft.origin_region.trim(),
+            origin_city: listingEditDraft.origin_city.trim(),
+            lead_time_days: listingEditDraft.lead_time_days.trim(),
+            weight_grams: listingEditDraft.weight_grams.trim(),
+            ship_time_min_days: listingEditDraft.ship_time_min_days.trim(),
+            ship_time_max_days: listingEditDraft.ship_time_max_days.trim(),
+        };
+
+        const missing: string[] = [];
+        if (!payload.sku) missing.push('SKU');
+        if (!payload.hs_code) missing.push('HS code');
+        if (!payload.origin_country) missing.push('Origin country');
+        if (!payload.lead_time_days) missing.push('Lead time');
+        if (!payload.weight_grams) missing.push('Weight (grams)');
+        if (!payload.ship_time_min_days || !payload.ship_time_max_days) missing.push('Shipping time range');
+        if (!payload.product_name) missing.push('Product name');
+        if (!payload.unit_price) missing.push('Unit price');
+        if (missing.length) {
+            toast.error('Missing required fields', { description: missing.join(', ') });
+            return;
+        }
+
+        setListingEditSaving(true);
+        try {
+            const patchRes = await authedFetch(`/api/v1/catalog/seller/listing-requests/${id}/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const patchData = await patchRes.json().catch(() => null);
+            if (!patchRes.ok) {
+                toast.error('Update failed', { description: asString(patchData?.detail, `Could not update (${patchRes.status})`) });
+                return;
+            }
+
+            const resubmitRes = await authedFetch(`/api/v1/catalog/seller/listing-requests/${id}/resubmit/`, { method: 'POST' });
+            const resubmitData = await resubmitRes.json().catch(() => null);
+            if (!resubmitRes.ok) {
+                toast.error('Resubmit failed', { description: asString(resubmitData?.detail, `Could not resubmit (${resubmitRes.status})`) });
+                return;
+            }
+
+            toast.success('Resubmitted for review', { description: 'Your updates were sent back to the compliance team.' });
+            closeListingFix();
+            fetchWarehouseData();
+        } catch {
+            toast.error('Resubmit failed', { description: 'Could not resubmit your changes.' });
+        } finally {
+            setListingEditSaving(false);
+        }
+    }, [authedFetch, closeListingFix, editingListingRequest, fetchWarehouseData, listingEditDraft, listingEditSaving]);
 
     const fetchInventory = useCallback(async (wId: string) => {
         try {
@@ -2099,6 +2211,160 @@ export function WarehouseView() {
                         productColor={productColorMap[detailRecord.inventoryItemId]}
                         onClose={() => setDetailRecord(null)}
                     />
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {editingListingRequest && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.25)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeListingFix();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.97, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 5 }}
+                            transition={{ duration: 0.25, ease: EASE }}
+                            className="w-full max-w-[720px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Fix & Resubmit</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{editingListingRequest.id} · {(editingListingRequest.product_name || '').toString()}
+                                    </div>
+                                </div>
+                                <button onClick={closeListingFix} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-4">
+                                {(() => {
+                                    const meta = editingListingRequest?.product_meta && typeof editingListingRequest.product_meta === 'object' ? editingListingRequest.product_meta : {};
+                                    const msg = asString((meta as any)?.review_message, '');
+                                    if (!msg) return null;
+                                    return (
+                                        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 flex gap-3">
+                                            <FileText size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                                            <div className="min-w-0">
+                                                <div className="text-[11px] font-black text-amber-700/80 uppercase tracking-[1.4px]">Admin requested changes</div>
+                                                <div className="text-[12px] font-medium text-[#1A1A1A]/70 mt-1 whitespace-pre-wrap break-words">{msg}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <input
+                                        value={listingEditDraft.product_name}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, product_name: e.target.value }))}
+                                        placeholder="Product name"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.company_name}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, company_name: e.target.value }))}
+                                        placeholder="Company name"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.unit_price}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, unit_price: e.target.value }))}
+                                        placeholder="Unit price (e.g. 12.50)"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.moq}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, moq: e.target.value }))}
+                                        placeholder="MOQ"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+
+                                <textarea
+                                    value={listingEditDraft.description}
+                                    onChange={(e) => setListingEditDraft((p) => ({ ...p, description: e.target.value }))}
+                                    placeholder="Description"
+                                    rows={4}
+                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-medium text-[#1A1A1A]/75 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30 resize-none"
+                                />
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <input
+                                        value={listingEditDraft.sku}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, sku: e.target.value }))}
+                                        placeholder="SKU"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.hs_code}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, hs_code: e.target.value }))}
+                                        placeholder="HS code"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.origin_country}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, origin_country: e.target.value }))}
+                                        placeholder="Origin country"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.lead_time_days}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, lead_time_days: e.target.value }))}
+                                        placeholder="Lead time (days)"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.weight_grams}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, weight_grams: e.target.value }))}
+                                        placeholder="Weight (grams)"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.ship_time_min_days}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, ship_time_min_days: e.target.value }))}
+                                        placeholder="Ship time min (days)"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.ship_time_max_days}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, ship_time_max_days: e.target.value }))}
+                                        placeholder="Ship time max (days)"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeListingFix}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitListingFix()}
+                                    disabled={listingEditSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white flex items-center gap-2 ${
+                                        listingEditSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    <ArrowRight size={14} strokeWidth={2.5} />
+                                    {listingEditSaving ? 'Submitting…' : 'Resubmit'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
                 )}
             </AnimatePresence>
 
@@ -3036,8 +3302,8 @@ export function WarehouseView() {
                                     <div className="flex items-center justify-between mb-6">
                                         <div className="flex items-center gap-4">
                                             <div className="w-12 h-12 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04]">
-                                                {lr.photos?.[0] ? (
-                                                    <img src={lr.photos[0].file} alt={lr.product_name} className="w-full h-full object-cover" />
+                                                {lr.photos?.[0]?.file_url ? (
+                                                    <img src={lr.photos[0].file_url} alt={lr.product_name} className="w-full h-full object-cover" />
                                                 ) : (
                                                     <Package size={20} className="text-[#1A1A1A]/20" />
                                                 )}
@@ -3077,6 +3343,27 @@ export function WarehouseView() {
                                                     <span className="text-[11px] font-bold text-amber-600/80 uppercase tracking-wider block mb-1">Admin Feedback</span>
                                                     <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">{lr.compliance_notes}</p>
                                                 </div>
+                                            </div>
+                                        )}
+
+                                        {lr.stage === 'samples' && lr.product_meta?.review_message && (
+                                            <div className="mt-4 w-full p-4 rounded-xl bg-[#0171E3]/5 border border-[#0171E3]/10 flex items-start justify-between gap-4">
+                                                <div className="flex gap-3 min-w-0">
+                                                    <PenLine size={16} className="text-[#0171E3] flex-shrink-0 mt-0.5" />
+                                                    <div className="min-w-0">
+                                                        <span className="text-[11px] font-black text-[#0171E3]/80 uppercase tracking-wider block mb-1">Changes requested</span>
+                                                        <p className="text-[12px] text-[#1A1A1A]/65 leading-relaxed whitespace-pre-wrap break-words">
+                                                            {String(lr.product_meta.review_message || '')}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openListingFix(lr)}
+                                                    className="px-3 py-2 rounded-full bg-[#1A1A1A] text-white text-[11px] font-black whitespace-nowrap hover:bg-[#2A2A2A] active:scale-[0.98] transition-all"
+                                                >
+                                                    Fix & Resubmit
+                                                </button>
                                             </div>
                                         )}
                                     </div>
