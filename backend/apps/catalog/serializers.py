@@ -559,9 +559,14 @@ class AdminListingRequestSerializer(ListingRequestSerializer):
     seller_id = serializers.IntegerField(read_only=True)
     seller_email = serializers.CharField(source="seller.email", read_only=True)
     seller_label = serializers.SerializerMethodField()
+    missing_fields = serializers.SerializerMethodField()
+    required_documents = serializers.SerializerMethodField()
+    documents_attached = serializers.SerializerMethodField()
 
     class Meta(ListingRequestSerializer.Meta):
-        fields = ["seller_id", "seller_email", "seller_label"] + list(ListingRequestSerializer.Meta.fields)
+        fields = ["seller_id", "seller_email", "seller_label", "missing_fields", "required_documents", "documents_attached"] + list(
+            ListingRequestSerializer.Meta.fields
+        )
 
     def get_seller_label(self, obj: ListingRequest):
         seller = getattr(obj, "seller", None)
@@ -569,6 +574,53 @@ class AdminListingRequestSerializer(ListingRequestSerializer):
             return ""
         full_name = f"{(getattr(seller, 'first_name', '') or '').strip()} {(getattr(seller, 'last_name', '') or '').strip()}".strip()
         return full_name or (getattr(seller, "email", "") or "")
+
+    def get_missing_fields(self, obj: ListingRequest):
+        m = self.context.get("missing_fields_by_id")
+        if isinstance(m, dict) and obj.id in m:
+            v = m.get(obj.id)
+            return v if isinstance(v, list) else []
+        meta = obj.product_meta if isinstance(getattr(obj, "product_meta", None), dict) else {}
+        origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        missing = []
+        if not str(meta.get("sku") or "").strip():
+            missing.append("sku")
+        if not str(meta.get("hs_code") or "").strip():
+            missing.append("hs_code")
+        if not str(origin.get("country") or "").strip():
+            missing.append("origin_country")
+        if meta.get("lead_time_days", None) in (None, ""):
+            missing.append("lead_time_days")
+        if meta.get("weight_grams", None) in (None, ""):
+            missing.append("weight_grams")
+        if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+            missing.append("ship_time_range_days")
+        return missing
+
+    def get_required_documents(self, obj: ListingRequest):
+        m = self.context.get("required_documents_by_category")
+        cid = getattr(obj, "category_id", None)
+        if isinstance(m, dict) and cid in m:
+            v = m.get(cid)
+            return v if isinstance(v, list) else []
+        return []
+
+    def get_documents_attached(self, obj: ListingRequest):
+        m = self.context.get("documents_attached_by_id")
+        if isinstance(m, dict) and obj.id in m:
+            try:
+                return int(m.get(obj.id) or 0)
+            except Exception:
+                return 0
+        count = 0
+        try:
+            for ph in list(getattr(obj, "photos", []).all())[:50]:
+                ct = (getattr(ph, "content_type", "") or "").lower()
+                if ct and not ct.startswith("image/"):
+                    count += 1
+        except Exception:
+            count = 0
+        return count
 
 
 class ListingRequestCreateSerializer(serializers.Serializer):
@@ -820,7 +872,7 @@ class ListingRequestCreateSerializer(serializers.Serializer):
             unit_price=validated_data.get("unit_price"),
             moq=int(moq or 1),
             product_meta=meta,
-            stage=ListingRequest.Stage.SAMPLES,
+            stage=ListingRequest.Stage.COMPLIANCE,
         )
 
         if photo_file:

@@ -292,6 +292,59 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
     return p
 
 
+def _listing_request_missing_required_product_fields(lr: ListingRequest) -> list[str]:
+    meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+    origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+    missing: list[str] = []
+    if not str(meta.get("sku") or "").strip():
+        missing.append("sku")
+    if not str(meta.get("hs_code") or "").strip():
+        missing.append("hs_code")
+    if not str(origin.get("country") or "").strip():
+        missing.append("origin_country")
+    if meta.get("lead_time_days", None) in (None, ""):
+        missing.append("lead_time_days")
+    if meta.get("weight_grams", None) in (None, ""):
+        missing.append("weight_grams")
+    if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+        missing.append("ship_time_range_days")
+    return missing
+
+
+def _listing_request_required_documents(lr: ListingRequest) -> set[str]:
+    required_documents: set[str] = set()
+    try:
+        rules = list(ComplianceRule.objects.filter(category_id=lr.category_id, deleted_at__isnull=True).order_by("-created_at")[:200])
+        for r in rules:
+            payload = getattr(r, "payload", None) or {}
+            if isinstance(payload, dict):
+                docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
+                if isinstance(docs, list):
+                    for item in docs:
+                        s = str(item or "").strip()
+                        if s:
+                            required_documents.add(s)
+                elif isinstance(docs, str):
+                    s = docs.strip()
+                    if s:
+                        required_documents.add(s)
+    except Exception:
+        required_documents = set()
+    return required_documents
+
+
+def _listing_request_non_image_attachment_count(lr: ListingRequest) -> int:
+    doc_count = 0
+    try:
+        for ph in list(lr.photos.all())[:50]:
+            ct = (getattr(ph, "content_type", "") or "").lower()
+            if ct and not ct.startswith("image/"):
+                doc_count += 1
+    except Exception:
+        doc_count = 0
+    return doc_count
+
+
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
@@ -889,14 +942,99 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         if q:
             qs = qs.filter(Q(product_name__icontains=q) | Q(company_name__icontains=q) | Q(description__icontains=q))
         page = self.paginate_queryset(qs)
-        ser = AdminListingRequestSerializer(page, many=True, context={"request": request})
+        items = list(page) if page is not None else []
+        category_ids = {int(x.category_id) for x in items if getattr(x, "category_id", None)}
+        required_documents_by_category: dict[int, list[str]] = {}
+        if category_ids:
+            cat_map: dict[int, set[str]] = {cid: set() for cid in category_ids}
+            try:
+                rules = list(ComplianceRule.objects.filter(category_id__in=list(category_ids), deleted_at__isnull=True).order_by("-created_at")[:400])
+                for r in rules:
+                    payload = getattr(r, "payload", None) or {}
+                    if not isinstance(payload, dict):
+                        continue
+                    docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
+                    if docs is None:
+                        continue
+                    if isinstance(docs, str):
+                        s = docs.strip()
+                        if s:
+                            cat_map.get(int(r.category_id), set()).add(s)
+                    elif isinstance(docs, list):
+                        for item in docs:
+                            s = str(item or "").strip()
+                            if s:
+                                cat_map.get(int(r.category_id), set()).add(s)
+            except Exception:
+                cat_map = {cid: set() for cid in category_ids}
+            required_documents_by_category = {cid: sorted(list(vals))[:80] for cid, vals in cat_map.items() if vals}
+
+        missing_fields_by_id: dict[int, list[str]] = {}
+        documents_attached_by_id: dict[int, int] = {}
+        for lr in items:
+            lrid = int(getattr(lr, "id", 0) or 0)
+            if not lrid:
+                continue
+            meta = lr.product_meta if isinstance(getattr(lr, "product_meta", None), dict) else {}
+            origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+            missing: list[str] = []
+            if not str(meta.get("sku") or "").strip():
+                missing.append("sku")
+            if not str(meta.get("hs_code") or "").strip():
+                missing.append("hs_code")
+            if not str(origin.get("country") or "").strip():
+                missing.append("origin_country")
+            if meta.get("lead_time_days", None) in (None, ""):
+                missing.append("lead_time_days")
+            if meta.get("weight_grams", None) in (None, ""):
+                missing.append("weight_grams")
+            if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+                missing.append("ship_time_range_days")
+            missing_fields_by_id[lrid] = missing
+
+            doc_count = 0
+            try:
+                for ph in list(lr.photos.all())[:50]:
+                    ct = (getattr(ph, "content_type", "") or "").lower()
+                    if ct and not ct.startswith("image/"):
+                        doc_count += 1
+            except Exception:
+                doc_count = 0
+            documents_attached_by_id[lrid] = doc_count
+
+        ser = AdminListingRequestSerializer(
+            items,
+            many=True,
+            context={
+                "request": request,
+                "required_documents_by_category": required_documents_by_category,
+                "missing_fields_by_id": missing_fields_by_id,
+                "documents_attached_by_id": documents_attached_by_id,
+            },
+        )
         return self.get_paginated_response(ser.data)
 
     def retrieve(self, request, pk=None, *args, **kwargs):
         obj = self.get_queryset().filter(pk=pk).first()
         if not obj:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(AdminListingRequestSerializer(obj, context={"request": request}).data)
+        cid = getattr(obj, "category_id", None)
+        required_documents_by_category: dict[int, list[str]] = {}
+        if cid:
+            required_documents_by_category = {int(cid): sorted(list(_listing_request_required_documents(obj)))[:80]}
+        missing_fields_by_id = {int(obj.id): _listing_request_missing_required_product_fields(obj)}
+        documents_attached_by_id = {int(obj.id): _listing_request_non_image_attachment_count(obj)}
+        return Response(
+            AdminListingRequestSerializer(
+                obj,
+                context={
+                    "request": request,
+                    "required_documents_by_category": required_documents_by_category,
+                    "missing_fields_by_id": missing_fields_by_id,
+                    "documents_attached_by_id": documents_attached_by_id,
+                },
+            ).data
+        )
 
     @action(detail=True, methods=["post"], url_path="review")
     def review(self, request, pk=None):
@@ -916,6 +1054,29 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 return Response({"detail": "Compliance must be verified before approval."}, status=status.HTTP_400_BAD_REQUEST)
             if lr.inspector and not lr.inspected:
                 return Response({"detail": "Inspection must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            if lr.stage != ListingRequest.Stage.INBOUND:
+                return Response({"detail": "Inbound must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            inbound_status = ""
+            try:
+                inbound_obj = getattr(lr, "inbound_request", None)
+            except Exception:
+                inbound_obj = None
+            if inbound_obj is not None:
+                inbound_status = (getattr(inbound_obj, "status", "") or "").lower()
+                if inbound_status and inbound_status != InboundRequest.Status.RECEIVED:
+                    return Response({"detail": "Inbound must be received before approval.", "inbound_status": inbound_status}, status=status.HTTP_400_BAD_REQUEST)
+            missing = _listing_request_missing_required_product_fields(lr)
+            if missing:
+                return Response(
+                    {"detail": "Listing request is missing required product fields.", "missing": missing},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            required_documents = _listing_request_required_documents(lr)
+            if required_documents and _listing_request_non_image_attachment_count(lr) <= 0:
+                return Response(
+                    {"detail": "Compliance documents required before approval.", "required_documents": sorted(list(required_documents))[:80]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             try:
                 rating = float(rating_in) if rating_in is not None else float(lr.rating or 4.8)
             except Exception:
@@ -924,6 +1085,22 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             lr.rating = rating
             lr.stage = ListingRequest.Stage.LIVE
             lr.save(update_fields=["rating", "stage", "updated_at"])
+            try:
+                Notification.objects.create(
+                    user=lr.seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="listing_request_approved",
+                    payload={
+                        "title": "Listing approved",
+                        "body": f'Your listing "{(lr.product_name or "").strip()}" was approved and is pending publish.',
+                        "listing_request_id": str(lr.id),
+                        "stage": lr.stage,
+                        "rating": float(rating),
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
             audit(
                 request.user,
                 action="admin_listing_request_reviewed",
@@ -941,7 +1118,11 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         if decision == "needs_changes":
             lr.rating = None
             lr.stage = ListingRequest.Stage.SAMPLES
-            lr.save(update_fields=["product_meta", "rating", "stage", "updated_at"])
+            lr.compliance_verified = False
+            lr.compliance_notes = ""
+            lr.inspected = False
+            lr.inspector = None
+            lr.save(update_fields=["product_meta", "rating", "stage", "compliance_verified", "compliance_notes", "inspected", "inspector", "updated_at"])
             try:
                 Notification.objects.create(
                     user=lr.seller,
@@ -987,56 +1168,17 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         if lr.stage != ListingRequest.Stage.LIVE:
             return Response({"detail": "Listing must be approved (Live stage) before publish."}, status=status.HTTP_400_BAD_REQUEST)
 
-        meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
-        origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
-        missing = []
-        if not str(meta.get("sku") or "").strip():
-            missing.append("sku")
-        if not str(meta.get("hs_code") or "").strip():
-            missing.append("hs_code")
-        if not str(origin.get("country") or "").strip():
-            missing.append("origin_country")
-        if meta.get("lead_time_days", None) in (None, ""):
-            missing.append("lead_time_days")
-        if meta.get("weight_grams", None) in (None, ""):
-            missing.append("weight_grams")
-        if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
-            missing.append("ship_time_range_days")
+        missing = _listing_request_missing_required_product_fields(lr)
         if missing:
             return Response(
                 {"detail": "Listing request is missing required product fields.", "missing": missing},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        required_documents: set[str] = set()
-        try:
-            rules = list(ComplianceRule.objects.filter(category_id=lr.category_id, deleted_at__isnull=True).order_by("-created_at")[:200])
-            for r in rules:
-                payload = getattr(r, "payload", None) or {}
-                if isinstance(payload, dict):
-                    docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
-                    if isinstance(docs, list):
-                        for item in docs:
-                            s = str(item or "").strip()
-                            if s:
-                                required_documents.add(s)
-                    elif isinstance(docs, str):
-                        s = docs.strip()
-                        if s:
-                            required_documents.add(s)
-        except Exception:
-            required_documents = set()
+        required_documents = _listing_request_required_documents(lr)
 
         if required_documents:
-            doc_count = 0
-            try:
-                for ph in list(lr.photos.all())[:50]:
-                    ct = (getattr(ph, "content_type", "") or "").lower()
-                    if ct and not ct.startswith("image/"):
-                        doc_count += 1
-            except Exception:
-                doc_count = 0
-            if doc_count <= 0:
+            if _listing_request_non_image_attachment_count(lr) <= 0:
                 return Response(
                     {"detail": "Compliance documents required before publish.", "required_documents": sorted(list(required_documents))[:80]},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -1069,6 +1211,22 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         lr.created_product = p
         lr.stage = ListingRequest.Stage.DONE
         lr.save(update_fields=["created_product", "stage", "updated_at"])
+        try:
+            Notification.objects.create(
+                user=lr.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="listing_request_published",
+                payload={
+                    "title": "Listing published",
+                    "body": f'Your product "{(p.name or "").strip()}" is now live on the marketplace.',
+                    "listing_request_id": str(lr.id),
+                    "product_id": str(p.id),
+                    "stage": lr.stage,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
         audit(
             request.user,
             action="admin_listing_request_published",
@@ -1086,6 +1244,14 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
 
         verified = request.data.get("verified", False)
         notes = (request.data.get("notes") or "").strip()
+
+        if verified:
+            stage_key = (getattr(lr, "stage", "") or "").strip().lower()
+            meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+            review_message = (meta.get("review_message") or "").strip() if isinstance(meta, dict) else ""
+            allowed = stage_key == ListingRequest.Stage.COMPLIANCE or (stage_key == ListingRequest.Stage.SAMPLES and not review_message)
+            if not allowed:
+                return Response({"detail": "Listing must be in Compliance stage to verify."}, status=status.HTTP_400_BAD_REQUEST)
 
         lr.compliance_verified = verified
         lr.compliance_notes = notes
@@ -1114,6 +1280,24 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                         inbound_id = inbound.id
                     except Exception:
                         inbound_created = False
+
+        if verified:
+            try:
+                Notification.objects.create(
+                    user=lr.seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="listing_request_compliance_verified",
+                    payload={
+                        "title": "Compliance verified",
+                        "body": f'Compliance was verified for "{(lr.product_name or "").strip()}".',
+                        "listing_request_id": str(lr.id),
+                        "stage": lr.stage,
+                        "inbound_request_id": str(inbound_id or ""),
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
 
         audit(
             request.user,
@@ -1177,15 +1361,25 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         if not lr:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        lr.stage = ListingRequest.Stage.LIVE
-        lr.save(update_fields=["stage", "updated_at"])
+        try:
+            inbound = getattr(lr, "inbound_request", None)
+        except Exception:
+            inbound = None
+        if inbound is None:
+            return Response({"detail": "Inbound request not found."}, status=status.HTTP_400_BAD_REQUEST)
+        inbound.status = InboundRequest.Status.RECEIVED
+        inbound.save(update_fields=["status", "updated_at"])
+
+        if lr.stage != ListingRequest.Stage.INBOUND:
+            lr.stage = ListingRequest.Stage.INBOUND
+            lr.save(update_fields=["stage", "updated_at"])
 
         audit(
             request.user,
             action="admin_listing_request_inbound_completed",
             target_type="listing_request",
             target_id=str(lr.id),
-            payload={"stage": lr.stage},
+            payload={"stage": lr.stage, "inbound_status": inbound.status},
         )
         return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 

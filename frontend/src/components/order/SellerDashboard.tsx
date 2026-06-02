@@ -52,6 +52,9 @@ export function SellerDashboard() {
     const [metrics, setMetrics] = useState({ totalPending: 0, lastPaid: 0, unreadMessages: 0, activeOrders: 0, protectionScore: 0 });
     const [loading, setLoading] = useState(true);
     const [activities, setActivities] = useState<Activity[]>([]);
+    const [listingRequests, setListingRequests] = useState<any[]>([]);
+    const [listingRequestsLoading, setListingRequestsLoading] = useState(false);
+    const [listingRequestsError, setListingRequestsError] = useState(false);
     const [orderActionLoadingId, setOrderActionLoadingId] = useState<string | null>(null);
     const [activityDismissLoadingId, setActivityDismissLoadingId] = useState<string | null>(null);
     const [shipmentDetailId, setShipmentDetailId] = useState<string | null>(null);
@@ -77,6 +80,38 @@ export function SellerDashboard() {
     useEffect(() => {
         setProductsPage(1);
     }, [productsSearch]);
+
+    const fetchListingRequests = useCallback(async () => {
+        if (!mounted) return;
+        setListingRequestsLoading(true);
+        setListingRequestsError(false);
+        try {
+            const res = await authedFetch("/api/v1/seller/listing-requests/");
+            const data = await res.json().catch(() => null);
+            if (!res.ok) throw new Error((data && (data.detail || data.error)) || `Failed to load listing requests (${res.status})`);
+            setListingRequests(Array.isArray(data) ? data : []);
+        } catch {
+            setListingRequests([]);
+            setListingRequestsError(true);
+        } finally {
+            setListingRequestsLoading(false);
+        }
+    }, [mounted]);
+
+    const goToStorage = useCallback((opts?: { openFixId?: number }) => {
+        try {
+            if (opts?.openFixId) {
+                window.sessionStorage.setItem("vehsl.open_listing_request_fix_id", String(opts.openFixId));
+            }
+        } catch {}
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.set("tab", "warehouse");
+            window.location.assign(url.toString());
+        } catch {
+            window.location.assign("/orders?tab=warehouse");
+        }
+    }, []);
 
     const fetchProducts = useCallback(async () => {
         try {
@@ -276,6 +311,11 @@ export function SellerDashboard() {
         if (!mounted) return;
         fetchProducts();
     }, [fetchProducts, mounted]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        fetchListingRequests();
+    }, [fetchListingRequests, mounted]);
 
     const [showListingForm, setShowListingForm] = useState(false);
     const [listingPickupLocation, setListingPickupLocation] = useState<string>('factory');
@@ -2448,6 +2488,105 @@ export function SellerDashboard() {
                     </p>
                 </motion.div>
             )}
+
+            <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.18, duration: 0.55, ease: EASE }}
+                className="mb-8"
+            >
+                <div className="flex items-center justify-between mb-4 px-1">
+                    <p className="text-[12px] font-semibold text-[#1A1A1A]/30 tracking-wide">Listing reviews</p>
+                    <button
+                        type="button"
+                        className="text-[11px] font-bold text-[#0171e3]/70 bg-transparent border-none cursor-pointer hover:text-[#0171e3] transition-colors duration-200 inline-flex items-center gap-1"
+                        onClick={() => goToStorage()}
+                    >
+                        Open storage
+                        <ChevronRight size={11} strokeWidth={2.5} />
+                    </button>
+                </div>
+                <div className="rounded-[22px] bg-white/55 backdrop-blur-xl border border-white/35 overflow-hidden" style={{ boxShadow: GLASS }}>
+                    {listingRequestsLoading ? (
+                        <div className="px-4 py-6 text-[12px] font-semibold text-[#1A1A1A]/35">Loading listing updates…</div>
+                    ) : listingRequestsError ? (
+                        <div className="px-4 py-6 text-[12px] font-semibold text-[#1A1A1A]/35">Could not load listing updates.</div>
+                    ) : (
+                        (() => {
+                            const rows = Array.isArray(listingRequests) ? listingRequests : [];
+                            const changes = rows.filter((lr: any) => {
+                                const stageKey = String(lr?.stage || "").toLowerCase();
+                                const msg = String(lr?.product_meta?.review_message || "").trim();
+                                return stageKey === "samples" && !!msg;
+                            });
+                            const inReview = rows.filter((lr: any) => {
+                                const stageKey = String(lr?.stage || "").toLowerCase();
+                                if (stageKey === "done") return false;
+                                if (stageKey === "samples") return false;
+                                if (lr?.created_product_id) return false;
+                                return true;
+                            });
+
+                            if (changes.length === 0 && inReview.length === 0) {
+                                return <div className="px-4 py-6 text-[12px] font-semibold text-[#1A1A1A]/35">No listing updates right now.</div>;
+                            }
+
+                            const stageLabel = (s: any) => {
+                                const x = String(s || "").toLowerCase();
+                                if (x === "live") return "approved";
+                                return x || "—";
+                            };
+
+                            return (
+                                <div className="divide-y divide-black/[0.04]">
+                                    {changes.slice(0, 4).map((lr: any) => {
+                                        const msg = String(lr?.product_meta?.review_message || "").trim();
+                                        return (
+                                            <div key={`chg-${lr.id}`} className="px-4 py-3">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2">
+                                                            <p className="text-[13px] font-bold text-[#1A1A1A]/80 truncate">{lr?.product_name || "Listing"}</p>
+                                                            <span className="text-[9px] font-black text-[#c8892a]/70 bg-[#c8892a]/[0.08] px-2 py-[2px] rounded-full">Changes requested</span>
+                                                        </div>
+                                                        <p className="text-[11px] font-medium text-[#1A1A1A]/40 mt-1 line-clamp-2">{msg}</p>
+                                                    </div>
+                                                    <motion.button
+                                                        whileHover={{ scale: 1.02 }}
+                                                        whileTap={{ scale: 0.97 }}
+                                                        onClick={() => goToStorage({ openFixId: Number(lr?.id || 0) })}
+                                                        className="flex-shrink-0 px-3 py-2 rounded-full border-none cursor-pointer text-[11px] font-bold"
+                                                        style={{ background: "#0171E3", color: "#fff", boxShadow: "0 1px 4px rgba(1,113,227,0.25)" }}
+                                                    >
+                                                        Fix & resubmit
+                                                    </motion.button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    {inReview.slice(0, 4).map((lr: any) => (
+                                        <div key={`rev-${lr.id}`} className="px-4 py-3 flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <p className="text-[13px] font-bold text-[#1A1A1A]/80 truncate">{lr?.product_name || "Listing"}</p>
+                                                <p className="text-[11px] font-medium text-[#1A1A1A]/35 mt-0.5">
+                                                    Stage: <span className="font-bold text-[#1A1A1A]/45">{stageLabel(lr?.stage)}</span>
+                                                </p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => goToStorage()}
+                                                className="flex-shrink-0 h-9 px-3 rounded-full border border-black/[0.06] bg-white/60 text-[11px] font-bold text-[#1A1A1A]/55 hover:text-[#1A1A1A]/75"
+                                            >
+                                                View
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        })()
+                    )}
+                </div>
+            </motion.div>
 
             {/* ═══════════════════════════════════════ */}
             {/*  ACTIVITY FEED — seller-specific        */}

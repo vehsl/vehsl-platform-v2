@@ -10,7 +10,7 @@ import {
     Check, MapPin, Fingerprint, Car, UserCheck, Clock,
     Calendar, ArrowUpRight, Package, DollarSign, Warehouse as WarehouseIcon,
     Copy, Phone, Star, User, PenLine, FileText, Hash, Download, Share2,
-    Lock, ShieldCheck, Layers, Truck, ArrowRight
+    Lock, ShieldCheck, Layers, Truck, ArrowRight, BadgeCheck
 } from 'lucide-react';
 import {
     Warehouse, InventoryItem, ReleaseRequest, ReleaseRecord
@@ -274,7 +274,7 @@ function ListingStatusStepper({ lr }: { lr: any }) {
         { key: 'compliance', label: 'Compliance', icon: <ShieldCheck size={14} /> },
         { key: 'inspection', label: 'Inspection', icon: <Search size={14} /> },
         { key: 'inbound', label: 'Inbound', icon: <Truck size={14} /> },
-        { key: 'live', label: 'Live', icon: <Check size={14} /> },
+        { key: 'live', label: 'Approved', icon: <Check size={14} /> },
     ];
 
     const currentStageIndex = stages.findIndex(s => s.key === lr.stage);
@@ -324,6 +324,17 @@ function ListingStatusStepper({ lr }: { lr: any }) {
                             )}
                             {stage.key === 'inspection' && !lr.inspector_name && !lr.inspected && lr.stage === 'inspection' && (
                                 <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse">
+                                    <Clock size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+
+                            {stage.key === 'inbound' && String(lr.inbound_request_status || '').toLowerCase() === 'received' && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10">
+                                    <Check size={10} strokeWidth={4} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'inbound' && lr.stage === 'inbound' && lr.inbound_request_status && String(lr.inbound_request_status || '').toLowerCase() !== 'received' && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse" title={`Inbound: ${lr.inbound_request_status}`}>
                                     <Clock size={10} strokeWidth={3} className="text-white" />
                                 </div>
                             )}
@@ -1781,7 +1792,7 @@ export function WarehouseView() {
                 authedFetch('/api/v1/warehouse/dashboard/release_records/'),
                 authedFetch('/api/v1/warehouse/dashboard/auto_order_settings/'),
                 authedFetch('/api/v1/catalog/inbound-requests/'),
-                authedFetch('/api/v1/catalog/seller/listing-requests/'),
+                authedFetch('/api/v1/seller/listing-requests/'),
             ]);
 
             if (wRes.ok) {
@@ -1907,7 +1918,7 @@ export function WarehouseView() {
 
         setListingEditSaving(true);
         try {
-            const patchRes = await authedFetch(`/api/v1/catalog/seller/listing-requests/${id}/`, {
+            const patchRes = await authedFetch(`/api/v1/seller/listing-requests/${id}/`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
@@ -1918,7 +1929,7 @@ export function WarehouseView() {
                 return;
             }
 
-            const resubmitRes = await authedFetch(`/api/v1/catalog/seller/listing-requests/${id}/resubmit/`, { method: 'POST' });
+            const resubmitRes = await authedFetch(`/api/v1/seller/listing-requests/${id}/resubmit/`, { method: 'POST' });
             const resubmitData = await resubmitRes.json().catch(() => null);
             if (!resubmitRes.ok) {
                 toast.error('Resubmit failed', { description: asString(resubmitData?.detail, `Could not resubmit (${resubmitRes.status})`) });
@@ -1954,6 +1965,23 @@ export function WarehouseView() {
         if (!mounted) return;
         fetchWarehouseData();
     }, [fetchWarehouseData, mounted]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        if (editingListingRequest) return;
+        if (!Array.isArray(listingRequests) || listingRequests.length === 0) return;
+        let raw = "";
+        try {
+            raw = window.sessionStorage.getItem("vehsl.open_listing_request_fix_id") || "";
+        } catch {}
+        const id = Number(raw || 0);
+        if (!id) return;
+        const match = listingRequests.find((x: any) => Number(x?.id || 0) === id);
+        try {
+            window.sessionStorage.removeItem("vehsl.open_listing_request_fix_id");
+        } catch {}
+        if (match) openListingFix(match);
+    }, [editingListingRequest, listingRequests, mounted, openListingFix]);
 
     useEffect(() => {
         if (!mounted || !selectedWarehouse?.id) return;
@@ -3323,7 +3351,7 @@ export function WarehouseView() {
                                                 lr.stage === 'inspection' ? 'bg-amber-500/10 text-amber-600' :
                                                 'bg-[#0171E3]/10 text-[#0171E3]'
                                             }`}>
-                                                {lr.stage}
+                                                {lr.stage === 'live' ? 'approved' : lr.stage === 'done' ? 'published' : lr.stage}
                                             </span>
                                             <span className="text-[10px] font-medium text-[#1A1A1A]/20">
                                                 Submitted {new Date(lr.created_at).toLocaleDateString()}
@@ -3335,6 +3363,18 @@ export function WarehouseView() {
                                     
                                     <div className="flex flex-col items-center">
                                         <ListingStatusStepper lr={lr} />
+
+                                        {lr.stage === 'live' && (
+                                            <div className="mt-6 w-full p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10 flex gap-3">
+                                                <BadgeCheck size={16} className="text-emerald-600 flex-shrink-0 mt-0.5" />
+                                                <div>
+                                                    <span className="text-[11px] font-bold text-emerald-700/80 uppercase tracking-wider block mb-1">Approved — pending publish</span>
+                                                    <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">
+                                                        Your listing is approved. It will appear to buyers only after the admin publishes it.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )}
                                         
                                         {lr.compliance_notes && (
                                             <div className="mt-6 w-full p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 flex gap-3">
