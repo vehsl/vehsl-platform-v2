@@ -286,10 +286,11 @@ class ProductSerializer(serializers.ModelSerializer):
         from django.db.models import Sum, F, Value, IntegerField
         from django.db.models.functions import Coalesce
 
-        res = obj.warehouse_stocks.filter(deleted_at__isnull=True).aggregate(
-            total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
-        )
-        return max(0, res["total"])
+        qs = obj.warehouse_stocks.filter(deleted_at__isnull=True)
+        if not qs.exists():
+            return 999999
+        res = qs.aggregate(total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()))
+        return max(0, int(res["total"] or 0))
 
     def get_stock_status(self, obj: Product):
         avail = self.get_quantity_available(obj)

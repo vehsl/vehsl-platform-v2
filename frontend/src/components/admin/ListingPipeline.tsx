@@ -23,7 +23,7 @@ import type { CostBreakdown } from "./CostLedger";
 
 // ─── Types ──────────────────────────────────────────────
 
-type ListingStage = "samples" | "compliance" | "inspection" | "inbound" | "live" | "done";
+type ListingStage = "samples" | "compliance" | "inspection" | "live" | "done";
 
 interface ListingRequest {
   id: string;
@@ -66,7 +66,6 @@ const stages: { key: ListingStage; label: string; shortLabel: string; icon: Reac
   { key: "samples", label: "Sample Submission", shortLabel: "Samples", icon: <Package size={18} />, color: "#3B82F6", description: "Collect and verify product samples" },
   { key: "compliance", label: "Compliance Review", shortLabel: "Compliance", icon: <Shield size={18} />, color: "#D97706", description: "Export & compliance document approval" },
   { key: "inspection", label: "Quality Inspection", shortLabel: "Inspection", icon: <Search size={18} />, color: "#0171E3", description: "Test and rate product quality" },
-  { key: "inbound", label: "Inventory Inbound", shortLabel: "Inbound", icon: <Truck size={18} />, color: "#8B5CF6", description: "Ship to and receive at warehouse" },
   { key: "live", label: "Go Live", shortLabel: "Live", icon: <CheckCircle2 size={18} />, color: "#30A46C", description: "Approve and publish to marketplace" },
   { key: "done", label: "Completed", shortLabel: "Done", icon: <CircleCheck size={18} />, color: "#6366F1", description: "Onboarding process completed" },
 ];
@@ -483,7 +482,6 @@ function getNextAction(stage: ListingStage): string {
     case "samples": return "Collect Sample";
     case "compliance": return "Verify Documents";
     case "inspection": return "Rate Quality";
-    case "inbound": return "Receive Stock";
     case "live": return "View Listing";
     case "done": return "Archived";
     default: return "Review";
@@ -665,26 +663,10 @@ function ListingDetail({
                       onClick={() => setShowAdvanceConfirm(true)}
                       energyWeight={3}
                     >
-                      Approve for Inbound
+                      Approve Listing
                     </BounceButton>
                     <BounceButton variant="secondary" size="md" icon={<ThumbsDown size={16} />}>
                       Reject Sample
-                    </BounceButton>
-                  </div>
-                </div>
-              )}
-
-              {listing.stage === "inbound" && (
-                <div className="space-y-4">
-                  <p className="text-[0.8125rem] text-muted-foreground leading-relaxed">
-                    Coordinate with the seller to ship inventory to our warehouse. Once received and verified, the product can go live.
-                  </p>
-                  <div className="flex gap-2">
-                    <BounceButton variant="primary" size="md" icon={<Boxes size={16} />} onClick={() => setShowAdvanceConfirm(true)} energyWeight={4}>
-                      Confirm Receipt & Verify Stock
-                    </BounceButton>
-                    <BounceButton variant="secondary" size="md" icon={<MapPin size={16} />}>
-                      Assign Warehouse
                     </BounceButton>
                   </div>
                 </div>

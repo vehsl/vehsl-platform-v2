@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.catalog.models import Category, InboundRequest, ListingRequest, Product, Warehouse
+from apps.catalog.models import Category, ListingRequest, Product, Warehouse
 
 
 class ListingRequestFlowTests(TestCase):
@@ -42,7 +42,6 @@ class ListingRequestFlowTests(TestCase):
         lr.refresh_from_db()
         self.assertTrue(lr.compliance_verified)
         self.assertEqual(lr.stage, ListingRequest.Stage.INSPECTION)
-        self.assertIsNotNone(getattr(lr, "inbound_request", None))
 
     def test_approve_requires_required_fields(self):
         lr = ListingRequest.objects.create(
@@ -52,12 +51,11 @@ class ListingRequestFlowTests(TestCase):
             product_name="P2",
             unit_price="10.00",
             moq=1,
-            stage=ListingRequest.Stage.INBOUND,
+            stage=ListingRequest.Stage.INSPECTION,
             compliance_verified=True,
             inspected=True,
             product_meta={},
         )
-        InboundRequest.objects.create(listing_request=lr, seller=self.seller, warehouse=self.warehouse, status=InboundRequest.Status.RECEIVED)
 
         self.client.force_authenticate(user=self.admin)
         res = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
@@ -81,12 +79,11 @@ class ListingRequestFlowTests(TestCase):
             product_name="P3",
             unit_price="10.00",
             moq=1,
-            stage=ListingRequest.Stage.INBOUND,
+            stage=ListingRequest.Stage.INSPECTION,
             compliance_verified=True,
             inspected=True,
             product_meta=self._required_meta(),
         )
-        InboundRequest.objects.create(listing_request=lr, seller=self.seller, warehouse=self.warehouse, status=InboundRequest.Status.RECEIVED)
 
         self.client.force_authenticate(user=self.admin)
         res = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/publish/", {}, format="json")

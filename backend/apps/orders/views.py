@@ -86,17 +86,18 @@ class CartMeView(APIView):
             if unit_price is None:
                 return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Real-time stock check
             stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
-            available = stock_qs.aggregate(
-                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
-            )["total"]
-
-            if i["quantity"] > available:
-                return Response(
-                    {"detail": f"Not enough stock for {p.name}. Available: {available}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            agg = stock_qs.aggregate(
+                cnt=Count("id"),
+                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()),
+            )
+            if (agg.get("cnt") or 0) > 0:
+                available = int(agg.get("total") or 0)
+                if i["quantity"] > available:
+                    return Response(
+                        {"detail": f"Not enough stock for {p.name}. Available: {available}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             CartItem.objects.update_or_create(
                 cart=cart,
@@ -150,17 +151,18 @@ class CartItemMeDetailView(APIView):
             p = item.product
             var = item.variation if item.variation_id else None
 
-            # Real-time stock check
             stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
-            available = stock_qs.aggregate(
-                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
-            )["total"]
-
-            if qty > available:
-                return Response(
-                    {"detail": f"Not enough stock for {p.name}. Available: {available}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            agg = stock_qs.aggregate(
+                cnt=Count("id"),
+                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()),
+            )
+            if (agg.get("cnt") or 0) > 0:
+                available = int(agg.get("total") or 0)
+                if qty > available:
+                    return Response(
+                        {"detail": f"Not enough stock for {p.name}. Available: {available}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             unit_price, currency = resolve_unit_price(p, var, qty)
             if unit_price is None:

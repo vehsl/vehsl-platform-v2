@@ -1053,17 +1053,8 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 return Response({"detail": "Compliance must be verified before approval."}, status=status.HTTP_400_BAD_REQUEST)
             if lr.inspector and not lr.inspected:
                 return Response({"detail": "Inspection must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
-            if lr.stage != ListingRequest.Stage.INBOUND:
-                return Response({"detail": "Inbound must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
-            inbound_status = ""
-            try:
-                inbound_obj = getattr(lr, "inbound_request", None)
-            except Exception:
-                inbound_obj = None
-            if inbound_obj is not None:
-                inbound_status = (getattr(inbound_obj, "status", "") or "").lower()
-                if inbound_status and inbound_status != InboundRequest.Status.RECEIVED:
-                    return Response({"detail": "Inbound must be received before approval.", "inbound_status": inbound_status}, status=status.HTTP_400_BAD_REQUEST)
+            if lr.stage not in {ListingRequest.Stage.INSPECTION, ListingRequest.Stage.INBOUND}:
+                return Response({"detail": "Listing must be in Inspection stage before approval."}, status=status.HTTP_400_BAD_REQUEST)
             missing = _listing_request_missing_required_product_fields(lr)
             if missing:
                 return Response(
@@ -1263,24 +1254,8 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         inbound_created = False
         inbound_id = None
         if verified:
-            try:
-                inbound = getattr(lr, "inbound_request", None)
-            except Exception:
-                inbound = None
-            if inbound is None:
-                wh = Warehouse.objects.filter(active=True).order_by("id").first() or Warehouse.objects.order_by("id").first()
-                if wh is None:
-                    try:
-                        wh = Warehouse.objects.create(name="Main Warehouse", active=True)
-                    except Exception:
-                        wh = None
-                if wh is not None:
-                    try:
-                        inbound = InboundRequest.objects.create(seller=lr.seller, warehouse=wh, listing_request=lr)
-                        inbound_created = True
-                        inbound_id = inbound.id
-                    except Exception:
-                        inbound_created = False
+            inbound_created = False
+            inbound_id = None
 
         if verified:
             try:
@@ -1293,7 +1268,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                         "body": f'Compliance was verified for "{(lr.product_name or "").strip()}".',
                         "listing_request_id": str(lr.id),
                         "stage": lr.stage,
-                        "inbound_request_id": str(inbound_id or ""),
+                        "inbound_request_id": "",
                     },
                     status=Notification.Status.QUEUED,
                 )
@@ -1343,9 +1318,11 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
 
         inspected = request.data.get("inspected", False)
         lr.inspected = inspected
-        if inspected:
-            lr.stage = ListingRequest.Stage.INBOUND
-        lr.save(update_fields=["inspected", "stage", "updated_at"])
+        update_fields = ["inspected", "updated_at"]
+        if inspected and lr.stage != ListingRequest.Stage.INSPECTION:
+            lr.stage = ListingRequest.Stage.INSPECTION
+            update_fields.append("stage")
+        lr.save(update_fields=update_fields)
 
         audit(
             request.user,
@@ -1358,31 +1335,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="complete_inbound")
     def complete_inbound(self, request, pk=None):
-        lr = self.get_queryset().filter(pk=pk).first()
-        if not lr:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            inbound = getattr(lr, "inbound_request", None)
-        except Exception:
-            inbound = None
-        if inbound is None:
-            return Response({"detail": "Inbound request not found."}, status=status.HTTP_400_BAD_REQUEST)
-        inbound.status = InboundRequest.Status.RECEIVED
-        inbound.save(update_fields=["status", "updated_at"])
-
-        if lr.stage != ListingRequest.Stage.INBOUND:
-            lr.stage = ListingRequest.Stage.INBOUND
-            lr.save(update_fields=["stage", "updated_at"])
-
-        audit(
-            request.user,
-            action="admin_listing_request_inbound_completed",
-            target_type="listing_request",
-            target_id=str(lr.id),
-            payload={"stage": lr.stage, "inbound_status": inbound.status},
-        )
-        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+        return Response({"detail": "Inbound step has been removed from the listing flow."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ProductVariationViewSet(viewsets.ModelViewSet):

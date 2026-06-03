@@ -15,7 +15,6 @@ from .views import (
     TrademarkViewSet,
     WarehouseViewSet,
     WarehouseStockViewSet,
-    InboundRequestViewSet,
 )
 
 router = DefaultRouter()
@@ -31,7 +30,6 @@ router.register(r"trademarks", TrademarkViewSet, basename="trademark")
 router.register(r"compliance-rules", ComplianceRuleViewSet, basename="compliance-rule")
 router.register(r"warehouses", WarehouseViewSet, basename="warehouse")
 router.register(r"warehouse-stocks", WarehouseStockViewSet, basename="warehouse-stock")
-router.register(r"inbound-requests", InboundRequestViewSet, basename="inbound-request")
 
 urlpatterns = [
     path("shipping/quote/", ShippingQuoteAPIView.as_view(), name="shipping-quote"),

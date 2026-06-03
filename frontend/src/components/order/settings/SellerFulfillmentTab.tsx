@@ -417,7 +417,7 @@ export function SellerFulfillmentTab({ orderSettings, setOrderSettings }: { orde
                                     <Truck size={16} strokeWidth={1.5} style={{ color: B[600] }} />
                                     <div className="flex-1 min-w-0">
                                         <span className="text-[13.5px] font-medium block" style={{ color: C.text }}>Default carrier</span>
-                                        <span className="text-[11.5px] block mt-0.5" style={{ color: B[600] }}>Shipping partner for outbound orders</span>
+                                        <span className="text-[11.5px] block mt-0.5" style={{ color: B[600] }}>Shipping partner for orders</span>
                                     </div>
                                     <button onClick={() => cycle('preferredCarrier', ['DHL Express', 'FedEx', 'Maersk', 'UPS', 'Local courier'] as const, 'Carrier')}
                                         className="text-[12.5px] font-semibold px-3 py-1.5 rounded-full border-none cursor-pointer transition-colors duration-150 hover:bg-black/[0.04]"

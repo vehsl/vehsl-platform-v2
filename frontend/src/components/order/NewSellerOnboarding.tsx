@@ -431,15 +431,12 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 } else if (stage === 'compliance') {
                     setCompleted(new Set(['request']));
                     setStep('compliance');
-                } else if (stage === 'inspection') {
+                } else if (stage === 'inspection' || stage === 'inbound') {
                     setCompleted(new Set(['request', 'compliance', 'samples']));
                     setStep('inspection');
                 } else if (stage === 'live') {
                     setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
                     setStep('live');
-                } else if (stage === 'inbound') {
-                    setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
-                    setStep('inspection');
                 } else if (stage === 'done') {
                     setCompleted(new Set(['request', 'compliance', 'samples', 'inspection', 'live']));
                     setStep('done');
@@ -742,11 +739,8 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
             } else if (stage === 'compliance') {
                 setCompleted(new Set(['request']));
                 setStep('compliance');
-            } else if (stage === 'inspection') {
+            } else if (stage === 'inspection' || stage === 'inbound') {
                 setCompleted(new Set(['request', 'compliance', 'samples']));
-                setStep('inspection');
-            } else if (stage === 'inbound') {
-                setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
                 setStep('inspection');
             } else if (stage === 'live') {
                 setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));

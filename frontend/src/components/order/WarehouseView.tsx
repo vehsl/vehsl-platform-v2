@@ -273,13 +273,13 @@ function ListingStatusStepper({ lr }: { lr: any }) {
         { key: 'samples', label: 'Samples', icon: <Package size={14} /> },
         { key: 'compliance', label: 'Compliance', icon: <ShieldCheck size={14} /> },
         { key: 'inspection', label: 'Inspection', icon: <Search size={14} /> },
-        { key: 'inbound', label: 'Inbound', icon: <Truck size={14} /> },
         { key: 'live', label: 'Approved', icon: <Check size={14} /> },
         { key: 'done', label: 'Published', icon: <BadgeCheck size={14} /> },
     ];
 
     const isPublished = String(lr?.stage || '').toLowerCase() === 'done' || !!lr?.created_product;
-    const stageKey = isPublished ? 'done' : String(lr?.stage || '').toLowerCase();
+    const rawStageKey = isPublished ? 'done' : String(lr?.stage || '').toLowerCase();
+    const stageKey = rawStageKey === 'inbound' ? 'inspection' : rawStageKey;
     const currentStageIndex = stages.findIndex(s => s.key === stageKey);
     
     return (
@@ -331,16 +331,6 @@ function ListingStatusStepper({ lr }: { lr: any }) {
                                 </div>
                             )}
 
-                            {stage.key === 'inbound' && String(lr.inbound_request_status || '').toLowerCase() === 'received' && (
-                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10">
-                                    <Check size={10} strokeWidth={4} className="text-white" />
-                                </div>
-                            )}
-                            {stage.key === 'inbound' && lr.stage === 'inbound' && lr.inbound_request_status && String(lr.inbound_request_status || '').toLowerCase() !== 'received' && (
-                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse" title={`Inbound: ${lr.inbound_request_status}`}>
-                                    <Clock size={10} strokeWidth={3} className="text-white" />
-                                </div>
-                            )}
                         </div>
                         {i < stages.length - 1 && (
                             <div className={`h-[2px] w-12 -mt-5 rounded-full transition-all duration-700 ${
@@ -1747,19 +1737,19 @@ function ReleaseSheet({ item, onClose, onSubmit, prefill, productColor }: {
 // ═══════════════════════════════════════════
 // MAIN VIEW
 // ═══════════════════════════════════════════
-type ViewState = 'select' | 'inventory' | 'inbound' | 'onboarding';
+type ViewState = 'select' | 'inventory' | 'onboarding';
 
 export function WarehouseView() {
     const [mounted, setMounted] = useState(false);
     useEffect(() => { setMounted(true); }, []);
 
     const { isSeller, isAdmin, isLogistics } = useRole();
+    const showWarehouseOps = isAdmin || isLogistics;
     const [view, setView] = useState<ViewState>('select');
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [inventory, setInventory] = useState<InventoryItem[]>([]);
-    const [inboundRequests, setInboundRequests] = useState<any[]>([]);
     const [listingRequests, setListingRequests] = useState<any[]>([]);
     const [editingListingRequest, setEditingListingRequest] = useState<any | null>(null);
     const [listingEditSaving, setListingEditSaving] = useState(false);
@@ -1789,12 +1779,22 @@ export function WarehouseView() {
     const fetchWarehouseData = useCallback(async () => {
         try {
             setLoading(true);
-            const [wRes, rRes, recRes, autoRes, inRes, lrRes] = await Promise.all([
+            if (!showWarehouseOps) {
+                const lrRes = await authedFetch('/api/v1/seller/listing-requests/');
+                if (lrRes.ok) {
+                    const raw = await lrRes.json();
+                    setListingRequests(Array.isArray(raw) ? raw : []);
+                } else {
+                    setListingRequests([]);
+                }
+                setView('onboarding');
+                return;
+            }
+            const [wRes, rRes, recRes, autoRes, lrRes] = await Promise.all([
                 authedFetch('/api/v1/warehouse/dashboard/list_warehouses/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_requests/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_records/'),
                 authedFetch('/api/v1/warehouse/dashboard/auto_order_settings/'),
-                authedFetch('/api/v1/catalog/inbound-requests/'),
                 authedFetch('/api/v1/seller/listing-requests/'),
             ]);
 
@@ -1821,11 +1821,6 @@ export function WarehouseView() {
                 const raw = await recRes.json();
                 const mapped = Array.isArray(raw) ? raw.map(mapReleaseRecord).filter((x): x is ReleaseRecord => !!x) : [];
                 setReleaseRecords(mapped);
-            }
-
-            if (inRes.ok) {
-                const raw = await inRes.json();
-                setInboundRequests(Array.isArray(raw) ? raw : []);
             }
 
             if (lrRes.ok) {
@@ -2605,15 +2600,6 @@ export function WarehouseView() {
                                     {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
                                 </button>
                                 <button
-                                    onClick={() => setView('inbound')}
-                                    className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
-                                        (view as string) === 'inbound' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
-                                    }`}
-                                >
-                                    Inbound
-                                    {(view as string) === 'inbound' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
-                                </button>
-                                <button
                                     onClick={() => setView('onboarding')}
                                     className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
                                         (view as string) === 'onboarding' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
@@ -3360,15 +3346,6 @@ export function WarehouseView() {
                                 {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
                             </button>
                             <button
-                                onClick={() => setView('inbound')}
-                                className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
-                                    (view as string) === 'inbound' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
-                                }`}
-                            >
-                                Inbound
-                                {(view as string) === 'inbound' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
-                            </button>
-                            <button
                                 onClick={() => setView('onboarding')}
                                 className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
                                     (view as string) === 'onboarding' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
@@ -3481,99 +3458,7 @@ export function WarehouseView() {
                         </div>
                     </div>
                 </div>
-            ) : (
-                /* ═══ INBOUND DASHBOARD ═══ */
-                <div className="space-y-5">
-                    <div className="flex items-center gap-6 mb-2 border-b border-[#1A1A1A]/[0.03]">
-                        <button
-                            onClick={() => setView('inventory')}
-                            className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
-                                (view as string) === 'inventory' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
-                            }`}
-                        >
-                            Inventory
-                            {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
-                        </button>
-                        <button
-                            onClick={() => setView('inbound')}
-                            className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
-                                (view as string) === 'inbound' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
-                            }`}
-                        >
-                            Inbound
-                            {(view as string) === 'inbound' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
-                        </button>
-                    </div>
-
-                    <div className="space-y-4">
-                        {inboundRequests.length === 0 ? (
-                            <div className="py-20 text-center">
-                                <div className="w-16 h-16 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <Package size={24} className="text-[#1A1A1A]/10" />
-                                </div>
-                                <h3 className="text-[16px] font-bold text-[#1A1A1A]/40">No inbound requests</h3>
-                                <p className="text-[13px] text-[#1A1A1A]/25 mt-1">Start by sending products to our warehouse.</p>
-                            </div>
-                        ) : inboundRequests.map((req, i) => (
-                            <motion.div
-                                key={req.id}
-                                initial={{ opacity: 0, y: 8 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ delay: i * 0.05 }}
-                                className="p-5 rounded-[22px] bg-white/45 border border-[#1A1A1A]/[0.06] flex items-center justify-between"
-                            >
-                                <div className="flex items-center gap-4">
-                                    <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center shadow-sm">
-                                        <Truck size={18} className="text-[#1A1A1A]/40" />
-                                    </div>
-                                    <div>
-                                        <div className="flex items-center gap-2">
-                                            <h4 className="text-[14px] font-bold text-[#1A1A1A]/80">#{req.id} · {req.warehouse_name}</h4>
-                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                                req.status === 'received' ? 'bg-emerald-500/10 text-emerald-600' :
-                                                req.status === 'shipped' ? 'bg-blue-500/10 text-blue-600' :
-                                                'bg-amber-500/10 text-amber-600'
-                                            }`}>
-                                                {req.status}
-                                            </span>
-                                        </div>
-                                        <p className="text-[12px] text-[#1A1A1A]/35 mt-0.5">
-                                            {(req.items?.length || 0) > 0 ? `${req.items.length} products` : (req.listing_request_product_name || "0 products")} · Sent by {req.seller_name}
-                                        </p>
-                                    </div>
-                                </div>
-                                {(isAdmin || isLogistics) && req.status === 'shipped' && (
-                                    <button
-                                        onClick={async () => {
-                                            try {
-                                                const res = await authedFetch(`/api/v1/catalog/inbound-requests/${req.id}/receive/`, {
-                                                    method: 'POST',
-                                                    headers: { 'Content-Type': 'application/json' },
-                                                    body: JSON.stringify({
-                                                        items: req.items.map((it: any) => ({
-                                                            id: it.id,
-                                                            quantity_received: it.quantity_expected
-                                                        }))
-                                                    })
-                                                });
-                                                if (res.ok) {
-                                                    toast.success('Inbound received & stock updated');
-                                                    fetchWarehouseData();
-                                                }
-                                            } catch (e) {
-                                                toast.error('Failed to receive');
-                                            }
-                                        }}
-                                        className="px-4 py-2 rounded-full bg-emerald-500 text-white text-[12px] font-bold shadow-lg shadow-emerald-500/20 active:scale-95 transition-all"
-                                    >
-                                        Confirm Receipt
-                                    </button>
-                                )}
-                            </motion.div>
-                        ))}
-                    </div>
-                </div>
-            )}
+            ) : null}
         </motion.div>
     );
 }

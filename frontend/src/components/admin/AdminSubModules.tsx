@@ -1868,25 +1868,6 @@ export function AdminProducts() {
     }
   };
 
-  const markInboundReceived = async (lr: any) => {
-    const id = Number(lr?.id || 0);
-    if (!id) return;
-    try {
-      setActionError("");
-      setActionSuccess("");
-      await fetchJson(`/api/v1/admin/listing-requests/${id}/complete_inbound/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      setActionSuccess("Inbound marked as received.");
-      window.setTimeout(() => setActionSuccess(""), 2500);
-      refreshListingRequests();
-    } catch (e: any) {
-      setActionError(e?.message || "Failed to mark inbound as received.");
-    }
-  };
-
   const completeInspection = async (lr: any) => {
     const id = Number(lr?.id || 0);
     if (!id) return;
@@ -1898,10 +1879,9 @@ export function AdminProducts() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ inspected: true }),
       });
-      setActionSuccess("Inspection marked complete. Listing moved to Inbound stage.");
+      setActionSuccess("Inspection marked complete.");
       window.setTimeout(() => setActionSuccess(""), 2500);
       refreshListingRequests();
-      if (lrStage === "inspection") setListingRequestStageFilter("inbound");
     } catch (e: any) {
       setActionError(e?.message || "Failed to complete inspection.");
     }
@@ -2837,9 +2817,8 @@ export function AdminProducts() {
                   <option value="samples">Samples</option>
                   <option value="compliance">Compliance</option>
                   <option value="inspection">Inspection</option>
-                  <option value="inbound">Inbound</option>
                   <option value="live">Approved</option>
-                  <option value="done">Done</option>
+                  <option value="done">Published</option>
                 </select>
                 <select
                   value={String(lrPageSize)}
@@ -2917,14 +2896,6 @@ export function AdminProducts() {
                               <Search size={12} className="text-amber-500" />
                             </div>
                           )}
-                          {!!lr.inbound_request_id && (
-                            <div
-                              className="w-5 h-5 rounded-full bg-blue-500/10 flex items-center justify-center"
-                              title={`Inbound Request #${lr.inbound_request_id}${lr.inbound_request_status ? ` · ${lr.inbound_request_status}` : ""}${lr.inbound_request_warehouse_name ? ` · ${lr.inbound_request_warehouse_name}` : ""}`}
-                            >
-                              <Truck size={12} className="text-blue-500" />
-                            </div>
-                          )}
                         </div>
                       </div>
                       <div className="col-span-1 text-[0.8125rem] text-muted-foreground/70 tabular-nums whitespace-nowrap">
@@ -2941,11 +2912,11 @@ export function AdminProducts() {
                       </div>
                       <div className="col-span-1 flex justify-end">
                         {(() => {
-                          const stageKey = String(lr?.stage || "").toLowerCase();
+                          const rawStageKey = String(lr?.stage || "").toLowerCase();
+                          const stageKey = rawStageKey === "inbound" ? "inspection" : rawStageKey;
                           const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
                           const reviewMessage = (meta?.review_message || "").toString().trim();
                           const needsInspection = !!lr?.inspector;
-                          const inboundStatus = String(lr?.inbound_request_status || "").toLowerCase();
                           const isDone = stageKey === "done" || !!lr?.created_product_id;
                           const missingForApproval = computeMissingFields(lr);
                           const requiredDocs = Array.isArray(lr?.required_documents)
@@ -2956,8 +2927,7 @@ export function AdminProducts() {
                           const canApprove =
                             !!lr?.compliance_verified &&
                             (!needsInspection || !!lr?.inspected) &&
-                            stageKey === "inbound" &&
-                            (!lr?.inbound_request_id || inboundStatus === "" || inboundStatus === "received") &&
+                            stageKey === "inspection" &&
                             missingForApproval.length === 0 &&
                             (!needsDocs || docsAttached > 0);
 
@@ -2986,32 +2956,15 @@ export function AdminProducts() {
                             );
                           }
 
-                          if (!isDone && needsInspection && !lr?.inspected) {
-                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Waiting</div>;
-                          }
-
-                          if (!isDone && stageKey === "inspection" && !!lr?.compliance_verified && (!needsInspection || !!lr?.inspected)) {
+                          if (!isDone && stageKey === "inspection" && !!lr?.compliance_verified && !lr?.inspected) {
                             return (
                               <button
                                 type="button"
                                 onClick={() => completeInspection(lr)}
                                 className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
-                                title="Complete inspection (moves listing to Inbound stage)"
+                                title="Mark inspection complete"
                               >
-                                To inbound
-                              </button>
-                            );
-                          }
-
-                          if (!isDone && stageKey === "inbound" && lr?.inbound_request_id && inboundStatus && inboundStatus !== "received") {
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => markInboundReceived(lr)}
-                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                                title="Mark inbound as received"
-                              >
-                                Mark received
+                                Mark inspected
                               </button>
                             );
                           }
@@ -3029,7 +2982,7 @@ export function AdminProducts() {
                             );
                           }
 
-                          if (!isDone && stageKey === "inbound" && (!!lr?.inbound_request_id ? inboundStatus === "" || inboundStatus === "received" : true)) {
+                          if (!isDone && stageKey === "inspection") {
                             const blocked =
                               (!!lr?.compliance_verified && (!needsInspection || !!lr?.inspected)) &&
                               (missingForApproval.length > 0 || (needsDocs && docsAttached <= 0));

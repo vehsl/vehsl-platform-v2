@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import F, Sum, Value, IntegerField
+from django.db.models import Count, F, Sum, Value, IntegerField
 from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
@@ -280,14 +280,15 @@ class OrderCreateSerializer(serializers.Serializer):
             if unit_price is None:
                 raise serializers.ValidationError("Could not resolve unit price.")
 
-            # Real-time stock check
             stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
-            available = stock_qs.aggregate(
-                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField())
-            )["total"]
-
-            if qty > available:
-                raise serializers.ValidationError(f"Not enough stock for {p.name}. Available: {available}")
+            agg = stock_qs.aggregate(
+                cnt=Count("id"),
+                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()),
+            )
+            if (agg.get("cnt") or 0) > 0:
+                available = int(agg.get("total") or 0)
+                if qty > available:
+                    raise serializers.ValidationError(f"Not enough stock for {p.name}. Available: {available}")
 
             if resolved_currency and resolved_currency != currency:
                 raise serializers.ValidationError("Pricing tier currency mismatch.")
