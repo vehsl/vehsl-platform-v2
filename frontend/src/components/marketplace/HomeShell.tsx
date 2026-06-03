@@ -175,7 +175,7 @@ export function HomeShell() {
   const handleSignIn = useCallback(async () => {
     if (signingIn) return;
     const id = identifier.trim();
-    const pw = password;
+    const pw = password.trim();
     if (!id || !pw) {
       toast.error("Enter email/phone and password.");
       return;
@@ -199,8 +199,14 @@ export function HomeShell() {
           toast.error("Enter the 6-digit code from your authenticator app.");
           return;
         }
-        const msg = (err && (err.detail || err.non_field_errors)) || "Login failed.";
-        toast.error(typeof msg === "string" ? msg : "Login failed.");
+        const raw = err && (err.detail || err.non_field_errors);
+        const msg =
+          typeof raw === "string"
+            ? raw
+            : Array.isArray(raw) && raw.length && typeof raw[0] === "string"
+              ? raw.join(" ")
+              : "Login failed.";
+        toast.error(msg);
         return;
       }
 

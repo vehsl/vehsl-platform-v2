@@ -653,7 +653,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 setProduct(p => ({ ...p, photo: data.photos[0].file_url, photoFile: null }));
             }
             completeStep(
-                'request', 'samples',
+                'request', 'compliance',
                 'Listing request submitted \u2713',
                 'Our team will review your details within 24\u00A0hours'
             );
@@ -697,7 +697,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 return;
             }
             completeStep(
-                'samples', 'inspection',
+                'samples', 'compliance',
                 'Sample address saved \u2713',
                 'We\u2019ll contact you to arrange pickup timing'
             );

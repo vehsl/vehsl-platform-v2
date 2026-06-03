@@ -142,3 +142,23 @@ class ListingRequestFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(res2.status_code, 400)
+
+    def test_seller_sample_address_does_not_advance_stage(self):
+        lr = ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Test Category",
+            product_name="P5",
+            unit_price="10.00",
+            moq=1,
+            stage=ListingRequest.Stage.COMPLIANCE,
+        )
+        self.client.force_authenticate(user=self.seller)
+        res = self.client.post(
+            f"/api/v1/seller/listing-requests/{lr.id}/sample/",
+            {"type": "factory", "address": "123 Street, City", "contact_name": "John", "phone": "123"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200)
+        lr.refresh_from_db()
+        self.assertEqual(lr.stage, ListingRequest.Stage.COMPLIANCE)

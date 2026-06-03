@@ -1459,6 +1459,11 @@ export function AdminProducts() {
   const [approveRating, setApproveRating] = useState<string>("");
   const [approveSaving, setApproveSaving] = useState(false);
 
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishId, setPublishId] = useState<number | null>(null);
+  const [publishRating, setPublishRating] = useState<string>("");
+  const [publishSaving, setPublishSaving] = useState(false);
+
   const [readinessOpen, setReadinessOpen] = useState(false);
   const [readinessId, setReadinessId] = useState<number | null>(null);
   const [readinessTitle, setReadinessTitle] = useState<string>("");
@@ -1667,7 +1672,13 @@ export function AdminProducts() {
   };
 
   const publishListingRequest = async (lr: any) => {
-    const id = Number(lr.id);
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+
+    const requiredDocs = Array.isArray(lr?.required_documents) ? lr.required_documents.filter((x: any) => typeof x === "string") : [];
+    const docsAttached = Number(lr?.documents_attached || 0) || 0;
+    const needsDocs = requiredDocs.length > 0;
+
     const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
     const origin = meta?.origin_location && typeof meta.origin_location === "object" ? meta.origin_location : {};
     const missing: string[] = [];
@@ -1680,39 +1691,25 @@ export function AdminProducts() {
       missing.push("ship_time_range_days");
     }
 
-    if (!lr.compliance_verified) {
-      setActionError("Cannot publish: Compliance must be verified first.");
-      return;
-    }
     const needsInspection = !!lr?.inspector;
-    if (needsInspection && !lr.inspected) {
-      setActionError("Cannot publish: Inspector is assigned but inspection is not completed yet.");
-      return;
-    }
-    if (missing.length) {
-      setActionError(`Cannot publish: Missing required fields (${missing.join(", ")}).`);
+    const canPublish =
+      !lr?.created_product_id &&
+      String(lr?.stage || "").toLowerCase() === "live" &&
+      !!lr?.compliance_verified &&
+      (!needsInspection || !!lr?.inspected) &&
+      missing.length === 0 &&
+      (!needsDocs || docsAttached > 0);
+
+    if (!canPublish) {
+      setActionError("Cannot publish: resolve readiness requirements first (use “Why disabled?”).");
       return;
     }
 
-    try {
-      setActionError("");
-      setActionSuccess("");
-      const raw = window.prompt("Rating (0–5). Leave blank for default 4.8") || "";
-      const rating = raw.trim() ? Number(raw.trim()) : undefined;
-      const body: any = {};
-      if (rating != null && Number.isFinite(rating)) body.rating = rating;
-      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      setActionSuccess("Published. Product created and listing request moved to Done.");
-      window.setTimeout(() => setActionSuccess(""), 2500);
-      refreshListingRequests();
-      refreshProducts();
-    } catch (e: any) {
-      setActionError(e?.message || "Publish failed.");
-    }
+    setActionError("");
+    setActionSuccess("");
+    setPublishId(id);
+    setPublishRating("");
+    setPublishOpen(true);
   };
 
   const computeMissingFields = (lr: any): string[] => {
@@ -1744,7 +1741,7 @@ export function AdminProducts() {
     const suggested =
       msgParts.length === 0
         ? ""
-        : `Please fix the following before we can publish:\n- ${msgParts.join("\n- ")}`;
+        : `Please fix the following before we can approve/publish:\n- ${msgParts.join("\n- ")}`;
 
     setReadinessId(id);
     setReadinessTitle(title);
@@ -1833,6 +1830,41 @@ export function AdminProducts() {
       setActionError(e?.message || "Approval failed.");
     } finally {
       setApproveSaving(false);
+    }
+  };
+
+  const submitPublishModal = async () => {
+    const id = Number(publishId || 0);
+    if (!id) return;
+    if (publishSaving) return;
+    setPublishSaving(true);
+    try {
+      const raw = (publishRating || "").trim();
+      const body: any = {};
+      if (raw) {
+        const rating = Number(raw);
+        if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
+          setActionError("Rating must be between 0 and 5.");
+          return;
+        }
+        body.rating = rating;
+      }
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setPublishOpen(false);
+      setPublishId(null);
+      setPublishRating("");
+      setActionSuccess("Published. Product created and listing request moved to Done.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      refreshProducts();
+    } catch (e: any) {
+      setActionError(e?.message || "Publish failed.");
+    } finally {
+      setPublishSaving(false);
     }
   };
 
@@ -2533,6 +2565,93 @@ export function AdminProducts() {
           </motion.div>
         )}
 
+        {publishOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !publishSaving) {
+                setPublishOpen(false);
+                setPublishId(null);
+                setPublishRating("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Publish Listing</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Create the marketplace product and finalize this request.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (publishSaving) return;
+                    setPublishOpen(false);
+                    setPublishId(null);
+                    setPublishRating("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <div className="text-[0.75rem] uppercase tracking-wide text-muted-foreground/60 mb-2">Rating (0–5)</div>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    value={publishRating}
+                    onChange={(e) => setPublishRating(e.target.value)}
+                    placeholder="Leave blank for default 4.8"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (publishSaving) return;
+                      setPublishOpen(false);
+                      setPublishId(null);
+                      setPublishRating("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitPublishModal()}
+                    disabled={publishSaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      publishSaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {publishSaving ? "Publishing…" : "Publish"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {readinessOpen && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -2828,11 +2947,19 @@ export function AdminProducts() {
                           const needsInspection = !!lr?.inspector;
                           const inboundStatus = String(lr?.inbound_request_status || "").toLowerCase();
                           const isDone = stageKey === "done" || !!lr?.created_product_id;
+                          const missingForApproval = computeMissingFields(lr);
+                          const requiredDocs = Array.isArray(lr?.required_documents)
+                            ? lr.required_documents.filter((x: any) => typeof x === "string")
+                            : [];
+                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+                          const needsDocs = requiredDocs.length > 0;
                           const canApprove =
                             !!lr?.compliance_verified &&
                             (!needsInspection || !!lr?.inspected) &&
                             stageKey === "inbound" &&
-                            (!lr?.inbound_request_id || inboundStatus === "" || inboundStatus === "received");
+                            (!lr?.inbound_request_id || inboundStatus === "" || inboundStatus === "received") &&
+                            missingForApproval.length === 0 &&
+                            (!needsDocs || docsAttached > 0);
 
                           if (!isDone && stageKey === "samples" && !!reviewMessage) {
                             return (
@@ -2842,7 +2969,11 @@ export function AdminProducts() {
                             );
                           }
 
-                          if (!isDone && !lr?.compliance_verified && (stageKey === "compliance" || (stageKey === "samples" && !reviewMessage))) {
+                          if (
+                            !isDone &&
+                            !lr?.compliance_verified &&
+                            (stageKey === "compliance" || stageKey === "inspection" || (stageKey === "samples" && !reviewMessage))
+                          ) {
                             return (
                               <button
                                 type="button"
@@ -2896,6 +3027,24 @@ export function AdminProducts() {
                                 Approve
                               </button>
                             );
+                          }
+
+                          if (!isDone && stageKey === "inbound" && (!!lr?.inbound_request_id ? inboundStatus === "" || inboundStatus === "received" : true)) {
+                            const blocked =
+                              (!!lr?.compliance_verified && (!needsInspection || !!lr?.inspected)) &&
+                              (missingForApproval.length > 0 || (needsDocs && docsAttached <= 0));
+                            if (blocked) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => openReadinessModal(lr, "Needs seller fixes before approval")}
+                                  className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                                  title="See what is missing and request changes"
+                                >
+                                  Needs fixes
+                                </button>
+                              );
+                            }
                           }
 
                           if (stageKey === "live") {
@@ -2968,7 +3117,7 @@ export function AdminProducts() {
                           ) : (
                             <button
                               type="button"
-                              onClick={() => publishListingRequest(lr)}
+                              onClick={() => openReadinessModal(lr, "Already published")}
                               className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
                             >
                               View

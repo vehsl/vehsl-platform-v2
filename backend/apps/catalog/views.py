@@ -872,8 +872,7 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         if len(lr.pickup_address) < 7 or len(lr.pickup_contact_name) < 2:
             return Response({"detail": "Pickup address and contact name are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        lr.stage = ListingRequest.Stage.INSPECTION
-        lr.save()
+        lr.save(update_fields=["pickup_type", "pickup_address", "pickup_contact_name", "pickup_phone", "updated_at"])
         audit(
             request.user,
             action="seller_listing_request_stage_updated",
@@ -1249,7 +1248,9 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             stage_key = (getattr(lr, "stage", "") or "").strip().lower()
             meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
             review_message = (meta.get("review_message") or "").strip() if isinstance(meta, dict) else ""
-            allowed = stage_key == ListingRequest.Stage.COMPLIANCE or (stage_key == ListingRequest.Stage.SAMPLES and not review_message)
+            allowed = stage_key in {ListingRequest.Stage.COMPLIANCE, ListingRequest.Stage.INSPECTION} or (
+                stage_key == ListingRequest.Stage.SAMPLES and not review_message
+            )
             if not allowed:
                 return Response({"detail": "Listing must be in Compliance stage to verify."}, status=status.HTTP_400_BAD_REQUEST)
 

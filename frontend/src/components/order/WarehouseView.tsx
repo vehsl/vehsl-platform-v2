@@ -275,15 +275,18 @@ function ListingStatusStepper({ lr }: { lr: any }) {
         { key: 'inspection', label: 'Inspection', icon: <Search size={14} /> },
         { key: 'inbound', label: 'Inbound', icon: <Truck size={14} /> },
         { key: 'live', label: 'Approved', icon: <Check size={14} /> },
+        { key: 'done', label: 'Published', icon: <BadgeCheck size={14} /> },
     ];
 
-    const currentStageIndex = stages.findIndex(s => s.key === lr.stage);
+    const isPublished = String(lr?.stage || '').toLowerCase() === 'done' || !!lr?.created_product;
+    const stageKey = isPublished ? 'done' : String(lr?.stage || '').toLowerCase();
+    const currentStageIndex = stages.findIndex(s => s.key === stageKey);
     
     return (
         <div className="flex items-center gap-6 mt-4">
             {stages.map((stage, i) => {
-                const isCompleted = i < currentStageIndex || (lr.stage === 'done');
-                const isCurrent = i === currentStageIndex && lr.stage !== 'done';
+                const isCompleted = i < currentStageIndex;
+                const isCurrent = i === currentStageIndex;
                 
                 return (
                     <React.Fragment key={stage.key}>
@@ -1885,34 +1888,76 @@ export function WarehouseView() {
         if (!id) return;
         if (listingEditSaving) return;
 
+        const toInt = (raw: any) => {
+            const s = String(raw ?? '').trim();
+            if (!s) return null;
+            const n = Number(s);
+            if (!Number.isFinite(n)) return null;
+            return Math.trunc(n);
+        };
+        const pickFirstError = (obj: any) => {
+            if (!obj) return '';
+            if (typeof obj === 'string') return obj;
+            if (typeof obj?.detail === 'string') return obj.detail;
+            if (typeof obj?.error === 'string') return obj.error;
+            if (typeof obj === 'object') {
+                for (const k of Object.keys(obj)) {
+                    const v = (obj as any)[k];
+                    if (typeof v === 'string' && v.trim()) return `${k}: ${v}`;
+                    if (Array.isArray(v) && v.length && typeof v[0] === 'string') return `${k}: ${v[0]}`;
+                }
+            }
+            return '';
+        };
+
         const payload: any = {
             product_name: listingEditDraft.product_name.trim(),
             company_name: listingEditDraft.company_name.trim(),
             description: listingEditDraft.description.trim(),
             unit_price: listingEditDraft.unit_price.trim(),
-            moq: listingEditDraft.moq.trim(),
+            moq: toInt(listingEditDraft.moq),
             sku: listingEditDraft.sku.trim(),
             hs_code: listingEditDraft.hs_code.trim(),
             origin_country: listingEditDraft.origin_country.trim(),
             origin_region: listingEditDraft.origin_region.trim(),
             origin_city: listingEditDraft.origin_city.trim(),
-            lead_time_days: listingEditDraft.lead_time_days.trim(),
-            weight_grams: listingEditDraft.weight_grams.trim(),
-            ship_time_min_days: listingEditDraft.ship_time_min_days.trim(),
-            ship_time_max_days: listingEditDraft.ship_time_max_days.trim(),
+            lead_time_days: toInt(listingEditDraft.lead_time_days),
+            weight_grams: toInt(listingEditDraft.weight_grams),
+            ship_time_min_days: toInt(listingEditDraft.ship_time_min_days),
+            ship_time_max_days: toInt(listingEditDraft.ship_time_max_days),
         };
 
         const missing: string[] = [];
         if (!payload.sku) missing.push('SKU');
         if (!payload.hs_code) missing.push('HS code');
         if (!payload.origin_country) missing.push('Origin country');
-        if (!payload.lead_time_days) missing.push('Lead time');
-        if (!payload.weight_grams) missing.push('Weight (grams)');
-        if (!payload.ship_time_min_days || !payload.ship_time_max_days) missing.push('Shipping time range');
+        if (payload.lead_time_days == null) missing.push('Lead time');
+        if (payload.weight_grams == null) missing.push('Weight (grams)');
+        if (payload.ship_time_min_days == null || payload.ship_time_max_days == null) missing.push('Shipping time range');
         if (!payload.product_name) missing.push('Product name');
         if (!payload.unit_price) missing.push('Unit price');
         if (missing.length) {
             toast.error('Missing required fields', { description: missing.join(', ') });
+            return;
+        }
+        if (payload.moq != null && payload.moq < 1) {
+            toast.error('Invalid MOQ', { description: 'MOQ must be 1 or more.' });
+            return;
+        }
+        if (payload.lead_time_days != null && payload.lead_time_days < 0) {
+            toast.error('Invalid lead time', { description: 'Lead time must be 0 or more.' });
+            return;
+        }
+        if (payload.weight_grams != null && payload.weight_grams <= 0) {
+            toast.error('Invalid weight', { description: 'Weight must be greater than 0.' });
+            return;
+        }
+        if (
+            payload.ship_time_min_days != null &&
+            payload.ship_time_max_days != null &&
+            payload.ship_time_min_days > payload.ship_time_max_days
+        ) {
+            toast.error('Invalid shipping time', { description: `Ship time min (${payload.ship_time_min_days}) must be less than or equal to max (${payload.ship_time_max_days}).` });
             return;
         }
 
@@ -1925,7 +1970,8 @@ export function WarehouseView() {
             });
             const patchData = await patchRes.json().catch(() => null);
             if (!patchRes.ok) {
-                toast.error('Update failed', { description: asString(patchData?.detail, `Could not update (${patchRes.status})`) });
+                const msg = pickFirstError(patchData) || `Could not update (${patchRes.status})`;
+                toast.error('Update failed', { description: msg });
                 return;
             }
 
@@ -2307,12 +2353,19 @@ export function WarehouseView() {
                                         value={listingEditDraft.unit_price}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, unit_price: e.target.value }))}
                                         placeholder="Unit price (e.g. 12.50)"
+                                        inputMode="decimal"
+                                        type="number"
+                                        step="0.01"
                                         className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
                                     />
                                     <input
                                         value={listingEditDraft.moq}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, moq: e.target.value }))}
                                         placeholder="MOQ"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
                                         className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
                                     />
                                 </div>
@@ -2348,24 +2401,40 @@ export function WarehouseView() {
                                         value={listingEditDraft.lead_time_days}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, lead_time_days: e.target.value }))}
                                         placeholder="Lead time (days)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
                                         className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
                                     />
                                     <input
                                         value={listingEditDraft.weight_grams}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, weight_grams: e.target.value }))}
                                         placeholder="Weight (grams)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
                                         className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
                                     />
                                     <input
                                         value={listingEditDraft.ship_time_min_days}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, ship_time_min_days: e.target.value }))}
                                         placeholder="Ship time min (days)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
                                         className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
                                     />
                                     <input
                                         value={listingEditDraft.ship_time_max_days}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, ship_time_max_days: e.target.value }))}
                                         placeholder="Ship time max (days)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
                                         className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
                                     />
                                 </div>
