@@ -915,6 +915,84 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         )
         return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
+    @action(detail=True, methods=["get"], url_path="history")
+    def history(self, request, pk=None):
+        from django.db.models import Count, Max, Sum, Value, IntegerField
+        from django.db.models.functions import Coalesce
+        from apps.accounts.models import AuditLog
+
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        audit_qs = (
+            AuditLog.objects.filter(target_type="listing_request", target_id=str(lr.id))
+            .select_related("actor")
+            .order_by("occurred_at")
+        )
+        events = []
+        for row in audit_qs[:300]:
+            actor = getattr(row, "actor", None)
+            actor_label = ""
+            if actor is not None:
+                actor_label = (
+                    f"{(getattr(actor, 'first_name', '') or '').strip()} {(getattr(actor, 'last_name', '') or '').strip()}".strip()
+                    or getattr(actor, "email", "")
+                    or getattr(actor, "phone", "")
+                    or ""
+                )
+            events.append(
+                {
+                    "id": int(getattr(row, "id", 0) or 0),
+                    "occurred_at": getattr(row, "occurred_at", None),
+                    "action": str(getattr(row, "action", "") or ""),
+                    "actor_role": str(getattr(row, "actor_role", "") or ""),
+                    "actor": actor_label,
+                    "payload": getattr(row, "payload", {}) if isinstance(getattr(row, "payload", None), dict) else {},
+                }
+            )
+
+        orders = {"order_count": 0, "units": 0, "last_order_at": None}
+        sample = None
+        product_id = getattr(lr, "created_product_id", None)
+        if product_id:
+            try:
+                from apps.orders.models import OrderItem
+
+                o = OrderItem.objects.filter(product_id=product_id, order__deleted_at__isnull=True).aggregate(
+                    order_count=Count("order_id", distinct=True),
+                    units=Coalesce(Sum("quantity"), Value(0), output_field=IntegerField()),
+                    last_order_at=Max("order__created_at"),
+                )
+                orders = {
+                    "order_count": int(o.get("order_count") or 0),
+                    "units": int(o.get("units") or 0),
+                    "last_order_at": o.get("last_order_at"),
+                }
+            except Exception:
+                pass
+            try:
+                from apps.inventory.models import Sample
+
+                s = Sample.objects.filter(product_id=product_id, deleted_at__isnull=True).order_by("-last_updated").first()
+                if s:
+                    sample = {
+                        "available_quantity": int(getattr(s, "available_quantity", 0) or 0),
+                        "low_stock_flag": bool(getattr(s, "low_stock_flag", False)),
+                        "last_updated": getattr(s, "last_updated", None),
+                    }
+            except Exception:
+                pass
+
+        return Response(
+            {
+                "listing_request": ListingRequestSerializer(lr, context={"request": request}).data,
+                "events": events,
+                "orders": orders,
+                "sample": sample,
+            }
+        )
+
 
 class AdminListingRequestViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]

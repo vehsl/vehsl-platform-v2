@@ -1425,8 +1425,8 @@ export function AdminProducts() {
   const productStatusToPill = (s: string) => {
     const x = (s || "").toString().toLowerCase();
     if (x === "active") return { status: "success", label: "Active" };
-    if (x === "low_stock") return { status: "warning", label: "Low Stock" };
-    if (x === "out") return { status: "error", label: "Out" };
+    if (x === "low_stock") return { status: "warning", label: "Low Samples" };
+    if (x === "out") return { status: "error", label: "No Samples" };
     if (x === "review") return { status: "pending", label: "Review" };
     return { status: "pending", label: x || "Review" };
   };
@@ -3121,10 +3121,10 @@ export function AdminProducts() {
           <StatCard label="Active Listings" value={formatNumber(stats?.active_listings)} icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
         </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "low_stock" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "low_stock" ? "all" : "low_stock"))}>
-          <StatCard label="Low Stock" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+          <StatCard label="Low Samples" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
         </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "out" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "out" ? "all" : "out"))}>
-          <StatCard label="Out of Stock" value={formatNumber(stats?.out_of_stock)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+          <StatCard label="No Samples" value={formatNumber(stats?.out_of_stock)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
         </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "review" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "review" ? "all" : "review"))}>
           <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={4} accentColor="#8B5CF6" />
@@ -3395,7 +3395,7 @@ export function AdminProducts() {
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
                   <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
                   <span className={`${Number(p.stock_units) === 0 ? "text-[#E5484D]/80" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
-                    {Number(p.stock_units) === 0 ? "Out of stock" : `${formatNumber(p.stock_units)} units`}
+                    {Number(p.stock_units) === 0 ? "No samples" : `Samples: ${formatNumber(p.stock_units)}`}
                   </span>
                   {Number(p.vehsl_rating) > 0 && (
                     <span className="flex items-center gap-1 text-[#FFB224]/80">

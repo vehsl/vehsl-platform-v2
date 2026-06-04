@@ -10,7 +10,7 @@ import {
     Check, MapPin, Fingerprint, Car, UserCheck, Clock,
     Calendar, ArrowUpRight, Package, DollarSign, Warehouse as WarehouseIcon,
     Copy, Phone, Star, User, PenLine, FileText, Hash, Download, Share2,
-    Lock, ShieldCheck, Layers, Truck, ArrowRight, BadgeCheck
+    Lock, ShieldCheck, Layers, Truck, ArrowRight, BadgeCheck, MoreHorizontal
 } from 'lucide-react';
 import {
     Warehouse, InventoryItem, ReleaseRequest, ReleaseRecord
@@ -1744,7 +1744,7 @@ export function WarehouseView() {
     useEffect(() => { setMounted(true); }, []);
 
     const { isSeller, isAdmin, isLogistics } = useRole();
-    const showWarehouseOps = isAdmin || isLogistics;
+    const showWarehouseOps = (isAdmin || isLogistics) && !isSeller;
     const [view, setView] = useState<ViewState>('select');
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
@@ -1753,6 +1753,14 @@ export function WarehouseView() {
     const [listingRequests, setListingRequests] = useState<any[]>([]);
     const [editingListingRequest, setEditingListingRequest] = useState<any | null>(null);
     const [listingEditSaving, setListingEditSaving] = useState(false);
+    const [historyOpen, setHistoryOpen] = useState(false);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyError, setHistoryError] = useState('');
+    const [historyData, setHistoryData] = useState<any | null>(null);
+    const [historyTarget, setHistoryTarget] = useState<any | null>(null);
+    const [listQuery, setListQuery] = useState('');
+    const [rowMenuId, setRowMenuId] = useState<string | number | null>(null);
+    const rowMenuRef = useRef<HTMLDivElement | null>(null);
     const [listingEditDraft, setListingEditDraft] = useState({
         product_name: '',
         company_name: '',
@@ -1848,7 +1856,7 @@ export function WarehouseView() {
         } finally {
             setLoading(false);
         }
-    }, [authedFetch]);
+    }, [showWarehouseOps]);
 
     const openListingFix = useCallback((lr: any) => {
         const meta = lr?.product_meta && typeof lr.product_meta === 'object' ? lr.product_meta : {};
@@ -1876,6 +1884,57 @@ export function WarehouseView() {
         setEditingListingRequest(null);
         setListingEditSaving(false);
     }, []);
+
+    const closeHistory = useCallback(() => {
+        setHistoryOpen(false);
+        setHistoryLoading(false);
+        setHistoryError('');
+        setHistoryData(null);
+        setHistoryTarget(null);
+    }, []);
+
+    const openHistory = useCallback(async (lr: any) => {
+        try {
+            setHistoryTarget(lr);
+            setHistoryOpen(true);
+            setHistoryLoading(true);
+            setHistoryError('');
+            setHistoryData(null);
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${lr?.id}/history/`);
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                setHistoryError(asString(payload?.detail, `Could not load history (${res.status})`));
+                setHistoryData(null);
+                return;
+            }
+            setHistoryData(payload);
+        } catch {
+            setHistoryError('Could not load history.');
+            setHistoryData(null);
+        } finally {
+            setHistoryLoading(false);
+        }
+    }, [authedFetch]);
+
+    useEffect(() => {
+        if (!rowMenuId) return;
+        const onDown = (e: MouseEvent) => {
+            const el = rowMenuRef.current;
+            if (!el) return;
+            const target = e.target as Node | null;
+            if (target && el.contains(target)) return;
+            setRowMenuId(null);
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setRowMenuId(null);
+        };
+        window.addEventListener('mousedown', onDown);
+        window.addEventListener('keydown', onKey);
+        return () => {
+            window.removeEventListener('mousedown', onDown);
+            window.removeEventListener('keydown', onKey);
+        };
+    }, [rowMenuId]);
 
     const submitListingFix = useCallback(async () => {
         const lr = editingListingRequest;
@@ -2076,7 +2135,7 @@ export function WarehouseView() {
     const PAGE_SIZE = 10;
 
     const hasActiveWarehouse = Boolean(selectedWarehouse?.id);
-    const effectiveView: ViewState = hasActiveWarehouse ? view : 'select';
+    const effectiveView: ViewState = showWarehouseOps ? (hasActiveWarehouse ? view : 'select') : 'onboarding';
     const activeWarehouse: Warehouse = selectedWarehouse ?? {
         id: '',
         name: '',
@@ -2460,6 +2519,124 @@ export function WarehouseView() {
                 )}
             </AnimatePresence>
 
+            <AnimatePresence>
+                {historyOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[70] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeHistory();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[760px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Inventory History</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(historyTarget?.id)} · {asString(historyTarget?.product_name)}
+                                    </div>
+                                </div>
+                                <button onClick={closeHistory} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6">
+                                {historyLoading ? (
+                                    <div className="text-[13px] font-medium text-[#1A1A1A]/45">Loading history…</div>
+                                ) : historyError ? (
+                                    <div className="text-[13px] font-medium text-[#E5484D]/80">{historyError}</div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {(() => {
+                                            const orders = historyData?.orders || {};
+                                            const sample = historyData?.sample || null;
+                                            const hasOrders = Number(orders?.order_count || 0) > 0;
+                                            const hasSample = sample && typeof sample === 'object';
+                                            if (!hasOrders && !hasSample) return null;
+                                            return (
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                    <div className="p-4 rounded-2xl bg-black/[0.02] border border-black/[0.06]">
+                                                        <div className="text-[10px] font-black text-[#1A1A1A]/35 uppercase tracking-[1.5px]">Orders</div>
+                                                        <div className="mt-2 text-[13px] font-bold text-[#1A1A1A]/70">
+                                                            {Number(orders?.order_count || 0).toLocaleString()} orders · {Number(orders?.units || 0).toLocaleString()} units
+                                                        </div>
+                                                        <div className="mt-1 text-[11px] font-medium text-[#1A1A1A]/35">
+                                                            {orders?.last_order_at ? `Last: ${new Date(orders.last_order_at).toLocaleString()}` : 'No orders yet'}
+                                                        </div>
+                                                    </div>
+                                                    <div className="p-4 rounded-2xl bg-black/[0.02] border border-black/[0.06]">
+                                                        <div className="text-[10px] font-black text-[#1A1A1A]/35 uppercase tracking-[1.5px]">Samples</div>
+                                                        <div className="mt-2 text-[13px] font-bold text-[#1A1A1A]/70">
+                                                            {hasSample ? `${Number(sample?.available_quantity || 0).toLocaleString()} available` : '—'}
+                                                        </div>
+                                                        <div className="mt-1 text-[11px] font-medium text-[#1A1A1A]/35">
+                                                            {hasSample && sample?.last_updated ? `Updated: ${new Date(sample.last_updated).toLocaleString()}` : 'No sample tracking'}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })()}
+
+                                        <div className="rounded-2xl border border-black/[0.06] overflow-hidden">
+                                            <div className="px-4 py-3 bg-black/[0.02] border-b border-black/[0.06] flex items-center justify-between">
+                                                <div className="text-[11px] font-black text-[#1A1A1A]/40 uppercase tracking-[1.5px]">Timeline</div>
+                                                <div className="text-[11px] font-bold text-[#1A1A1A]/30 tabular-nums">
+                                                    {Array.isArray(historyData?.events) ? historyData.events.length : 0}
+                                                </div>
+                                            </div>
+                                            <div className="max-h-[340px] overflow-auto">
+                                                {(Array.isArray(historyData?.events) ? historyData.events : []).slice().reverse().map((ev: any) => {
+                                                    const when = ev?.occurred_at ? new Date(ev.occurred_at).toLocaleString() : '';
+                                                    const actor = asString(ev?.actor);
+                                                    const action = asString(ev?.action);
+                                                    const label =
+                                                        action === 'seller_listing_request_submitted' ? 'Submitted' :
+                                                        action === 'seller_listing_request_updated' ? 'Updated' :
+                                                        action === 'seller_listing_request_resubmitted' ? 'Resubmitted' :
+                                                        action === 'admin_listing_request_compliance_verified' ? 'Compliance verified' :
+                                                        action === 'admin_listing_request_inspected' ? 'Inspection complete' :
+                                                        action === 'admin_listing_request_reviewed' ? 'Review decision' :
+                                                        action === 'admin_listing_request_published' ? 'Published' :
+                                                        action;
+                                                    return (
+                                                        <div key={asString(ev?.id)} className="px-4 py-3 border-b border-black/[0.04] last:border-b-0">
+                                                            <div className="flex items-start justify-between gap-3">
+                                                                <div className="min-w-0">
+                                                                    <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">{label}</div>
+                                                                    <div className="text-[11px] font-medium text-[#1A1A1A]/35 mt-0.5 truncate">
+                                                                        {actor ? `${actor} · ${when}` : when}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                                {!Array.isArray(historyData?.events) || historyData.events.length === 0 ? (
+                                                    <div className="px-4 py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">
+                                                        No history events yet.
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
             {effectiveView === 'select' ? (
                 /* ═══ WAREHOUSE SELECTION ═══ */
                 <motion.div
@@ -2531,7 +2708,7 @@ export function WarehouseView() {
                         })}
                     </div>
                 </motion.div>
-            ) : view === 'inventory' ? (
+            ) : effectiveView === 'inventory' ? (
                 /* ═══ INVENTORY DASHBOARD ═══ */
                 <div className="space-y-5">
 
@@ -3331,131 +3508,198 @@ export function WarehouseView() {
                         </motion.div>
                     </div>
                 </div>
-            ) : view === 'onboarding' ? (
+            ) : effectiveView === 'onboarding' ? (
                 /* ═══ ONBOARDING DASHBOARD ═══ */
                 <div className="flex flex-col lg:flex-row gap-5 items-start">
                     <div className="flex-1 w-full min-w-0 space-y-5">
-                        <div className="flex items-center gap-6 mb-2 border-b border-[#1A1A1A]/[0.03]">
-                            <button
-                                onClick={() => setView('inventory')}
-                                className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
-                                    (view as string) === 'inventory' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
-                                }`}
-                            >
-                                Inventory
-                                {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
-                            </button>
-                            <button
-                                onClick={() => setView('onboarding')}
-                                className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
-                                    (view as string) === 'onboarding' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
-                                }`}
-                            >
-                                Onboarding
-                                {(view as string) === 'onboarding' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
-                            </button>
+                        <div className="flex items-baseline justify-between gap-4">
+                            <div className="min-w-0">
+                                <h2 className="text-[22px] font-black text-[#1A1A1A] tracking-tight leading-tight">Inventory</h2>
+                                <p className="text-[13px] font-medium text-[#1A1A1A]/25 mt-1">
+                                    Listings, approvals, and activity
+                                </p>
+                            </div>
+                            <div className="text-[12px] font-bold text-[#1A1A1A]/30 tabular-nums">
+                                {listingRequests.length} items
+                            </div>
                         </div>
 
-                        <div className="space-y-4">
-                            {listingRequests.length === 0 ? (
-                                <div className="py-20 text-center">
-                                    <div className="w-16 h-16 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-4">
-                                        <PenLine size={24} className="text-[#1A1A1A]/10" />
-                                    </div>
-                                    <h3 className="text-[16px] font-bold text-[#1A1A1A]/40">No active listing requests</h3>
-                                    <p className="text-[13px] text-[#1A1A1A]/25 mt-1">Submit your first product for onboarding.</p>
+                        {(() => {
+                            const total = listingRequests.length;
+                            const published = listingRequests.filter(lr => lr.stage === 'done' || !!lr.created_product_id).length;
+                            const approved = listingRequests.filter(lr => lr.stage === 'live').length;
+                            const changes = listingRequests.filter(lr => lr.stage === 'samples' && lr.product_meta?.review_message).length;
+                            const inReview = listingRequests.filter(lr => lr.stage === 'compliance' || lr.stage === 'inspection').length;
+                            const stats = [
+                                { k: 'Total', v: total },
+                                { k: 'Published', v: published },
+                                { k: 'Approved', v: approved },
+                                { k: 'In review', v: inReview },
+                                { k: 'Changes', v: changes },
+                            ];
+                            return (
+                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                                    {stats.map((s) => (
+                                        <div key={s.k} className="rounded-[18px] bg-white/45 border border-[#1A1A1A]/[0.06] px-4 py-3">
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">{s.k}</div>
+                                            <div className="mt-1 text-[16px] font-black text-[#1A1A1A]/80 tabular-nums">{Number(s.v).toLocaleString()}</div>
+                                        </div>
+                                    ))}
                                 </div>
-                            ) : listingRequests.map((lr, i) => (
-                                <motion.div
-                                    key={lr.id}
-                                    initial={{ opacity: 0, y: 8 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ delay: i * 0.05 }}
-                                    className="p-6 rounded-[22px] bg-white/45 border border-[#1A1A1A]/[0.06]"
-                                >
-                                    <div className="flex items-center justify-between mb-6">
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-12 h-12 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04]">
-                                                {lr.photos?.[0]?.file_url ? (
-                                                    <img src={lr.photos[0].file_url} alt={lr.product_name} className="w-full h-full object-cover" />
-                                                ) : (
-                                                    <Package size={20} className="text-[#1A1A1A]/20" />
-                                                )}
+                            );
+                        })()}
+
+                        {(() => {
+                            const q = listQuery.trim().toLowerCase();
+                            const rows = !q ? listingRequests : listingRequests.filter((lr) => {
+                                const name = asString(lr?.product_name).toLowerCase();
+                                const cat = asString(lr?.category_label).toLowerCase();
+                                const stage = asString(lr?.stage).toLowerCase();
+                                const id = asString(lr?.id).toLowerCase();
+                                const metaSku = asString(lr?.product_meta?.sku).toLowerCase();
+                                return name.includes(q) || cat.includes(q) || stage.includes(q) || id.includes(q) || metaSku.includes(q);
+                            });
+
+                            const stagePill = (stage: string) => {
+                                const s = asString(stage).toLowerCase();
+                                if (s === 'done') return { label: 'Published', cls: 'bg-emerald-500/10 text-emerald-600' };
+                                if (s === 'live') return { label: 'Approved', cls: 'bg-emerald-500/10 text-emerald-600' };
+                                if (s === 'inspection') return { label: 'Inspection', cls: 'bg-amber-500/10 text-amber-600' };
+                                if (s === 'compliance') return { label: 'Compliance', cls: 'bg-[#0171E3]/10 text-[#0171E3]' };
+                                if (s === 'samples') return { label: 'Changes', cls: 'bg-[#0171E3]/10 text-[#0171E3]' };
+                                return { label: s || '—', cls: 'bg-black/[0.04] text-[#1A1A1A]/55' };
+                            };
+
+                            return (
+                                <div className="space-y-3">
+                                    <Glass className="bg-white/45 rounded-full px-4 py-2.5 flex items-center gap-3 border border-[#1A1A1A]/[0.06]">
+                                        <Search size={15} strokeWidth={2} className="text-[#1A1A1A]/25 flex-shrink-0" />
+                                        <input
+                                            type="text"
+                                            value={listQuery}
+                                            onChange={(e) => setListQuery(e.target.value)}
+                                            placeholder="Search product, category, sku, stage, id…"
+                                            className="flex-1 bg-transparent text-[13px] font-medium text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/18 focus:outline-none"
+                                        />
+                                        {listQuery && (
+                                            <button onClick={() => setListQuery('')} className="text-[#1A1A1A]/25 hover:text-[#1A1A1A]/55 transition-colors">
+                                                <X size={13} strokeWidth={2.5} />
+                                            </button>
+                                        )}
+                                    </Glass>
+
+                                    {rows.length === 0 ? (
+                                        <div className="py-14 text-center">
+                                            <div className="w-14 h-14 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-3">
+                                                <PenLine size={20} className="text-[#1A1A1A]/10" />
                                             </div>
-                                            <div>
-                                                <h4 className="text-[15px] font-bold text-[#1A1A1A]">{lr.product_name}</h4>
-                                                <div className="flex items-center gap-2 mt-0.5">
-                                                    <span className="text-[11px] font-medium text-[#1A1A1A]/35">{lr.category_label || 'Uncategorized'}</span>
-                                                    <span className="w-1 h-1 rounded-full bg-[#1A1A1A]/10" />
-                                                    <span className="text-[11px] font-bold text-[#1A1A1A]/30">#{lr.id}</span>
-                                                </div>
+                                            <h3 className="text-[15px] font-bold text-[#1A1A1A]/45">No results</h3>
+                                            <p className="text-[13px] text-[#1A1A1A]/25 mt-1">Try a different search.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-[22px] bg-white/45 border border-[#1A1A1A]/[0.06] overflow-hidden">
+                                            <div className="px-5 py-3 bg-black/[0.02] border-b border-black/[0.06] flex items-center justify-between">
+                                                <div className="text-[11px] font-black text-[#1A1A1A]/40 uppercase tracking-[1.5px]">Products</div>
+                                                <div className="text-[11px] font-bold text-[#1A1A1A]/30 tabular-nums">{rows.length}</div>
+                                            </div>
+                                            <div className="divide-y divide-black/[0.04]">
+                                                {rows.map((lr) => {
+                                                    const pill = stagePill(lr?.stage);
+                                                    const hasChanges = asString(lr?.stage).toLowerCase() === 'samples' && !!lr?.product_meta?.review_message;
+                                                    const hasFeedback = !!asString(lr?.compliance_notes);
+                                                    return (
+                                                        <div key={asString(lr?.id)} className="px-5 py-4 flex items-center gap-4">
+                                                            <div className="w-11 h-11 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04] flex-shrink-0">
+                                                                {lr?.photos?.[0]?.file_url ? (
+                                                                    <img src={lr.photos[0].file_url} alt={asString(lr?.product_name)} className="w-full h-full object-cover" />
+                                                                ) : (
+                                                                    <Package size={18} className="text-[#1A1A1A]/20" />
+                                                                )}
+                                                            </div>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="flex items-center gap-2 min-w-0">
+                                                                    <div className="text-[13px] font-black text-[#1A1A1A]/85 truncate">{asString(lr?.product_name, '—')}</div>
+                                                                    {hasChanges && (
+                                                                        <span className="text-[10px] font-black text-[#0171E3]/70 bg-[#0171E3]/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">Action</span>
+                                                                    )}
+                                                                    {hasFeedback && !hasChanges && (
+                                                                        <span className="text-[10px] font-black text-amber-700/70 bg-amber-500/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">Note</span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="text-[11px] font-medium text-[#1A1A1A]/35 mt-0.5 truncate">
+                                                                    {asString(lr?.category_label, 'Uncategorized')} · #{asString(lr?.id)}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-3 flex-shrink-0">
+                                                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${pill.cls}`}>{pill.label}</span>
+                                                                <div className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums hidden sm:block">
+                                                                    {lr?.created_at ? new Date(lr.created_at).toLocaleDateString() : '—'}
+                                                                </div>
+                                                                <div className="relative">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setRowMenuId((cur) => (cur === lr?.id ? null : lr?.id))}
+                                                                        className="w-9 h-9 rounded-full bg-black/[0.03] hover:bg-black/[0.06] flex items-center justify-center transition-colors"
+                                                                        aria-label="Actions"
+                                                                    >
+                                                                        <MoreHorizontal size={16} className="text-[#1A1A1A]/55" />
+                                                                    </button>
+                                                                    {rowMenuId === lr?.id && (
+                                                                        <div
+                                                                            ref={rowMenuRef}
+                                                                            className="absolute right-0 top-10 z-30 w-[220px] rounded-[18px] bg-white/95 backdrop-blur-2xl border border-black/[0.08] overflow-hidden shadow-[0_18px_60px_-20px_rgba(0,0,0,0.35)]"
+                                                                        >
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => { setRowMenuId(null); void openHistory(lr); }}
+                                                                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                                                            >
+                                                                                View history
+                                                                            </button>
+                                                                            {hasChanges && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => { setRowMenuId(null); openListingFix(lr); }}
+                                                                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                                                                >
+                                                                                    Fix & resubmit
+                                                                                </button>
+                                                                            )}
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => {
+                                                                                    setRowMenuId(null);
+                                                                                    try {
+                                                                                        const ta = document.createElement('textarea');
+                                                                                        ta.value = String(lr?.id || '');
+                                                                                        ta.style.position = 'fixed';
+                                                                                        ta.style.opacity = '0';
+                                                                                        document.body.appendChild(ta);
+                                                                                        ta.select();
+                                                                                        document.execCommand('copy');
+                                                                                        document.body.removeChild(ta);
+                                                                                        toast.success('Listing id copied');
+                                                                                    } catch {
+                                                                                        toast.error('Could not copy');
+                                                                                    }
+                                                                                }}
+                                                                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                                                            >
+                                                                                Copy listing id
+                                                                            </button>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
                                         </div>
-                                        <div className="flex flex-col items-end gap-1.5">
-                                            <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                                lr.stage === 'live' || lr.stage === 'done' ? 'bg-emerald-500/10 text-emerald-600' :
-                                                lr.stage === 'inspection' ? 'bg-amber-500/10 text-amber-600' :
-                                                'bg-[#0171E3]/10 text-[#0171E3]'
-                                            }`}>
-                                                {lr.stage === 'live' ? 'approved' : lr.stage === 'done' ? 'published' : lr.stage}
-                                            </span>
-                                            <span className="text-[10px] font-medium text-[#1A1A1A]/20">
-                                                Submitted {new Date(lr.created_at).toLocaleDateString()}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    
-                                    <div className="h-px bg-[#1A1A1A]/[0.04] mb-6" />
-                                    
-                                    <div className="flex flex-col items-center">
-                                        <ListingStatusStepper lr={lr} />
-
-                                        {lr.stage === 'live' && (
-                                            <div className="mt-6 w-full p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10 flex gap-3">
-                                                <BadgeCheck size={16} className="text-emerald-600 flex-shrink-0 mt-0.5" />
-                                                <div>
-                                                    <span className="text-[11px] font-bold text-emerald-700/80 uppercase tracking-wider block mb-1">Approved — pending publish</span>
-                                                    <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">
-                                                        Your listing is approved. It will appear to buyers only after the admin publishes it.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        )}
-                                        
-                                        {lr.compliance_notes && (
-                                            <div className="mt-6 w-full p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 flex gap-3">
-                                                <FileText size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
-                                                <div>
-                                                    <span className="text-[11px] font-bold text-amber-600/80 uppercase tracking-wider block mb-1">Admin Feedback</span>
-                                                    <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">{lr.compliance_notes}</p>
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {lr.stage === 'samples' && lr.product_meta?.review_message && (
-                                            <div className="mt-4 w-full p-4 rounded-xl bg-[#0171E3]/5 border border-[#0171E3]/10 flex items-start justify-between gap-4">
-                                                <div className="flex gap-3 min-w-0">
-                                                    <PenLine size={16} className="text-[#0171E3] flex-shrink-0 mt-0.5" />
-                                                    <div className="min-w-0">
-                                                        <span className="text-[11px] font-black text-[#0171E3]/80 uppercase tracking-wider block mb-1">Changes requested</span>
-                                                        <p className="text-[12px] text-[#1A1A1A]/65 leading-relaxed whitespace-pre-wrap break-words">
-                                                            {String(lr.product_meta.review_message || '')}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openListingFix(lr)}
-                                                    className="px-3 py-2 rounded-full bg-[#1A1A1A] text-white text-[11px] font-black whitespace-nowrap hover:bg-[#2A2A2A] active:scale-[0.98] transition-all"
-                                                >
-                                                    Fix & Resubmit
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                </motion.div>
-                            ))}
-                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
                     </div>
                 </div>
             ) : null}
