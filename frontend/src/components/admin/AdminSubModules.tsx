@@ -1291,6 +1291,58 @@ export function AdminUsers() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {deleteOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setDeleteOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Delete product</h2>
+                  <p className="text-muted-foreground text-[0.8125rem] truncate">
+                    #{deleteProductId || "—"} · {deleteProductName || "Product"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setDeleteOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[0.8125rem] text-[#E5484D]/80">
+                This removes the product from the marketplace and hides it across the system. This action cannot be undone.
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setDeleteOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={deleteSaving ? undefined : submitDelete}
+                  className={deleteSaving ? "opacity-70 pointer-events-none bg-[#E5484D]/80" : "bg-[#E5484D] hover:bg-[#D63E44]"}
+                  icon={deleteSaving ? <Clock size={14} /> : <Trash2 size={14} />}
+                >
+                  {deleteSaving ? "Deleting…" : "Delete"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {detailOpen && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -1983,6 +2035,11 @@ export function AdminProducts() {
   const [feedbackKind, setFeedbackKind] = useState<string>("info");
   const [feedbackMessage, setFeedbackMessage] = useState<string>("");
 
+  const [productDeleteOpen, setProductDeleteOpen] = useState(false);
+  const [productDeleteId, setProductDeleteId] = useState<number | null>(null);
+  const [productDeleteName, setProductDeleteName] = useState<string>("");
+  const [productDeleteSaving, setProductDeleteSaving] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2127,6 +2184,44 @@ export function AdminProducts() {
       setActionError(e?.message || "Failed to send feedback.");
     } finally {
       setFeedbackSaving(false);
+    }
+  };
+
+  const openProductDeleteModal = (p: any) => {
+    const id = Number(p?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setMenuProductId(null);
+    setProductDeleteId(id);
+    setProductDeleteName((p?.name || "").toString());
+    setProductDeleteOpen(true);
+  };
+
+  const closeProductDeleteModal = () => {
+    setProductDeleteOpen(false);
+    setProductDeleteId(null);
+    setProductDeleteName("");
+    setProductDeleteSaving(false);
+  };
+
+  const submitProductDelete = async () => {
+    const id = Number(productDeleteId || 0);
+    if (!id) return;
+    if (productDeleteSaving) return;
+    setProductDeleteSaving(true);
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/products/${id}/delete/`, { method: "POST" });
+      setActionSuccess("Product deleted.");
+      closeProductDeleteModal();
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to delete product.");
+    } finally {
+      setProductDeleteSaving(false);
     }
   };
 
@@ -3561,6 +3656,13 @@ export function AdminProducts() {
                             Archive
                           </button>
                         )}
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openProductDeleteModal(p)}
+                        >
+                          <Trash2 size={14} className="text-[#E5484D]/80" />
+                          <span className="text-[#E5484D]/80">Delete</span>
+                        </button>
                         <div className="h-px bg-border/30" />
                         {/*
                         <button
@@ -3883,6 +3985,58 @@ export function AdminProducts() {
                     ))}
                   </div>
                 )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {productDeleteOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={closeProductDeleteModal}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Delete product</h2>
+                  <p className="text-muted-foreground text-[0.8125rem] truncate">
+                    #{productDeleteId || "—"} · {productDeleteName || "Product"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={closeProductDeleteModal}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[0.8125rem] text-[#E5484D]/80">
+                This will remove the product from the marketplace and hide it across the system.
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={closeProductDeleteModal}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={productDeleteSaving ? undefined : submitProductDelete}
+                  className={productDeleteSaving ? "opacity-70 pointer-events-none bg-[#E5484D]/80" : "bg-[#E5484D] hover:bg-[#D63E44]"}
+                  icon={productDeleteSaving ? <Clock size={14} /> : <Trash2 size={14} />}
+                >
+                  {productDeleteSaving ? "Deleting…" : "Delete"}
+                </BounceButton>
               </div>
             </motion.div>
           </motion.div>

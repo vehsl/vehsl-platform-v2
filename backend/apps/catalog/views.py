@@ -2860,6 +2860,72 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         audit(request.user, action="admin_product_activated", target_type="product", target_id=str(product.id), payload={})
         return self.retrieve(request, pk=pk)
 
+    @action(detail=True, methods=["post"], url_path="delete")
+    def delete(self, request, pk=None):
+        product = Product.objects.filter(id=pk, deleted_at__isnull=True).select_related("seller").first()
+        if not product:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+
+        ProductMedia.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        ProductVariation.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        PricingTier.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        Trademark.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        ProductFeedback.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+
+        try:
+            from apps.inventory.models import Sample, SampleRequest, QualityInspection
+        except Exception:
+            Sample = None
+            SampleRequest = None
+            QualityInspection = None
+
+        if Sample is not None:
+            Sample.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if SampleRequest is not None:
+            SampleRequest.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if QualityInspection is not None:
+            QualityInspection.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+
+        try:
+            from apps.orders.models import CartItem, WishlistItem, Review
+        except Exception:
+            CartItem = None
+            WishlistItem = None
+            Review = None
+
+        if CartItem is not None:
+            CartItem.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if WishlistItem is not None:
+            WishlistItem.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if Review is not None:
+            Review.objects.filter(target_type=Review.TargetType.PRODUCT, target_product_id=product.id, deleted_at__isnull=True).update(
+                deleted_at=now
+            )
+
+        product.status = Product.Status.ARCHIVED
+        product.deleted_at = now
+        product.save(update_fields=["status", "deleted_at", "updated_at"])
+
+        try:
+            Notification.objects.create(
+                user=product.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="product_deleted",
+                payload={
+                    "title": f"Product deleted: {(product.name or '').strip() or f'#{product.id}'}",
+                    "body": "Vehsl admin removed this product from the marketplace.",
+                    "product_id": product.id,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        audit(request.user, action="admin_product_deleted", target_type="product", target_id=str(product.id), payload={})
+        return Response({"ok": True})
+
     @action(detail=True, methods=["post"], url_path="stock")
     def set_stock(self, request, pk=None):
         threshold = self._low_stock_threshold()

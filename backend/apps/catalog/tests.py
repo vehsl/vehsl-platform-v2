@@ -319,3 +319,39 @@ class ProductFeedbackTests(TestCase):
         first = rows[0]
         self.assertIn("product_feedback_unread", first)
         self.assertIn("product_feedback_latest", first)
+
+
+class AdminDeleteProductTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        User = get_user_model()
+        self.admin = User.objects.create_user(email="admin3@test.local", password="pass1234", role="admin", is_staff=True)
+        self.seller = User.objects.create_user(email="seller3@test.local", password="pass1234", role="seller", account_type="seller")
+        self.buyer = User.objects.create_user(email="buyer3@test.local", password="pass1234", role="buyer", account_type="buyer")
+        self.category = Category.objects.create(name="Cat B", slug="cat-b")
+        self.product = Product.objects.create(
+            seller=self.seller,
+            category=self.category,
+            name="Prod B",
+            title="Prod B",
+            currency="USD",
+            price="10.00",
+            status=Product.Status.ACTIVE,
+        )
+
+    def test_admin_can_delete_product_and_it_disappears_from_public(self):
+        from apps.orders.models import WishlistItem
+
+        WishlistItem.objects.create(buyer=self.buyer, product=self.product)
+
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f"/api/v1/admin/products/{self.product.id}/delete/", {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertIsNotNone(self.product.deleted_at)
+
+        self.assertTrue(WishlistItem.objects.filter(product=self.product, deleted_at__isnull=False).exists())
+
+        self.client.force_authenticate(user=None)
+        get_public = self.client.get(f"/api/v1/products/{self.product.id}/")
+        self.assertEqual(get_public.status_code, 404)

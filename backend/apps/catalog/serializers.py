@@ -257,6 +257,7 @@ class ProductSerializer(serializers.ModelSerializer):
     detail_config = serializers.JSONField(required=False)
     quantity_available = serializers.SerializerMethodField()
     stock_status = serializers.SerializerMethodField()
+    sample_units = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -291,6 +292,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "ship_time_max_days",
             "sample_available",
             "sample_ship_days",
+            "sample_units",
             "vehsl_rating",
             "seller_rating",
             "ip_protection_level",
@@ -318,6 +320,25 @@ class ProductSerializer(serializers.ModelSerializer):
             avail = self.get_quantity_available(obj)
             return "in_stock" if avail > 0 else "out_of_stock"
         return "in_stock"
+
+    def get_sample_units(self, obj: Product):
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            return 0
+        try:
+            from django.db.models import Sum
+            from django.db.models.functions import Coalesce
+        except Exception:
+            return 0
+        try:
+            qs = Sample.objects.filter(product_id=obj.id, deleted_at__isnull=True)
+            if getattr(obj, "seller_id", None):
+                qs = qs.filter(seller_id=obj.seller_id)
+            total = qs.aggregate(v=Coalesce(Sum("available_quantity"), 0)).get("v") or 0
+            return max(0, int(total))
+        except Exception:
+            return 0
 
     def get_seller_name(self, obj: Product):
         s = getattr(obj, "seller", None)
