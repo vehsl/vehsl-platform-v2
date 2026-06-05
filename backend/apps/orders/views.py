@@ -86,16 +86,14 @@ class CartMeView(APIView):
             if unit_price is None:
                 return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
 
-            stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
-            agg = stock_qs.aggregate(
-                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()),
-            )
-            available = int(agg.get("total") or 0)
-            if available > 0 and i["quantity"] > available:
-                return Response(
-                    {"detail": f"Not enough stock for {p.name}. Available: {available}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            mode = (getattr(p, "fulfillment_mode", "") or "").strip().lower()
+            if mode == Product.FulfillmentMode.SELLER_STOCK:
+                available = int(getattr(p, "seller_stock_units", 0) or 0)
+                if i["quantity"] > max(0, available):
+                    return Response(
+                        {"detail": f"Not enough stock for {p.name}. Available: {max(0, available)}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             CartItem.objects.update_or_create(
                 cart=cart,
@@ -149,16 +147,14 @@ class CartItemMeDetailView(APIView):
             p = item.product
             var = item.variation if item.variation_id else None
 
-            stock_qs = WarehouseStock.objects.filter(product=p, variation=var, deleted_at__isnull=True)
-            agg = stock_qs.aggregate(
-                total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()),
-            )
-            available = int(agg.get("total") or 0)
-            if available > 0 and qty > available:
-                return Response(
-                    {"detail": f"Not enough stock for {p.name}. Available: {available}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            mode = (getattr(p, "fulfillment_mode", "") or "").strip().lower()
+            if mode == Product.FulfillmentMode.SELLER_STOCK:
+                available = int(getattr(p, "seller_stock_units", 0) or 0)
+                if qty > max(0, available):
+                    return Response(
+                        {"detail": f"Not enough stock for {p.name}. Available: {max(0, available)}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             unit_price, currency = resolve_unit_price(p, var, qty)
             if unit_price is None:

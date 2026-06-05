@@ -48,6 +48,10 @@ class Product(models.Model):
         ACTIVE = "active", "Active"
         ARCHIVED = "archived", "Archived"
 
+    class FulfillmentMode(models.TextChoices):
+        MADE_TO_ORDER = "made_to_order", "Made to order"
+        SELLER_STOCK = "seller_stock", "Seller stock"
+
     class IpProtectionLevel(models.TextChoices):
         LOW = "low", "Low"
         MEDIUM = "medium", "Medium"
@@ -77,6 +81,8 @@ class Product(models.Model):
     seller_rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     ip_protection_level = models.CharField(max_length=16, choices=IpProtectionLevel.choices, default=IpProtectionLevel.LOW)
     detail_config = models.JSONField(default=dict, blank=True)
+    fulfillment_mode = models.CharField(max_length=16, choices=FulfillmentMode.choices, default=FulfillmentMode.MADE_TO_ORDER)
+    seller_stock_units = models.PositiveIntegerField(default=0)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

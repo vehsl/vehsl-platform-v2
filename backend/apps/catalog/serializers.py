@@ -265,6 +265,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "variations",
             "pricing_tiers",
             "detail_config",
+            "fulfillment_mode",
+            "seller_stock_units",
             "status",
             "origin_location",
             "lead_time_days",
@@ -286,16 +288,20 @@ class ProductSerializer(serializers.ModelSerializer):
         from django.db.models import Sum, F, Value, IntegerField
         from django.db.models.functions import Coalesce
 
-        qs = obj.warehouse_stocks.filter(deleted_at__isnull=True)
-        res = qs.aggregate(total=Coalesce(Sum(F("quantity_units") - F("reserved_units")), Value(0), output_field=IntegerField()))
-        total = int(res["total"] or 0)
-        if total <= 0:
-            return 999999
-        return total
+        mode = (getattr(obj, "fulfillment_mode", "") or "").strip().lower()
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            try:
+                return max(0, int(getattr(obj, "seller_stock_units", 0) or 0))
+            except Exception:
+                return 0
+        return 999999
 
     def get_stock_status(self, obj: Product):
-        avail = self.get_quantity_available(obj)
-        return "in_stock" if avail > 0 else "out_of_stock"
+        mode = (getattr(obj, "fulfillment_mode", "") or "").strip().lower()
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            avail = self.get_quantity_available(obj)
+            return "in_stock" if avail > 0 else "out_of_stock"
+        return "in_stock"
 
     def get_seller_name(self, obj: Product):
         s = getattr(obj, "seller", None)
@@ -492,6 +498,11 @@ class ListingRequestSerializer(serializers.ModelSerializer):
     inbound_request_id = serializers.SerializerMethodField()
     inbound_request_status = serializers.SerializerMethodField()
     inbound_request_warehouse_name = serializers.SerializerMethodField()
+    sample_units = serializers.SerializerMethodField()
+    sample_low_stock = serializers.SerializerMethodField()
+    product_fulfillment_mode = serializers.SerializerMethodField()
+    product_stock_units = serializers.SerializerMethodField()
+    product_low_stock = serializers.SerializerMethodField()
 
     class Meta:
         model = ListingRequest
@@ -522,6 +533,11 @@ class ListingRequestSerializer(serializers.ModelSerializer):
             "pickup_phone",
             "product_meta",
             "created_product",
+            "sample_units",
+            "sample_low_stock",
+            "product_fulfillment_mode",
+            "product_stock_units",
+            "product_low_stock",
             "created_at",
             "updated_at",
             "photos",
@@ -555,6 +571,57 @@ class ListingRequestSerializer(serializers.ModelSerializer):
             inbound = None
         wh = getattr(inbound, "warehouse", None) if inbound else None
         return getattr(wh, "name", "") if wh else ""
+
+    def get_sample_units(self, obj: ListingRequest):
+        product_id = getattr(obj, "created_product_id", None)
+        if not product_id:
+            return 0
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            return 0
+        seller_id = getattr(obj, "seller_id", None)
+        try:
+            qs = Sample.objects.filter(product_id=product_id, deleted_at__isnull=True)
+            if seller_id:
+                qs = qs.filter(seller_id=seller_id)
+            return max(0, int(sum(int(getattr(s, "available_quantity", 0) or 0) for s in qs[:20])))
+        except Exception:
+            return 0
+
+    def get_sample_low_stock(self, obj: ListingRequest):
+        units = self.get_sample_units(obj)
+        try:
+            threshold = int(self.context.get("sample_low_stock_threshold") or 50)
+        except Exception:
+            threshold = 50
+        return bool(0 < units < threshold)
+
+    def get_product_fulfillment_mode(self, obj: ListingRequest):
+        p = getattr(obj, "created_product", None)
+        if not p:
+            return ""
+        return (getattr(p, "fulfillment_mode", "") or "").strip()
+
+    def get_product_stock_units(self, obj: ListingRequest):
+        p = getattr(obj, "created_product", None)
+        if not p:
+            return 0
+        try:
+            return max(0, int(getattr(p, "seller_stock_units", 0) or 0))
+        except Exception:
+            return 0
+
+    def get_product_low_stock(self, obj: ListingRequest):
+        mode = (self.get_product_fulfillment_mode(obj) or "").strip().lower()
+        if mode != Product.FulfillmentMode.SELLER_STOCK:
+            return False
+        units = self.get_product_stock_units(obj)
+        try:
+            threshold = int(self.context.get("product_low_stock_threshold") or 10)
+        except Exception:
+            threshold = 10
+        return bool(0 < units < threshold)
 
 
 class AdminListingRequestSerializer(ListingRequestSerializer):
@@ -1023,6 +1090,8 @@ class AdminProductListSerializer(serializers.ModelSerializer):
     compliance_docs_required_count = serializers.IntegerField(read_only=True)
     compliance_destination_rules_count = serializers.IntegerField(read_only=True)
     legal_review_status = serializers.SerializerMethodField()
+    fulfillment_mode = serializers.CharField(read_only=True)
+    seller_stock_units = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Product
@@ -1042,6 +1111,8 @@ class AdminProductListSerializer(serializers.ModelSerializer):
             "category_display",
             "stock_units",
             "admin_status",
+            "fulfillment_mode",
+            "seller_stock_units",
             "images_count",
             "missing_hs_code",
             "missing_media",

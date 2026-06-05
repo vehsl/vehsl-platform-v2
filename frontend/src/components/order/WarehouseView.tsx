@@ -1761,6 +1761,33 @@ export function WarehouseView() {
     const [listQuery, setListQuery] = useState('');
     const [rowMenuId, setRowMenuId] = useState<string | number | null>(null);
     const rowMenuRef = useRef<HTMLDivElement | null>(null);
+    const [sampleEditOpen, setSampleEditOpen] = useState(false);
+    const [sampleEditTarget, setSampleEditTarget] = useState<any | null>(null);
+    const [sampleEditQty, setSampleEditQty] = useState('');
+    const [sampleEditSaving, setSampleEditSaving] = useState(false);
+    const [stockEditOpen, setStockEditOpen] = useState(false);
+    const [stockEditTarget, setStockEditTarget] = useState<any | null>(null);
+    const [stockEditMode, setStockEditMode] = useState<'made_to_order' | 'seller_stock'>('made_to_order');
+    const [stockEditQty, setStockEditQty] = useState('');
+    const [stockEditSaving, setStockEditSaving] = useState(false);
+    const [filters, setFilters] = useState({
+        publishedOnly: false,
+        needsAction: false,
+        bulk: 'all' as 'all' | 'oos' | 'low',
+        samples: 'all' as 'all' | 'none' | 'low',
+        mode: 'all' as 'all' | 'made_to_order' | 'seller_stock',
+    });
+    const [sellerThresholds, setSellerThresholds] = useState({ sampleLow: 50, stockLow: 10 });
+    const [thresholdsOpen, setThresholdsOpen] = useState(false);
+    const [thresholdsSaving, setThresholdsSaving] = useState(false);
+    const [thresholdsDraft, setThresholdsDraft] = useState({ sampleLow: '50', stockLow: '10' });
+    const [quickOpen, setQuickOpen] = useState(false);
+    const [quickTarget, setQuickTarget] = useState<any | null>(null);
+    const [quickStockMode, setQuickStockMode] = useState<'made_to_order' | 'seller_stock'>('made_to_order');
+    const [quickStockQty, setQuickStockQty] = useState('');
+    const [quickSamplesQty, setQuickSamplesQty] = useState('');
+    const [quickSavingStock, setQuickSavingStock] = useState(false);
+    const [quickSavingSamples, setQuickSavingSamples] = useState(false);
     const [listingEditDraft, setListingEditDraft] = useState({
         product_name: '',
         company_name: '',
@@ -1788,12 +1815,26 @@ export function WarehouseView() {
         try {
             setLoading(true);
             if (!showWarehouseOps) {
-                const lrRes = await authedFetch('/api/v1/seller/listing-requests/');
+                const [lrRes, profRes] = await Promise.all([
+                    authedFetch('/api/v1/seller/listing-requests/'),
+                    authedFetch('/api/v1/profiles/seller/me'),
+                ]);
                 if (lrRes.ok) {
                     const raw = await lrRes.json();
                     setListingRequests(Array.isArray(raw) ? raw : []);
                 } else {
                     setListingRequests([]);
+                }
+                if (profRes.ok) {
+                    const prof = await profRes.json().catch(() => null);
+                    const sampleLow = Number(prof?.sample_low_threshold || 0) || 0;
+                    const stockLow = Number(prof?.stock_low_threshold || 0) || 0;
+                    const resolved = {
+                        sampleLow: sampleLow > 0 ? sampleLow : 50,
+                        stockLow: stockLow > 0 ? stockLow : 10,
+                    };
+                    setSellerThresholds(resolved);
+                    setThresholdsDraft({ sampleLow: String(resolved.sampleLow), stockLow: String(resolved.stockLow) });
                 }
                 setView('onboarding');
                 return;
@@ -1915,6 +1956,230 @@ export function WarehouseView() {
             setHistoryLoading(false);
         }
     }, [authedFetch]);
+
+    const closeSampleEdit = useCallback(() => {
+        setSampleEditOpen(false);
+        setSampleEditTarget(null);
+        setSampleEditQty('');
+        setSampleEditSaving(false);
+    }, []);
+
+    const openSampleEdit = useCallback((lr: any) => {
+        setSampleEditTarget(lr);
+        const v = lr?.sample_units ?? 0;
+        setSampleEditQty(String(v));
+        setSampleEditOpen(true);
+    }, []);
+
+    const submitSampleEdit = useCallback(async () => {
+        if (!sampleEditTarget) return;
+        if (sampleEditSaving) return;
+        const raw = (sampleEditQty || '').trim();
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) {
+            toast.error('Invalid quantity', { description: 'Sample stock must be a number >= 0.' });
+            return;
+        }
+        const qty = Math.floor(n);
+        setSampleEditSaving(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${sampleEditTarget.id}/sample-stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock_units: qty }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === sampleEditTarget.id ? payload : lr)));
+            toast.success('Sample stock updated', { description: qty === 0 ? 'Samples are now 0.' : `Samples: ${qty}` });
+            closeSampleEdit();
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setSampleEditSaving(false);
+        }
+    }, [authedFetch, closeSampleEdit, sampleEditQty, sampleEditSaving, sampleEditTarget]);
+
+    const closeStockEdit = useCallback(() => {
+        setStockEditOpen(false);
+        setStockEditTarget(null);
+        setStockEditSaving(false);
+    }, []);
+
+    const openStockEdit = useCallback((lr: any) => {
+        setStockEditTarget(lr);
+        const mode = (asString(lr?.product_fulfillment_mode, 'made_to_order') || 'made_to_order').toLowerCase();
+        const normalized = mode === 'seller_stock' ? 'seller_stock' : 'made_to_order';
+        setStockEditMode(normalized as any);
+        setStockEditQty(String(Number(lr?.product_stock_units ?? 0)));
+        setStockEditOpen(true);
+    }, []);
+
+    const submitStockEdit = useCallback(async () => {
+        if (!stockEditTarget) return;
+        if (stockEditSaving) return;
+
+        let qty = 0;
+        if (stockEditMode === 'seller_stock') {
+            const raw = (stockEditQty || '').trim();
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n < 0) {
+                toast.error('Invalid quantity', { description: 'Stock must be a number >= 0.' });
+                return;
+            }
+            qty = Math.floor(n);
+        }
+
+        setStockEditSaving(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${stockEditTarget.id}/stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    fulfillment_mode: stockEditMode,
+                    seller_stock_units: qty,
+                }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === stockEditTarget.id ? payload : lr)));
+            toast.success('Stock updated');
+            closeStockEdit();
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setStockEditSaving(false);
+        }
+    }, [authedFetch, closeStockEdit, stockEditMode, stockEditQty, stockEditSaving, stockEditTarget]);
+
+    const closeQuick = useCallback(() => {
+        setQuickOpen(false);
+        setQuickTarget(null);
+        setQuickSavingStock(false);
+        setQuickSavingSamples(false);
+    }, []);
+
+    const openQuick = useCallback((lr: any) => {
+        setQuickTarget(lr);
+        const mode = (asString(lr?.product_fulfillment_mode, 'made_to_order') || 'made_to_order').toLowerCase();
+        const normalized = mode === 'seller_stock' ? 'seller_stock' : 'made_to_order';
+        setQuickStockMode(normalized as any);
+        setQuickStockQty(String(Number(lr?.product_stock_units ?? 0)));
+        setQuickSamplesQty(String(Number(lr?.sample_units ?? 0)));
+        setQuickOpen(true);
+    }, []);
+
+    const saveQuickStock = useCallback(async () => {
+        if (!quickTarget) return;
+        if (quickSavingStock) return;
+        let qty = 0;
+        if (quickStockMode === 'seller_stock') {
+            const raw = (quickStockQty || '').trim();
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n < 0) {
+                toast.error('Invalid quantity', { description: 'Stock must be a number >= 0.' });
+                return;
+            }
+            qty = Math.floor(n);
+        }
+        setQuickSavingStock(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${quickTarget.id}/stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fulfillment_mode: quickStockMode, seller_stock_units: qty }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === quickTarget.id ? payload : lr)));
+            setQuickTarget(payload);
+            toast.success('Stock updated');
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setQuickSavingStock(false);
+        }
+    }, [authedFetch, quickSavingStock, quickStockMode, quickStockQty, quickTarget]);
+
+    const saveQuickSamples = useCallback(async () => {
+        if (!quickTarget) return;
+        if (quickSavingSamples) return;
+        const raw = (quickSamplesQty || '').trim();
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) {
+            toast.error('Invalid quantity', { description: 'Sample stock must be a number >= 0.' });
+            return;
+        }
+        const qty = Math.floor(n);
+        setQuickSavingSamples(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${quickTarget.id}/sample-stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock_units: qty }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === quickTarget.id ? payload : lr)));
+            setQuickTarget(payload);
+            toast.success('Samples updated');
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setQuickSavingSamples(false);
+        }
+    }, [authedFetch, quickSamplesQty, quickSavingSamples, quickTarget]);
+
+    const saveThresholds = useCallback(async () => {
+        if (thresholdsSaving) return;
+        const sample = Math.floor(Number((thresholdsDraft.sampleLow || '').trim()));
+        const stock = Math.floor(Number((thresholdsDraft.stockLow || '').trim()));
+        if (!Number.isFinite(sample) || sample < 1 || sample > 100000) {
+            toast.error('Invalid threshold', { description: 'Sample low threshold must be between 1 and 100000.' });
+            return;
+        }
+        if (!Number.isFinite(stock) || stock < 1 || stock > 100000) {
+            toast.error('Invalid threshold', { description: 'Stock low threshold must be between 1 and 100000.' });
+            return;
+        }
+        setThresholdsSaving(true);
+        try {
+            const res = await authedFetch('/api/v1/profiles/seller/me', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sample_low_threshold: sample, stock_low_threshold: stock }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setSellerThresholds({ sampleLow: sample, stockLow: stock });
+            setThresholdsOpen(false);
+            toast.success('Alert thresholds updated');
+            const lrRes = await authedFetch('/api/v1/seller/listing-requests/');
+            if (lrRes.ok) {
+                const raw = await lrRes.json();
+                setListingRequests(Array.isArray(raw) ? raw : []);
+            }
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setThresholdsSaving(false);
+        }
+    }, [authedFetch, thresholdsDraft.sampleLow, thresholdsDraft.stockLow, thresholdsSaving]);
 
     useEffect(() => {
         if (!rowMenuId) return;
@@ -2628,6 +2893,426 @@ export function WarehouseView() {
                                                     </div>
                                                 ) : null}
                                             </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {sampleEditOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[75] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeSampleEdit();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[520px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Update samples</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(sampleEditTarget?.id)} · {asString(sampleEditTarget?.product_name)}
+                                    </div>
+                                </div>
+                                <button onClick={closeSampleEdit} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-3">
+                                <div className="text-[12px] font-medium text-[#1A1A1A]/50">
+                                    This controls sample availability (the “No samples / Low samples” status). Buyer purchasing is still made-to-order.
+                                </div>
+                                <input
+                                    value={sampleEditQty}
+                                    onChange={(e) => setSampleEditQty(e.target.value)}
+                                    placeholder="Sample quantity"
+                                    inputMode="numeric"
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                />
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeSampleEdit}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitSampleEdit()}
+                                    disabled={sampleEditSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        sampleEditSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {sampleEditSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {stockEditOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[76] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeStockEdit();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[560px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Update stock</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(stockEditTarget?.id)} · {asString(stockEditTarget?.product_name)}
+                                    </div>
+                                </div>
+                                <button onClick={closeStockEdit} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-4">
+                                <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-2 flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setStockEditMode('made_to_order')}
+                                        className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                            stockEditMode === 'made_to_order' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                        }`}
+                                    >
+                                        Made to order
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setStockEditMode('seller_stock')}
+                                        className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                            stockEditMode === 'seller_stock' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                        }`}
+                                    >
+                                        Track stock
+                                    </button>
+                                </div>
+
+                                {stockEditMode === 'seller_stock' ? (
+                                    <input
+                                        value={stockEditQty}
+                                        onChange={(e) => setStockEditQty(e.target.value)}
+                                        placeholder="Stock quantity"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                ) : (
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/50">
+                                        Buyers can place orders even when stock is zero. Use this when you manufacture on demand.
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeStockEdit}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitStockEdit()}
+                                    disabled={stockEditSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        stockEditSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {stockEditSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {thresholdsOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[77] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) setThresholdsOpen(false);
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[560px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Alert thresholds</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1">
+                                        Low stock: {sellerThresholds.stockLow} · Low samples: {sellerThresholds.sampleLow}
+                                    </div>
+                                </div>
+                                <button onClick={() => setThresholdsOpen(false)} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Low stock threshold</div>
+                                    <input
+                                        value={thresholdsDraft.stockLow}
+                                        onChange={(e) => setThresholdsDraft((d) => ({ ...d, stockLow: e.target.value }))}
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+                                <div>
+                                    <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Low samples threshold</div>
+                                    <input
+                                        value={thresholdsDraft.sampleLow}
+                                        onChange={(e) => setThresholdsDraft((d) => ({ ...d, sampleLow: e.target.value }))}
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setThresholdsOpen(false)}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void saveThresholds()}
+                                    disabled={thresholdsSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        thresholdsSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {thresholdsSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {quickOpen && quickTarget && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[74]"
+                        onClick={closeQuick}
+                    >
+                        <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }} />
+                        <motion.div
+                            initial={{ x: 40, opacity: 0 }}
+                            animate={{ x: 0, opacity: 1 }}
+                            exit={{ x: 40, opacity: 0 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="absolute right-0 top-0 h-full w-full max-w-[440px] bg-white/95 backdrop-blur-2xl border-l border-black/[0.06] overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight truncate">{asString(quickTarget?.product_name, '—')}</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(quickTarget?.id)} · {asString(quickTarget?.category_label, 'Uncategorized')}
+                                    </div>
+                                </div>
+                                <button onClick={closeQuick} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-5 overflow-auto h-[calc(100%-76px)]">
+                                <div className="flex flex-wrap gap-2">
+                                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55">
+                                        Stage: {asString(quickTarget?.stage).toLowerCase() === 'done' ? 'published' : asString(quickTarget?.stage)}
+                                    </span>
+                                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55">
+                                        Stock: {asString(quickTarget?.product_fulfillment_mode, 'made_to_order').toLowerCase() === 'seller_stock'
+                                            ? (Number(quickTarget?.product_stock_units ?? 0) <= 0 ? 'out' : `in (${Number(quickTarget?.product_stock_units ?? 0)})`)
+                                            : 'made to order'}
+                                    </span>
+                                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55">
+                                        Samples: {Number(quickTarget?.sample_units ?? 0) <= 0 ? '0' : Number(quickTarget?.sample_units ?? 0)}
+                                    </span>
+                                </div>
+
+                                {asString(quickTarget?.compliance_notes) ? (
+                                    <div className="rounded-2xl bg-amber-500/5 border border-amber-500/10 p-4">
+                                        <div className="text-[10px] font-black text-amber-700/70 uppercase tracking-[1.5px]">Admin note</div>
+                                        <div className="mt-1 text-[12px] font-medium text-[#1A1A1A]/70 whitespace-pre-wrap break-words">
+                                            {asString(quickTarget?.compliance_notes)}
+                                        </div>
+                                    </div>
+                                ) : null}
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => void openHistory(quickTarget)}
+                                        className="px-4 py-2.5 rounded-2xl text-[12px] font-black bg-black/[0.04] text-[#1A1A1A]/65 hover:bg-black/[0.06]"
+                                    >
+                                        View history
+                                    </button>
+                                    {asString(quickTarget?.stage).toLowerCase() === 'samples' && quickTarget?.product_meta?.review_message ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => openListingFix(quickTarget)}
+                                            className="px-4 py-2.5 rounded-2xl text-[12px] font-black bg-[#1A1A1A] text-white hover:bg-[#2A2A2A]"
+                                        >
+                                            Fix & resubmit
+                                        </button>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setThresholdsOpen(true); }}
+                                            className="px-4 py-2.5 rounded-2xl text-[12px] font-black bg-[#0171E3]/10 text-[#0171E3]/80 hover:bg-[#0171E3]/15"
+                                        >
+                                            Alerts
+                                        </button>
+                                    )}
+                                </div>
+
+                                {(!!quickTarget?.created_product || asString(quickTarget?.stage).toLowerCase() === 'done') ? (
+                                    <>
+                                        <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Bulk stock</div>
+                                            <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-2 flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setQuickStockMode('made_to_order')}
+                                                    className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                                        quickStockMode === 'made_to_order' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                                    }`}
+                                                >
+                                                    Made to order
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setQuickStockMode('seller_stock')}
+                                                    className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                                        quickStockMode === 'seller_stock' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                                    }`}
+                                                >
+                                                    Track stock
+                                                </button>
+                                            </div>
+                                            {quickStockMode === 'seller_stock' ? (
+                                                <input
+                                                    value={quickStockQty}
+                                                    onChange={(e) => setQuickStockQty(e.target.value)}
+                                                    placeholder="Stock quantity"
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            ) : (
+                                                <div className="text-[12px] font-medium text-[#1A1A1A]/45">Buyers can order even when stock is 0.</div>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => void saveQuickStock()}
+                                                disabled={quickSavingStock}
+                                                className={`w-full px-4 py-2.5 rounded-2xl text-[12px] font-black text-white ${
+                                                    quickSavingStock ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                                }`}
+                                            >
+                                                {quickSavingStock ? 'Saving…' : 'Save stock'}
+                                            </button>
+                                        </div>
+
+                                        <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Samples</div>
+                                            <input
+                                                value={quickSamplesQty}
+                                                onChange={(e) => setQuickSamplesQty(e.target.value)}
+                                                placeholder="Sample quantity"
+                                                inputMode="numeric"
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => void saveQuickSamples()}
+                                                disabled={quickSavingSamples}
+                                                className={`w-full px-4 py-2.5 rounded-2xl text-[12px] font-black text-white ${
+                                                    quickSavingSamples ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                                }`}
+                                            >
+                                                {quickSavingSamples ? 'Saving…' : 'Save samples'}
+                                            </button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4">
+                                        <div className="text-[12px] font-medium text-[#1A1A1A]/55">
+                                            Stock and samples can be managed after the admin publishes the product.
                                         </div>
                                     </div>
                                 )}
@@ -3526,19 +4211,24 @@ export function WarehouseView() {
 
                         {(() => {
                             const total = listingRequests.length;
-                            const published = listingRequests.filter(lr => lr.stage === 'done' || !!lr.created_product_id).length;
-                            const approved = listingRequests.filter(lr => lr.stage === 'live').length;
+                            const publishedRows = listingRequests.filter(lr => (lr.stage === 'done' || !!lr.created_product_id) && !!lr.created_product);
+                            const isSellerStock = (lr: any) => asString(lr?.product_fulfillment_mode, 'made_to_order').toLowerCase() === 'seller_stock';
+                            const bulkOos = publishedRows.filter(lr => isSellerStock(lr) && Number(lr?.product_stock_units ?? 0) <= 0).length;
+                            const bulkLow = publishedRows.filter(lr => isSellerStock(lr) && !!lr?.product_low_stock).length;
+                            const samplesOos = publishedRows.filter(lr => Number(lr?.sample_units ?? 0) <= 0).length;
+                            const samplesLow = publishedRows.filter(lr => !!lr?.sample_low_stock).length;
                             const changes = listingRequests.filter(lr => lr.stage === 'samples' && lr.product_meta?.review_message).length;
-                            const inReview = listingRequests.filter(lr => lr.stage === 'compliance' || lr.stage === 'inspection').length;
+                            const needsAction = changes;
                             const stats = [
                                 { k: 'Total', v: total },
-                                { k: 'Published', v: published },
-                                { k: 'Approved', v: approved },
-                                { k: 'In review', v: inReview },
-                                { k: 'Changes', v: changes },
+                                { k: 'Published', v: publishedRows.length },
+                                { k: 'Needs action', v: needsAction },
+                                { k: 'Bulk out', v: bulkOos },
+                                { k: 'Samples out', v: samplesOos },
+                                { k: 'Low alerts', v: bulkLow + samplesLow },
                             ];
                             return (
-                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
                                     {stats.map((s) => (
                                         <div key={s.k} className="rounded-[18px] bg-white/45 border border-[#1A1A1A]/[0.06] px-4 py-3">
                                             <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">{s.k}</div>
@@ -3551,13 +4241,43 @@ export function WarehouseView() {
 
                         {(() => {
                             const q = listQuery.trim().toLowerCase();
-                            const rows = !q ? listingRequests : listingRequests.filter((lr) => {
+                            const baseRows = !q ? listingRequests : listingRequests.filter((lr) => {
                                 const name = asString(lr?.product_name).toLowerCase();
                                 const cat = asString(lr?.category_label).toLowerCase();
                                 const stage = asString(lr?.stage).toLowerCase();
                                 const id = asString(lr?.id).toLowerCase();
                                 const metaSku = asString(lr?.product_meta?.sku).toLowerCase();
                                 return name.includes(q) || cat.includes(q) || stage.includes(q) || id.includes(q) || metaSku.includes(q);
+                            });
+                            const isPublished = (lr: any) => !!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done';
+                            const hasChanges = (lr: any) => asString(lr?.stage).toLowerCase() === 'samples' && !!lr?.product_meta?.review_message;
+                            const mode = (lr: any) => asString(lr?.product_fulfillment_mode, 'made_to_order').toLowerCase();
+                            const stockUnits = (lr: any) => Number(lr?.product_stock_units ?? 0);
+                            const sampleUnits = (lr: any) => Number(lr?.sample_units ?? 0);
+
+                            const rows = baseRows.filter((lr) => {
+                                if (filters.publishedOnly && !isPublished(lr)) return false;
+                                if (filters.needsAction && !hasChanges(lr)) return false;
+                                if (filters.mode !== 'all' && mode(lr) !== filters.mode) return false;
+                                if (filters.bulk === 'oos') {
+                                    if (!isPublished(lr)) return false;
+                                    if (mode(lr) !== 'seller_stock') return false;
+                                    if (stockUnits(lr) > 0) return false;
+                                }
+                                if (filters.bulk === 'low') {
+                                    if (!isPublished(lr)) return false;
+                                    if (mode(lr) !== 'seller_stock') return false;
+                                    if (!lr?.product_low_stock) return false;
+                                }
+                                if (filters.samples === 'none') {
+                                    if (!isPublished(lr)) return false;
+                                    if (sampleUnits(lr) > 0) return false;
+                                }
+                                if (filters.samples === 'low') {
+                                    if (!isPublished(lr)) return false;
+                                    if (!lr?.sample_low_stock) return false;
+                                }
+                                return true;
                             });
 
                             const stagePill = (stage: string) => {
@@ -3588,6 +4308,81 @@ export function WarehouseView() {
                                         )}
                                     </Glass>
 
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setFilters((f) => ({ ...f, needsAction: !f.needsAction }))}
+                                            className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] transition-colors ${
+                                                filters.needsAction ? 'bg-[#1A1A1A] text-white' : 'bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06]'
+                                            }`}
+                                        >
+                                            Needs action
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setFilters((f) => ({ ...f, publishedOnly: !f.publishedOnly }))}
+                                            className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] transition-colors ${
+                                                filters.publishedOnly ? 'bg-[#1A1A1A] text-white' : 'bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06]'
+                                            }`}
+                                        >
+                                            Published
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setFilters((f) => ({
+                                                    ...f,
+                                                    bulk: f.bulk === 'all' ? 'oos' : f.bulk === 'oos' ? 'low' : 'all',
+                                                }))
+                                            }
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06] transition-colors"
+                                        >
+                                            Bulk: {filters.bulk === 'all' ? 'All' : filters.bulk === 'oos' ? 'Out' : 'Low'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setFilters((f) => ({
+                                                    ...f,
+                                                    samples: f.samples === 'all' ? 'none' : f.samples === 'none' ? 'low' : 'all',
+                                                }))
+                                            }
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06] transition-colors"
+                                        >
+                                            Samples: {filters.samples === 'all' ? 'All' : filters.samples === 'none' ? 'Out' : 'Low'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setFilters((f) => ({
+                                                    ...f,
+                                                    mode: f.mode === 'all' ? 'made_to_order' : f.mode === 'made_to_order' ? 'seller_stock' : 'all',
+                                                }))
+                                            }
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06] transition-colors"
+                                        >
+                                            Mode: {filters.mode === 'all' ? 'All' : filters.mode === 'made_to_order' ? 'MTO' : 'Tracked'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setFilters({ publishedOnly: false, needsAction: false, bulk: 'all', samples: 'all', mode: 'all' });
+                                                setListQuery('');
+                                            }}
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.03] text-[#1A1A1A]/45 hover:bg-black/[0.05] transition-colors"
+                                        >
+                                            Reset
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setThresholdsOpen(true)}
+                                            className="ml-auto inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-[#0171E3]/10 text-[#0171E3]/80 hover:bg-[#0171E3]/15 transition-colors"
+                                        >
+                                            <SlidersHorizontal size={12} strokeWidth={2.5} />
+                                            Alerts
+                                        </button>
+                                    </div>
+
                                     {rows.length === 0 ? (
                                         <div className="py-14 text-center">
                                             <div className="w-14 h-14 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-3">
@@ -3607,8 +4402,38 @@ export function WarehouseView() {
                                                     const pill = stagePill(lr?.stage);
                                                     const hasChanges = asString(lr?.stage).toLowerCase() === 'samples' && !!lr?.product_meta?.review_message;
                                                     const hasFeedback = !!asString(lr?.compliance_notes);
+                                                    const sampleUnits = Number(lr?.sample_units ?? 0);
+                                                    const sampleLow = !!lr?.sample_low_stock;
+                                                    const isPublished = !!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done';
+                                                    const sampleLabel =
+                                                        !isPublished ? '' :
+                                                        sampleUnits <= 0 ? 'Samples: 0' :
+                                                        sampleLow ? 'Low samples' :
+                                                        `Samples: ${sampleUnits.toLocaleString()}`;
+                                                    const sampleCls =
+                                                        sampleUnits <= 0 ? 'bg-[#E5484D]/10 text-[#E5484D]/80' :
+                                                        sampleLow ? 'bg-[#FFB224]/10 text-[#FFB224]/80' :
+                                                        'bg-black/[0.04] text-[#1A1A1A]/55';
+                                                    const prodMode = asString(lr?.product_fulfillment_mode, 'made_to_order').toLowerCase();
+                                                    const prodUnits = Number(lr?.product_stock_units ?? 0);
+                                                    const prodLow = !!lr?.product_low_stock;
+                                                    const stockLabel =
+                                                        !isPublished ? '' :
+                                                        prodMode !== 'seller_stock' ? 'Made to order' :
+                                                        prodUnits <= 0 ? 'Out of stock' :
+                                                        prodLow ? 'Low stock' :
+                                                        `In stock: ${prodUnits.toLocaleString()}`;
+                                                    const stockCls =
+                                                        prodMode !== 'seller_stock' ? 'bg-[#0171E3]/10 text-[#0171E3]/80' :
+                                                        prodUnits <= 0 ? 'bg-[#E5484D]/10 text-[#E5484D]/80' :
+                                                        prodLow ? 'bg-[#FFB224]/10 text-[#FFB224]/80' :
+                                                        'bg-black/[0.04] text-[#1A1A1A]/55';
                                                     return (
-                                                        <div key={asString(lr?.id)} className="px-5 py-4 flex items-center gap-4">
+                                                        <div
+                                                            key={asString(lr?.id)}
+                                                            className="px-5 py-4 flex items-center gap-4 hover:bg-black/[0.02] transition-colors cursor-pointer"
+                                                            onClick={() => openQuick(lr)}
+                                                        >
                                                             <div className="w-11 h-11 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04] flex-shrink-0">
                                                                 {lr?.photos?.[0]?.file_url ? (
                                                                     <img src={lr.photos[0].file_url} alt={asString(lr?.product_name)} className="w-full h-full object-cover" />
@@ -3631,6 +4456,22 @@ export function WarehouseView() {
                                                                 </div>
                                                             </div>
                                                             <div className="flex items-center gap-3 flex-shrink-0">
+                                                                {isPublished && (
+                                                                    <span
+                                                                        title="Bulk stock for buyer orders"
+                                                                        className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${stockCls}`}
+                                                                    >
+                                                                        {stockLabel}
+                                                                    </span>
+                                                                )}
+                                                                {isPublished && (
+                                                                    <span
+                                                                        title="Sample stock (separate from bulk stock)"
+                                                                        className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${sampleCls}`}
+                                                                    >
+                                                                        {sampleLabel}
+                                                                    </span>
+                                                                )}
                                                                 <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${pill.cls}`}>{pill.label}</span>
                                                                 <div className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums hidden sm:block">
                                                                     {lr?.created_at ? new Date(lr.created_at).toLocaleDateString() : '—'}
@@ -3638,7 +4479,10 @@ export function WarehouseView() {
                                                                 <div className="relative">
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => setRowMenuId((cur) => (cur === lr?.id ? null : lr?.id))}
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            setRowMenuId((cur) => (cur === lr?.id ? null : lr?.id));
+                                                                        }}
                                                                         className="w-9 h-9 rounded-full bg-black/[0.03] hover:bg-black/[0.06] flex items-center justify-center transition-colors"
                                                                         aria-label="Actions"
                                                                     >
@@ -3647,6 +4491,7 @@ export function WarehouseView() {
                                                                     {rowMenuId === lr?.id && (
                                                                         <div
                                                                             ref={rowMenuRef}
+                                                                            onClick={(e) => e.stopPropagation()}
                                                                             className="absolute right-0 top-10 z-30 w-[220px] rounded-[18px] bg-white/95 backdrop-blur-2xl border border-black/[0.08] overflow-hidden shadow-[0_18px_60px_-20px_rgba(0,0,0,0.35)]"
                                                                         >
                                                                             <button
@@ -3656,6 +4501,24 @@ export function WarehouseView() {
                                                                             >
                                                                                 View history
                                                                             </button>
+                                                                            {isPublished && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => { setRowMenuId(null); openStockEdit(lr); }}
+                                                                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                                                                >
+                                                                                    Update stock
+                                                                                </button>
+                                                                            )}
+                                                                            {isPublished && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => { setRowMenuId(null); openSampleEdit(lr); }}
+                                                                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                                                                >
+                                                                                    Update samples
+                                                                                </button>
+                                                                            )}
                                                                             {hasChanges && (
                                                                                 <button
                                                                                     type="button"

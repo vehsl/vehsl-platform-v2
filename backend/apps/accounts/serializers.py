@@ -185,6 +185,7 @@ class SellerProfileSerializer(serializers.ModelSerializer):
             "warehouse_location",
             "vehsl_rating",
             "sample_low_threshold",
+            "stock_low_threshold",
         ]
 
 

@@ -3,6 +3,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.catalog.models import Category, ListingRequest, Product, Warehouse
+from apps.accounts.models import BuyerAddress
 
 
 class ListingRequestFlowTests(TestCase):
@@ -11,8 +12,20 @@ class ListingRequestFlowTests(TestCase):
         User = get_user_model()
         self.admin = User.objects.create_user(email="admin@test.local", password="pass1234", role="admin", is_staff=True)
         self.seller = User.objects.create_user(email="seller@test.local", password="pass1234", role="seller", account_type="seller")
+        self.buyer = User.objects.create_user(email="buyer@test.local", password="pass1234", role="buyer", account_type="buyer")
         self.category = Category.objects.create(name="Test Category", slug="test-category")
         self.warehouse = Warehouse.objects.create(name="W1", active=True)
+        self.address = BuyerAddress.objects.create(
+            user=self.buyer,
+            kind=BuyerAddress.Kind.PRIMARY,
+            contact_name="Buyer",
+            phone="123",
+            country="US",
+            region="CA",
+            city="SF",
+            street1="1 Market St",
+            postal_code="94105",
+        )
 
     def _required_meta(self):
         return {
@@ -159,3 +172,85 @@ class ListingRequestFlowTests(TestCase):
         self.assertEqual(res.status_code, 200)
         lr.refresh_from_db()
         self.assertEqual(lr.stage, ListingRequest.Stage.COMPLIANCE)
+
+    def test_seller_stock_blocks_orders_and_decrements(self):
+        lr = ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Test Category",
+            product_name="P6",
+            unit_price="10.00",
+            moq=1,
+            stage=ListingRequest.Stage.INSPECTION,
+            compliance_verified=True,
+            inspected=True,
+            product_meta=self._required_meta(),
+        )
+        self.client.force_authenticate(user=self.admin)
+        res2 = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
+        self.assertEqual(res2.status_code, 200)
+        res3 = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/publish/", {}, format="json")
+        self.assertEqual(res3.status_code, 200)
+        lr.refresh_from_db()
+        product = Product.objects.get(id=lr.created_product_id)
+
+        product.fulfillment_mode = Product.FulfillmentMode.SELLER_STOCK
+        product.seller_stock_units = 2
+        product.save(update_fields=["fulfillment_mode", "seller_stock_units", "updated_at"])
+
+        self.client.force_authenticate(user=self.buyer)
+        bad = self.client.post(
+            "/api/v1/orders/",
+            {"items": [{"product_id": product.id, "quantity": 3}], "address_id": self.address.id},
+            format="json",
+        )
+        self.assertEqual(bad.status_code, 400)
+
+        ok = self.client.post(
+            "/api/v1/orders/",
+            {"items": [{"product_id": product.id, "quantity": 2}], "address_id": self.address.id},
+            format="json",
+        )
+        self.assertEqual(ok.status_code, 201)
+        product.refresh_from_db()
+        self.assertEqual(product.seller_stock_units, 0)
+
+        bad2 = self.client.post(
+            "/api/v1/orders/",
+            {"items": [{"product_id": product.id, "quantity": 1}], "address_id": self.address.id},
+            format="json",
+        )
+        self.assertEqual(bad2.status_code, 400)
+
+    def test_made_to_order_allows_orders_even_with_zero_stock(self):
+        lr = ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Test Category",
+            product_name="P7",
+            unit_price="10.00",
+            moq=1,
+            stage=ListingRequest.Stage.INSPECTION,
+            compliance_verified=True,
+            inspected=True,
+            product_meta=self._required_meta(),
+        )
+        self.client.force_authenticate(user=self.admin)
+        res2 = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
+        self.assertEqual(res2.status_code, 200)
+        res3 = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/publish/", {}, format="json")
+        self.assertEqual(res3.status_code, 200)
+        lr.refresh_from_db()
+        product = Product.objects.get(id=lr.created_product_id)
+
+        product.fulfillment_mode = Product.FulfillmentMode.MADE_TO_ORDER
+        product.seller_stock_units = 0
+        product.save(update_fields=["fulfillment_mode", "seller_stock_units", "updated_at"])
+
+        self.client.force_authenticate(user=self.buyer)
+        ok = self.client.post(
+            "/api/v1/orders/",
+            {"items": [{"product_id": product.id, "quantity": 999}], "address_id": self.address.id},
+            format="json",
+        )
+        self.assertEqual(ok.status_code, 201)

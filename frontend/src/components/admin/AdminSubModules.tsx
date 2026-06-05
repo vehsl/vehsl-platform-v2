@@ -3394,8 +3394,13 @@ export function AdminProducts() {
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
                   <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
-                  <span className={`${Number(p.stock_units) === 0 ? "text-[#E5484D]/80" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
-                    {Number(p.stock_units) === 0 ? "No samples" : `Samples: ${formatNumber(p.stock_units)}`}
+                  <span className={`${Number(p.stock_units) === 0 ? "text-muted-foreground/40" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
+                    {`Samples: ${formatNumber(p.stock_units)}`}
+                  </span>
+                  <span className={`${String(p.fulfillment_mode || "").toLowerCase() === "seller_stock" ? (Number(p.seller_stock_units) <= 0 ? "text-[#E5484D]/80" : Number(p.seller_stock_units) < 10 ? "text-[#FFB224]/80" : "text-muted-foreground/50") : "text-primary/50"}`}>
+                    {String(p.fulfillment_mode || "").toLowerCase() === "seller_stock"
+                      ? `Bulk: ${formatNumber(p.seller_stock_units)}`
+                      : "Bulk: MTO"}
                   </span>
                   {Number(p.vehsl_rating) > 0 && (
                     <span className="flex items-center gap-1 text-[#FFB224]/80">

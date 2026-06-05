@@ -786,7 +786,20 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        return ListingRequest.objects.filter(seller=self.request.user).select_related("category", "created_product").prefetch_related("photos")
+        return (
+            ListingRequest.objects.filter(seller=self.request.user)
+            .select_related("category", "created_product")
+            .prefetch_related("photos", "created_product__samples")
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        sp = getattr(self.request.user, "seller_profile", None)
+        sample_th = getattr(sp, "sample_low_threshold", 0) if sp else 0
+        stock_th = getattr(sp, "stock_low_threshold", 0) if sp else 0
+        ctx["sample_low_stock_threshold"] = int(sample_th or 50)
+        ctx["product_low_stock_threshold"] = int(stock_th or 10)
+        return ctx
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset().order_by("-created_at")
@@ -986,12 +999,193 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
 
         return Response(
             {
-                "listing_request": ListingRequestSerializer(lr, context={"request": request}).data,
+                "listing_request": ListingRequestSerializer(lr, context=self.get_serializer_context()).data,
                 "events": events,
                 "orders": orders,
                 "sample": sample,
             }
         )
+
+    @action(detail=True, methods=["patch"], url_path="sample-stock")
+    def sample_stock(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(lr, "created_product_id", None):
+            return Response({"detail": "This listing is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw = request.data.get("stock_units", None)
+        if raw is None:
+            raw = request.data.get("sample_units", None)
+        try:
+            qty = int(raw)
+        except Exception:
+            return Response({"stock_units": "stock_units must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if qty < 0:
+            return Response({"stock_units": "stock_units must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            sp = getattr(request.user, "seller_profile", None)
+            default_th = int(getattr(sp, "sample_low_threshold", 0) or 50) if sp else 50
+            threshold = int(request.data.get("low_stock_threshold") or default_th)
+        except Exception:
+            threshold = 50
+        threshold = max(1, min(100000, threshold))
+
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            Sample = None
+        if Sample is None:
+            return Response({"detail": "Inventory not available."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            product = lr.created_product
+        except Exception:
+            product = None
+        if not product:
+            return Response({"detail": "Product not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sample, _ = Sample.objects.get_or_create(product=product, defaults={"seller": request.user})
+        Sample.objects.filter(id=sample.id).update(
+            seller=request.user,
+            available_quantity=qty,
+            low_stock_flag=(0 < qty < threshold),
+        )
+
+        if qty == 0:
+            try:
+                Notification.objects.create(
+                    user=request.user,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="sample_stock_out",
+                    payload={
+                        "title": "Sample stock is empty",
+                        "body": f'Your product "{(product.name or "").strip()}" has 0 samples available.',
+                        "product_id": str(getattr(product, "id", "") or ""),
+                        "listing_request_id": str(lr.id),
+                        "stock_units": 0,
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+        elif 0 < qty < threshold:
+            try:
+                Notification.objects.create(
+                    user=request.user,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="sample_stock_low",
+                    payload={
+                        "title": "Sample stock is low",
+                        "body": f'Your product "{(product.name or "").strip()}" is low on samples ({qty}).',
+                        "product_id": str(getattr(product, "id", "") or ""),
+                        "listing_request_id": str(lr.id),
+                        "stock_units": qty,
+                        "threshold": threshold,
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+
+        audit(
+            request.user,
+            action="seller_product_sample_stock_set",
+            target_type="product",
+            target_id=str(getattr(product, "id", "") or ""),
+            payload={"stock_units": qty, "listing_request_id": str(lr.id)},
+        )
+        lr.refresh_from_db()
+        return Response(ListingRequestSerializer(lr, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["patch"], url_path="stock")
+    def stock(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(lr, "created_product_id", None):
+            return Response({"detail": "This listing is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+        product = getattr(lr, "created_product", None)
+        if not product:
+            return Response({"detail": "Product not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        mode_in = (request.data.get("fulfillment_mode") or request.data.get("mode") or "").strip().lower()
+        if mode_in and mode_in not in {Product.FulfillmentMode.MADE_TO_ORDER, Product.FulfillmentMode.SELLER_STOCK}:
+            return Response({"fulfillment_mode": "Invalid fulfillment_mode."}, status=status.HTTP_400_BAD_REQUEST)
+        mode = mode_in or (getattr(product, "fulfillment_mode", "") or Product.FulfillmentMode.MADE_TO_ORDER)
+
+        raw_qty = request.data.get("seller_stock_units", None)
+        if raw_qty is None:
+            raw_qty = request.data.get("stock_units", None)
+        qty = None
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            try:
+                qty = int(raw_qty)
+            except Exception:
+                return Response({"seller_stock_units": "seller_stock_units must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if qty < 0:
+                return Response({"seller_stock_units": "seller_stock_units must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            qty = 0
+
+        try:
+            sp = getattr(request.user, "seller_profile", None)
+            default_th = int(getattr(sp, "stock_low_threshold", 0) or 10) if sp else 10
+            threshold = int(request.data.get("low_stock_threshold") or default_th)
+        except Exception:
+            threshold = 10
+        threshold = max(1, min(100000, threshold))
+
+        Product.objects.filter(id=product.id).update(fulfillment_mode=mode, seller_stock_units=qty)
+
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            if qty == 0:
+                try:
+                    Notification.objects.create(
+                        user=request.user,
+                        channel=Notification.Channel.IN_APP,
+                        event_type="product_out_of_stock",
+                        payload={
+                            "title": "Product is out of stock",
+                            "body": f'Your product "{(product.name or "").strip()}" is out of stock.',
+                            "product_id": str(getattr(product, "id", "") or ""),
+                            "listing_request_id": str(lr.id),
+                            "seller_stock_units": 0,
+                        },
+                        status=Notification.Status.QUEUED,
+                    )
+                except Exception:
+                    pass
+            elif 0 < qty < threshold:
+                try:
+                    Notification.objects.create(
+                        user=request.user,
+                        channel=Notification.Channel.IN_APP,
+                        event_type="product_low_stock",
+                        payload={
+                            "title": "Product stock is low",
+                            "body": f'Your product "{(product.name or "").strip()}" is low on stock ({qty}).',
+                            "product_id": str(getattr(product, "id", "") or ""),
+                            "listing_request_id": str(lr.id),
+                            "seller_stock_units": qty,
+                            "threshold": threshold,
+                        },
+                        status=Notification.Status.QUEUED,
+                    )
+                except Exception:
+                    pass
+
+        audit(
+            request.user,
+            action="seller_product_stock_set",
+            target_type="product",
+            target_id=str(getattr(product, "id", "") or ""),
+            payload={"fulfillment_mode": mode, "seller_stock_units": qty, "listing_request_id": str(lr.id)},
+        )
+        lr.refresh_from_db()
+        return Response(ListingRequestSerializer(lr, context=self.get_serializer_context()).data)
 
 
 class AdminListingRequestViewSet(viewsets.GenericViewSet):
