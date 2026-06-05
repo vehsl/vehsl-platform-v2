@@ -226,7 +226,7 @@ export function CheckoutPage() {
       }
       await clearCart();
       toast.success(t("Order placed.", "订单已提交。"));
-      router.push("/");
+      router.push("/orders");
     } catch (e) {
       const msg = e instanceof Error ? e.message : t("Checkout failed.", "结算失败。");
       toast.error(msg);

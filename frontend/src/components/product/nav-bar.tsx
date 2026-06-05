@@ -2,10 +2,14 @@
 
 import { motion } from "motion/react";
 import {
+  LogOut,
+  Package,
   ShoppingCart,
   Search,
+  Settings,
   User,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useCart } from "./cart-context";
 import Link from "next/link";
 import {
@@ -35,6 +39,121 @@ const categories = [
   { icon: <WheatIcon />, label: "Agriculture" },
   { icon: <BasketballIcon />, label: "Sports" },
 ];
+
+function readAuthed() {
+  try {
+    return Boolean(window.localStorage.getItem("vehsl.access") || "");
+  } catch {
+    return false;
+  }
+}
+
+function clearAuth() {
+  try {
+    window.localStorage.removeItem("vehsl.access");
+    window.localStorage.removeItem("vehsl.refresh");
+    window.localStorage.removeItem("vehsl.user");
+  } catch {}
+}
+
+function ProfileMenu() {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = wrapRef.current;
+      if (!root) return;
+      if (e.target instanceof Node && root.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
+
+  const logout = async () => {
+    const refresh = (() => {
+      try {
+        return window.localStorage.getItem("vehsl.refresh") || "";
+      } catch {
+        return "";
+      }
+    })();
+
+    try {
+      const base = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/$/, "");
+      const url =
+        base && /^https?:\/\//.test(base) && !/\/\/backend(?=[:/]|$)/.test(base)
+          ? `${base}/api/v1/auth/logout`
+          : `${window.location.protocol}//${window.location.hostname || "localhost"}:8000/api/v1/auth/logout`;
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh }),
+      }).catch(() => null);
+    } catch {}
+
+    clearAuth();
+    window.location.href = "/?signin=1";
+  };
+
+  const onOpen = () => {
+    if (!readAuthed()) {
+      window.location.href = "/?signin=1";
+      return;
+    }
+    setOpen((v) => !v);
+  };
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <motion.button
+        type="button"
+        onClick={onOpen}
+        className="w-9 h-9 rounded-full bg-gradient-to-br from-[#0071e3] to-[#5856d6] flex items-center justify-center cursor-pointer"
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.92 }}
+        aria-label="Profile"
+        aria-expanded={open}
+      >
+        <User size={15} className="text-white" />
+      </motion.button>
+      {open ? (
+        <div className="absolute right-0 top-full z-[70] mt-2 w-52 overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-soft">
+          <Link
+            href="/orders"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-semibold text-[#0f1115] hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+          >
+            <Package className="h-4 w-4 text-[#1f2330]" strokeWidth={1.5} />
+            My orders
+          </Link>
+          <Link
+            href="/explore?profileSettings=1"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-semibold text-[#0f1115] hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+          >
+            <Settings className="h-4 w-4 text-[#1f2330]" strokeWidth={1.5} />
+            Profile settings
+          </Link>
+          <div className="h-px bg-black/[0.06]" />
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              void logout();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-semibold text-[#d92d20] hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+          >
+            <LogOut className="h-4 w-4 text-[#d92d20]" strokeWidth={1.5} />
+            Logout
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function NavBar() {
   const { totalQuantity } = useCart();
@@ -104,13 +223,7 @@ export function NavBar() {
               ) : null}
             </Link>
 
-            <motion.button
-              className="w-9 h-9 rounded-full bg-gradient-to-br from-[#0071e3] to-[#5856d6] flex items-center justify-center cursor-pointer"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.92 }}
-            >
-              <User size={15} className="text-white" />
-            </motion.button>
+            <ProfileMenu />
           </div>
         </div>
       </div>

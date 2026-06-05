@@ -365,6 +365,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "deadline_at",
             "extension_reason",
             "extension_fee",
+            "delivered_at",
+            "received_at",
             "created_at",
             "updated_at",
             "item_count",

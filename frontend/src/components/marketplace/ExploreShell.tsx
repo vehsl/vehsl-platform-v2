@@ -284,6 +284,14 @@ function ProfileMenu({
       </button>
       {open ? (
         <div className="absolute right-0 top-full z-[70] mt-2 w-52 overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-soft">
+          <Link
+            href="/orders"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left text-[13px] font-semibold text-[#0f1115] hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
+          >
+            <Package className="h-4 w-4 text-[#1f2330]" strokeWidth={1.5} />
+            {t("My orders", "我的订单")}
+          </Link>
           <button
             type="button"
             onClick={() => {

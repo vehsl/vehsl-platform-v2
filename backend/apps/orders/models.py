@@ -121,6 +121,8 @@ class Order(models.Model):
     deadline_at = models.DateTimeField(null=True, blank=True)
     extension_reason = models.TextField(blank=True, default="")
     extension_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(null=True, blank=True)
     release_authorized_at = models.DateTimeField(null=True, blank=True)
     release_authorized_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -4343,6 +4343,8 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         return uniq
 
     def _kyc_gate(self, request):
+        if getattr(self, "action", None) in {"metrics", "orders", "activities", "shipments"}:
+            return None
         _sync_seller_verification_status(request.user)
         profile = getattr(request.user, "seller_profile", None)
         if getattr(profile, "verification_status", "") != SellerProfile.VerificationStatus.APPROVED:
@@ -4447,6 +4449,13 @@ class SellerDashboardViewSet(viewsets.ViewSet):
                 latest_shipment = o.shipments.filter(deleted_at__isnull=True).order_by("-created_at", "-id").first()
             except Exception:
                 latest_shipment = None
+
+            if latest_shipment and o.status in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+                if (getattr(latest_shipment, "status", "") or "") != Shipment.Status.DELIVERED:
+                    actual = getattr(o, "delivered_at", None) or timezone.now()
+                    Shipment.objects.filter(id=latest_shipment.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=actual)
+                    latest_shipment.status = Shipment.Status.DELIVERED
+                    latest_shipment.actual_delivery_at = actual
 
             timeline_step = 0
             production_step = 0
@@ -4836,12 +4845,24 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             Shipment.objects.select_related("order")
             .prefetch_related("order__items", "order__items__product", "order__items__product__media")
             .filter(order__seller=user, deleted_at__isnull=True, order__deleted_at__isnull=True)
-            .exclude(status=Shipment.Status.DELIVERED)
             .order_by("-created_at", "-id")[:50]
         )
         out = []
         for s in qs:
             o = s.order
+            if o and o.status in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+                if (getattr(s, "status", "") or "") != Shipment.Status.DELIVERED:
+                    actual = getattr(o, "delivered_at", None) or timezone.now()
+                    Shipment.objects.filter(id=s.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=actual)
+                    s.status = Shipment.Status.DELIVERED
+                    s.actual_delivery_at = actual
+                elif not getattr(s, "actual_delivery_at", None):
+                    now = getattr(o, "delivered_at", None) or timezone.now()
+                    Shipment.objects.filter(id=s.id).update(actual_delivery_at=now)
+                    s.actual_delivery_at = now
+
+            if (getattr(s, "status", "") or "") == Shipment.Status.DELIVERED:
+                continue
             item = o.items.first()
             if not item:
                 continue

@@ -410,7 +410,8 @@ class OrderViewSet(viewsets.ModelViewSet):
             .prefetch_related("items", "items__product", "items__variation", "shipments")
             .filter(deleted_at__isnull=True)
         )
-        if getattr(user, "account_type", None) == "seller":
+        is_seller = bool(getattr(user, "account_type", None) == "seller" or getattr(user, "role", None) == "seller")
+        if is_seller:
             qs = qs.filter(seller=user)
         else:
             qs = qs.filter(buyer=user)
@@ -429,11 +430,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action == "create":
-            return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), IsBuyer()]
         if self.action in {"update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
         if self.action in {"accept", "reject", "cancel", "extend_deadline", "sample_ready", "confirm_ready", "mark_shipped", "mark_delivered", "mark_completed"}:
             return [permissions.IsAuthenticated(), IsSeller()]
+        if self.action in {"confirm_delivered", "confirm_received"}:
+            return [permissions.IsAuthenticated(), IsBuyer()]
         return [permissions.IsAuthenticated(), IsOrderParticipant()]
 
     def create(self, request, *args, **kwargs):
@@ -589,6 +592,23 @@ class OrderViewSet(viewsets.ModelViewSet):
             destination=destination,
         )
 
+    def _set_latest_shipment_delivered(self, order: Order):
+        shipment = self._ensure_shipment(order)
+        prev_ship = getattr(shipment, "status", "") or ""
+        if shipment.status != Shipment.Status.DELIVERED:
+            actual = getattr(order, "delivered_at", None) or timezone.now()
+            Shipment.objects.filter(id=shipment.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=actual)
+            shipment.refresh_from_db()
+            audit(
+                self.request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(shipment.id),
+                payload={"order_id": str(order.id), "from": str(prev_ship or ""), "to": str(shipment.status or "")},
+            )
+        elif not getattr(shipment, "actual_delivery_at", None):
+            Shipment.objects.filter(id=shipment.id).update(actual_delivery_at=getattr(order, "delivered_at", None) or timezone.now())
+
     @action(detail=True, methods=["post"], url_path="sample-ready")
     def sample_ready(self, request, pk=None):
         order = self.get_object()
@@ -687,7 +707,36 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Order must be shipped first."}, status=status.HTTP_400_BAD_REQUEST)
         prev = order.status
         order.status = Order.Status.DELIVERED
-        order.save(update_fields=["status"])
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+            order.save(update_fields=["status", "delivered_at"])
+        else:
+            order.save(update_fields=["status"])
+        self._set_latest_shipment_delivered(order)
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-delivered")
+    def confirm_delivered(self, request, pk=None):
+        order = self.get_object()
+        if order.buyer_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status not in {Order.Status.SHIPPED, Order.Status.DELIVERED}:
+            return Response({"detail": "Order must be shipped first."}, status=status.HTTP_400_BAD_REQUEST)
+        prev = order.status
+        order.status = Order.Status.DELIVERED
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+            order.save(update_fields=["status", "delivered_at"])
+        else:
+            order.save(update_fields=["status"])
+        self._set_latest_shipment_delivered(order)
         audit(
             request.user,
             action="order_status_changed",
@@ -706,7 +755,36 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Order must be delivered first."}, status=status.HTTP_400_BAD_REQUEST)
         prev = order.status
         order.status = Order.Status.COMPLETED
-        order.save(update_fields=["status"])
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+        if not getattr(order, "received_at", None):
+            order.received_at = timezone.now()
+        order.save(update_fields=["status", "delivered_at", "received_at"])
+        self._set_latest_shipment_delivered(order)
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-received")
+    def confirm_received(self, request, pk=None):
+        order = self.get_object()
+        if order.buyer_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status not in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+            return Response({"detail": "Order must be delivered first."}, status=status.HTTP_400_BAD_REQUEST)
+        prev = order.status
+        order.status = Order.Status.COMPLETED
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+        if not getattr(order, "received_at", None):
+            order.received_at = timezone.now()
+        order.save(update_fields=["status", "delivered_at", "received_at"])
+        self._set_latest_shipment_delivered(order)
         audit(
             request.user,
             action="order_status_changed",
@@ -911,6 +989,25 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
     def _tracking_exists_q(self):
         return ~(Q(tracking_number__isnull=True) | Q(tracking_number="")) | ~(Q(carrier_id__isnull=True) | Q(carrier_id=""))
 
+    def _reconcile_shipment_with_order(self, sh: Shipment):
+        order = getattr(sh, "order", None)
+        if not order:
+            return sh
+        o_status = (getattr(order, "status", "") or "").lower()
+        if o_status not in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+            return sh
+        if (getattr(sh, "status", "") or "") == Shipment.Status.DELIVERED:
+            if not getattr(sh, "actual_delivery_at", None):
+                actual = getattr(order, "delivered_at", None) or timezone.now()
+                Shipment.objects.filter(id=sh.id).update(actual_delivery_at=actual)
+                sh.actual_delivery_at = actual
+            return sh
+        actual = getattr(order, "delivered_at", None) or timezone.now()
+        Shipment.objects.filter(id=sh.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=actual)
+        sh.status = Shipment.Status.DELIVERED
+        sh.actual_delivery_at = actual
+        return sh
+
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         days = self._parse_days(request, default=7)
@@ -1078,6 +1175,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 
         items = []
         for sh in qs:
+            sh = self._reconcile_shipment_with_order(sh)
             last_event = None
             if getattr(sh, "events", None):
                 evs = sorted(list(sh.events.all()), key=lambda e: (e.occurred_at, e.id))
@@ -1243,6 +1341,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
         out = []
         now = timezone.now()
         for sh in rows:
+            sh = self._reconcile_shipment_with_order(sh)
             order = getattr(sh, "order", None)
             buyer = getattr(order, "buyer", None) if order else None
             seller = getattr(order, "seller", None) if order else None

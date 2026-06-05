@@ -355,3 +355,136 @@ class AdminDeleteProductTests(TestCase):
         self.client.force_authenticate(user=None)
         get_public = self.client.get(f"/api/v1/products/{self.product.id}/")
         self.assertEqual(get_public.status_code, 404)
+
+
+class OrderVisibilityTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        User = get_user_model()
+        self.buyer = User.objects.create_user(email="buyer4@test.local", password="pass1234", role="buyer", account_type="buyer")
+        self.seller = User.objects.create_user(email="seller4@test.local", password="pass1234", role="seller", account_type="")
+        self.category = Category.objects.create(name="Cat C", slug="cat-c")
+        self.product = Product.objects.create(
+            seller=self.seller,
+            category=self.category,
+            name="Prod C",
+            title="Prod C",
+            currency="USD",
+            price="12.00",
+            status=Product.Status.ACTIVE,
+        )
+        self.address = BuyerAddress.objects.create(
+            user=self.buyer,
+            kind=BuyerAddress.Kind.PRIMARY,
+            contact_name="Buyer",
+            phone="123",
+            country="US",
+            region="CA",
+            city="SF",
+            street1="1 Market St",
+            postal_code="94105",
+        )
+
+    def test_seller_orders_list_works_even_if_account_type_missing(self):
+        self.client.force_authenticate(user=self.buyer)
+        res = self.client.post(
+            "/api/v1/orders/",
+            {
+                "items": [{"product_id": self.product.id, "variation_id": None, "quantity": 2}],
+                "payment_method": "cod",
+                "address_id": self.address.id,
+                "shipping_method": "",
+                "shipping_cost": "0.00",
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        order_id = res.json().get("id")
+        self.assertTrue(order_id)
+
+        self.client.force_authenticate(user=self.seller)
+        seller_list = self.client.get("/api/v1/orders/?page_size=50")
+        self.assertEqual(seller_list.status_code, 200)
+        data = seller_list.json()
+        rows = data.get("results") if isinstance(data, dict) else data
+        self.assertTrue(isinstance(rows, list))
+        self.assertTrue(any(int(o.get("id")) == int(order_id) for o in rows if isinstance(o, dict)))
+
+    def test_seller_dashboard_orders_not_blocked_by_kyc_pending(self):
+        self.client.force_authenticate(user=self.buyer)
+        res = self.client.post(
+            "/api/v1/orders/",
+            {
+                "items": [{"product_id": self.product.id, "variation_id": None, "quantity": 1}],
+                "payment_method": "cod",
+                "address_id": self.address.id,
+                "shipping_method": "",
+                "shipping_cost": "0.00",
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        order_id = str(res.json().get("id") or "")
+
+        self.client.force_authenticate(user=self.seller)
+        dash = self.client.get("/api/v1/seller/dashboard/orders/")
+        self.assertEqual(dash.status_code, 200)
+        rows = dash.json()
+        self.assertTrue(isinstance(rows, list))
+        self.assertTrue(any(str(r.get("id")) == order_id for r in rows if isinstance(r, dict)))
+
+    def test_buyer_can_confirm_delivered_and_received_and_seller_admin_see_updates(self):
+        from apps.orders.models import Order
+
+        self.client.force_authenticate(user=self.buyer)
+        res = self.client.post(
+            "/api/v1/orders/",
+            {
+                "items": [{"product_id": self.product.id, "variation_id": None, "quantity": 1}],
+                "payment_method": "cod",
+                "address_id": self.address.id,
+                "shipping_method": "",
+                "shipping_cost": "0.00",
+            },
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        order_id = int(res.json().get("id") or 0)
+        self.assertTrue(order_id)
+
+        self.client.force_authenticate(user=self.seller)
+        accept = self.client.post(f"/api/v1/orders/{order_id}/accept/", {}, format="json")
+        self.assertEqual(accept.status_code, 200)
+        ship = self.client.post(f"/api/v1/orders/{order_id}/mark-shipped/", {}, format="json")
+        self.assertEqual(ship.status_code, 200)
+
+        self.client.force_authenticate(user=self.buyer)
+        delivered = self.client.post(f"/api/v1/orders/{order_id}/confirm-delivered/", {}, format="json")
+        self.assertEqual(delivered.status_code, 200)
+        self.assertEqual(str(delivered.json().get("status")), Order.Status.DELIVERED)
+
+        received = self.client.post(f"/api/v1/orders/{order_id}/confirm-received/", {}, format="json")
+        self.assertEqual(received.status_code, 200)
+        self.assertEqual(str(received.json().get("status")), Order.Status.COMPLETED)
+
+        o = Order.objects.get(id=order_id)
+        self.assertIsNotNone(getattr(o, "delivered_at", None))
+        self.assertIsNotNone(getattr(o, "received_at", None))
+
+        self.client.force_authenticate(user=self.seller)
+        seller_list = self.client.get("/api/v1/orders/?page_size=50")
+        self.assertEqual(seller_list.status_code, 200)
+        seller_rows = seller_list.json().get("results") if isinstance(seller_list.json(), dict) else seller_list.json()
+        row = next((x for x in seller_rows if int(x.get("id") or 0) == order_id), None)
+        self.assertTrue(row is not None)
+        self.assertEqual(str(row.get("status")), Order.Status.COMPLETED)
+
+        User = get_user_model()
+        admin = User.objects.create_user(email="admin-orders@test.local", password="pass1234", role="admin", account_type="admin")
+        self.client.force_authenticate(user=admin)
+        admin_list = self.client.get("/api/v1/admin/orders/?page_size=50")
+        self.assertEqual(admin_list.status_code, 200)
+        admin_rows = admin_list.json().get("results") if isinstance(admin_list.json(), dict) else admin_list.json()
+        admin_row = next((x for x in admin_rows if int(x.get("id") or 0) == order_id), None)
+        self.assertTrue(admin_row is not None)
+        self.assertEqual(str(admin_row.get("status")), Order.Status.COMPLETED)

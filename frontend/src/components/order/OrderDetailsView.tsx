@@ -162,13 +162,15 @@ interface OrderDetailsViewProps {
     order: ApiOrder;
     onCancelOrder: (id: number) => void;
     onRequestSample: (id: number) => void;
+    onConfirmDelivered: (id: number) => void;
+    onConfirmReceived: (id: number) => void;
 }
 
 function fmtMoney(currency: string, amount: string | number) {
     return fmtMoneyUtil(amount, currency);
 }
 
-export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: OrderDetailsViewProps) {
+export function OrderDetailsView({ order, onCancelOrder, onRequestSample, onConfirmDelivered, onConfirmReceived }: OrderDetailsViewProps) {
     const [copied, setCopied] = useState(false);
     const status = (order.status || '').toLowerCase();
     const steps = useMemo<TrackingStep[]>(() => {
@@ -231,6 +233,10 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
     const shipMethod = String((order as any).shipping_method || '').trim();
     const shipCostRaw = (order as any).shipping_cost;
     const shipCost = Number(shipCostRaw || 0);
+
+    const canCancel = !['shipped', 'delivered', 'completed', 'cancelled', 'rejected'].includes(status);
+    const canConfirmDelivered = status === 'shipped';
+    const canConfirmReceived = status === 'delivered';
 
     return (
         <motion.div
@@ -435,13 +441,33 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
                                 <FlaskConical size={12} strokeWidth={2.5} />
                                 Request sample
                             </button>
-                            <button
-                                onClick={() => onCancelOrder(order.id)}
-                                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
-                            >
-                                <Ban size={12} strokeWidth={2.5} />
-                                Cancel
-                            </button>
+                            {canConfirmDelivered ? (
+                                <button
+                                    onClick={() => onConfirmDelivered(order.id)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                                >
+                                    <Truck size={12} strokeWidth={2.5} />
+                                    Confirm delivered
+                                </button>
+                            ) : canConfirmReceived ? (
+                                <button
+                                    onClick={() => onConfirmReceived(order.id)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                                >
+                                    <CheckCircle2 size={12} strokeWidth={2.5} />
+                                    Confirm received
+                                </button>
+                            ) : canCancel ? (
+                                <button
+                                    onClick={() => onCancelOrder(order.id)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                                >
+                                    <Ban size={12} strokeWidth={2.5} />
+                                    Cancel
+                                </button>
+                            ) : (
+                                <div className="flex-1" />
+                            )}
                         </div>
                     </Glass>
                 </motion.div>
