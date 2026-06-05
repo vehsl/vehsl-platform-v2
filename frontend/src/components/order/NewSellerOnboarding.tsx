@@ -338,7 +338,8 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 if (!res.ok) return;
                 const list = await res.json().catch(() => null);
                 if (!Array.isArray(list) || list.length === 0) return;
-                const active = (list.find((x: any) => x && x.stage !== 'done') || list[0]) as any;
+                const active = list.find((x: any) => x && String(x.stage || '').toLowerCase() !== 'done') as any;
+                if (!active) return;
                 if (!active || typeof active.id !== 'number') return;
 
                 setListingId(active.id);

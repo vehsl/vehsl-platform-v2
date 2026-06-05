@@ -15,34 +15,6 @@ class Cart(models.Model):
             models.Index(fields=["buyer", "updated_at"]),
         ]
 
-    def save(self, *args, **kwargs):
-        is_new = self._state.adding
-        super().save(*args, **kwargs)
-        if is_new:
-            self._ensure_release_conditions()
-
-    def _ensure_release_conditions(self):
-        # Automatic Release Conditions for large/high-value orders
-        if self.total_amount >= Decimal("10000.00"):
-            ReleaseCondition.objects.get_or_create(
-                order=self,
-                type=ReleaseCondition.Type.INSPECTION,
-                defaults={
-                    "title": "Final Quality Inspection",
-                    "description": "High-value order requires physical inspection before release.",
-                    "priority": ReleaseCondition.Priority.CRITICAL,
-                },
-            )
-            ReleaseCondition.objects.get_or_create(
-                order=self,
-                type=ReleaseCondition.Type.PHOTO_PROOF,
-                defaults={
-                    "title": "Packaging Photo Proof",
-                    "description": "Provide photos of the packed order with shipping labels.",
-                    "priority": ReleaseCondition.Priority.REQUIRED,
-                },
-            )
-
     def __str__(self):
         return f"cart:{self.pk}"
 

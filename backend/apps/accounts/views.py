@@ -4362,11 +4362,12 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         user = request.user
         orders_qs = Order.objects.filter(seller=user, deleted_at__isnull=True)
         active_orders_qs = orders_qs.exclude(status__in=[Order.Status.COMPLETED, Order.Status.CANCELLED, Order.Status.REJECTED])
+        pending_payout_qs = orders_qs.filter(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED]).exclude(
+            payment_status=Order.PaymentStatus.PAID
+        )
 
         total_pending = (
-            active_orders_qs.filter(payment_status__in=[Order.PaymentStatus.UNPAID, Order.PaymentStatus.COD_PENDING])
-            .aggregate(total=Sum("total_amount"))
-            .get("total")
+            pending_payout_qs.aggregate(total=Sum("total_amount")).get("total")
             or 0
         )
         last_paid = (
@@ -4376,6 +4377,14 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             .first()
             or 0
         )
+        last_paid = last_paid or 0
+        total_pending_active = (
+            active_orders_qs.filter(payment_status__in=[Order.PaymentStatus.UNPAID, Order.PaymentStatus.COD_PENDING])
+            .aggregate(total=Sum("total_amount"))
+            .get("total")
+            or 0
+        )
+        total_pending = (total_pending or 0) + (total_pending_active or 0)
         unread_messages = (
             ChatMessage.objects.exclude(sender=user)
             .exclude(read_by__contains=[user.id])

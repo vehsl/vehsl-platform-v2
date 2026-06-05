@@ -230,13 +230,37 @@ export function HomeShell() {
 
       try {
         const access = tokens?.access || "";
+        const desiredAccountType = role === "seller" ? "seller" : role === "buyer" ? "buyer" : "";
+        if (access) {
+          const menuRes = await fetch(`${base}/api/v1/me/menu`, {
+            headers: { Authorization: `Bearer ${access}` },
+          });
+          const menuData = await menuRes.json().catch(() => null);
+          const active = (menuData?.active_account_type || "").toString().toLowerCase();
+          if (desiredAccountType && active && active !== desiredAccountType) {
+            const switchRes = await fetch(`${base}/api/v1/me/switch-account-type`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${access}`,
+              },
+              body: JSON.stringify({ account_type: desiredAccountType }),
+            });
+            if (switchRes.ok) {
+              const updatedUser = await switchRes.json().catch(() => null);
+              try {
+                window.localStorage.setItem("vehsl.user", JSON.stringify(updatedUser));
+              } catch {}
+            }
+          }
+        }
         const reqRes = await fetch(`${base}/api/v1/kyc/requirements`, {
           headers: access ? { Authorization: `Bearer ${access}` } : {},
         });
         const reqData = await reqRes.json().catch(() => null);
         const canAccessDashboard = !!reqData && reqRes.ok && reqData.can_access_dashboard === true;
-        const t = ((reqData?.account_type || tokens?.user?.account_type || tokens?.user?.role || "") as string).toLowerCase();
-        const dest = t === "buyer" ? "/explore" : "/orders";
+        const t = (desiredAccountType || reqData?.account_type || tokens?.user?.account_type || tokens?.user?.role || "").toString().toLowerCase();
+        const dest = t === "seller" ? "/orders" : "/explore";
         router.push(canAccessDashboard ? dest : "/kyc");
       } catch {
         router.push("/kyc");
