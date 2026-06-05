@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, time as dt_time
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.cache import cache
-from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q
-from django.db.models.functions import TruncDate
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum, Value, IntegerField
+from django.db.models.functions import TruncDate, Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.contrib.auth.hashers import check_password
@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 from apps.accounts.admin_utils import AdminPageNumberPagination, response_list, audit
 from apps.accounts.models import UserSettings
 from apps.accounts.permissions import IsAdmin, IsBuyer, IsSeller
-from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price, WarehouseStock
 
 from .models import (
     Cart,
@@ -85,6 +85,16 @@ class CartMeView(APIView):
             unit_price, currency = resolve_unit_price(p, var, i["quantity"])
             if unit_price is None:
                 return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
+
+            mode = (getattr(p, "fulfillment_mode", "") or "").strip().lower()
+            if mode == Product.FulfillmentMode.SELLER_STOCK:
+                available = int(getattr(p, "seller_stock_units", 0) or 0)
+                if i["quantity"] > max(0, available):
+                    return Response(
+                        {"detail": f"Not enough stock for {p.name}. Available: {max(0, available)}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             CartItem.objects.update_or_create(
                 cart=cart,
                 product_id=i["product_id"],
@@ -136,6 +146,16 @@ class CartItemMeDetailView(APIView):
         try:
             p = item.product
             var = item.variation if item.variation_id else None
+
+            mode = (getattr(p, "fulfillment_mode", "") or "").strip().lower()
+            if mode == Product.FulfillmentMode.SELLER_STOCK:
+                available = int(getattr(p, "seller_stock_units", 0) or 0)
+                if qty > max(0, available):
+                    return Response(
+                        {"detail": f"Not enough stock for {p.name}. Available: {max(0, available)}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             unit_price, currency = resolve_unit_price(p, var, qty)
             if unit_price is None:
                 return Response({"detail": "Could not resolve price."}, status=status.HTTP_400_BAD_REQUEST)
@@ -390,7 +410,8 @@ class OrderViewSet(viewsets.ModelViewSet):
             .prefetch_related("items", "items__product", "items__variation", "shipments")
             .filter(deleted_at__isnull=True)
         )
-        if getattr(user, "account_type", None) == "seller":
+        is_seller = bool(getattr(user, "account_type", None) == "seller" or getattr(user, "role", None) == "seller")
+        if is_seller:
             qs = qs.filter(seller=user)
         else:
             qs = qs.filter(buyer=user)
@@ -409,11 +430,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action == "create":
-            return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), IsBuyer()]
         if self.action in {"update", "partial_update", "destroy"}:
             return [permissions.IsAuthenticated(), IsAdmin()]
         if self.action in {"accept", "reject", "cancel", "extend_deadline", "sample_ready", "confirm_ready", "mark_shipped", "mark_delivered", "mark_completed"}:
             return [permissions.IsAuthenticated(), IsSeller()]
+        if self.action in {"confirm_delivered", "confirm_received"}:
+            return [permissions.IsAuthenticated(), IsBuyer()]
         return [permissions.IsAuthenticated(), IsOrderParticipant()]
 
     def create(self, request, *args, **kwargs):
@@ -569,6 +592,23 @@ class OrderViewSet(viewsets.ModelViewSet):
             destination=destination,
         )
 
+    def _set_latest_shipment_delivered(self, order: Order):
+        shipment = self._ensure_shipment(order)
+        prev_ship = getattr(shipment, "status", "") or ""
+        if shipment.status != Shipment.Status.DELIVERED:
+            actual = getattr(order, "delivered_at", None) or timezone.now()
+            Shipment.objects.filter(id=shipment.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=actual)
+            shipment.refresh_from_db()
+            audit(
+                self.request.user,
+                action="shipment_status_changed",
+                target_type="shipment",
+                target_id=str(shipment.id),
+                payload={"order_id": str(order.id), "from": str(prev_ship or ""), "to": str(shipment.status or "")},
+            )
+        elif not getattr(shipment, "actual_delivery_at", None):
+            Shipment.objects.filter(id=shipment.id).update(actual_delivery_at=getattr(order, "delivered_at", None) or timezone.now())
+
     @action(detail=True, methods=["post"], url_path="sample-ready")
     def sample_ready(self, request, pk=None):
         order = self.get_object()
@@ -667,7 +707,36 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Order must be shipped first."}, status=status.HTTP_400_BAD_REQUEST)
         prev = order.status
         order.status = Order.Status.DELIVERED
-        order.save(update_fields=["status"])
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+            order.save(update_fields=["status", "delivered_at"])
+        else:
+            order.save(update_fields=["status"])
+        self._set_latest_shipment_delivered(order)
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-delivered")
+    def confirm_delivered(self, request, pk=None):
+        order = self.get_object()
+        if order.buyer_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status not in {Order.Status.SHIPPED, Order.Status.DELIVERED}:
+            return Response({"detail": "Order must be shipped first."}, status=status.HTTP_400_BAD_REQUEST)
+        prev = order.status
+        order.status = Order.Status.DELIVERED
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+            order.save(update_fields=["status", "delivered_at"])
+        else:
+            order.save(update_fields=["status"])
+        self._set_latest_shipment_delivered(order)
         audit(
             request.user,
             action="order_status_changed",
@@ -686,7 +755,36 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Order must be delivered first."}, status=status.HTTP_400_BAD_REQUEST)
         prev = order.status
         order.status = Order.Status.COMPLETED
-        order.save(update_fields=["status"])
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+        if not getattr(order, "received_at", None):
+            order.received_at = timezone.now()
+        order.save(update_fields=["status", "delivered_at", "received_at"])
+        self._set_latest_shipment_delivered(order)
+        audit(
+            request.user,
+            action="order_status_changed",
+            target_type="order",
+            target_id=str(order.id),
+            payload={"from": str(prev or ""), "to": str(order.status or "")},
+        )
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-received")
+    def confirm_received(self, request, pk=None):
+        order = self.get_object()
+        if order.buyer_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if order.status not in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+            return Response({"detail": "Order must be delivered first."}, status=status.HTTP_400_BAD_REQUEST)
+        prev = order.status
+        order.status = Order.Status.COMPLETED
+        if not getattr(order, "delivered_at", None):
+            order.delivered_at = timezone.now()
+        if not getattr(order, "received_at", None):
+            order.received_at = timezone.now()
+        order.save(update_fields=["status", "delivered_at", "received_at"])
+        self._set_latest_shipment_delivered(order)
         audit(
             request.user,
             action="order_status_changed",
@@ -891,6 +989,25 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
     def _tracking_exists_q(self):
         return ~(Q(tracking_number__isnull=True) | Q(tracking_number="")) | ~(Q(carrier_id__isnull=True) | Q(carrier_id=""))
 
+    def _reconcile_shipment_with_order(self, sh: Shipment):
+        order = getattr(sh, "order", None)
+        if not order:
+            return sh
+        o_status = (getattr(order, "status", "") or "").lower()
+        if o_status not in {Order.Status.DELIVERED, Order.Status.COMPLETED}:
+            return sh
+        if (getattr(sh, "status", "") or "") == Shipment.Status.DELIVERED:
+            if not getattr(sh, "actual_delivery_at", None):
+                actual = getattr(order, "delivered_at", None) or timezone.now()
+                Shipment.objects.filter(id=sh.id).update(actual_delivery_at=actual)
+                sh.actual_delivery_at = actual
+            return sh
+        actual = getattr(order, "delivered_at", None) or timezone.now()
+        Shipment.objects.filter(id=sh.id).update(status=Shipment.Status.DELIVERED, actual_delivery_at=actual)
+        sh.status = Shipment.Status.DELIVERED
+        sh.actual_delivery_at = actual
+        return sh
+
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         days = self._parse_days(request, default=7)
@@ -1058,6 +1175,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
 
         items = []
         for sh in qs:
+            sh = self._reconcile_shipment_with_order(sh)
             last_event = None
             if getattr(sh, "events", None):
                 evs = sorted(list(sh.events.all()), key=lambda e: (e.occurred_at, e.id))
@@ -1223,6 +1341,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
         out = []
         now = timezone.now()
         for sh in rows:
+            sh = self._reconcile_shipment_with_order(sh)
             order = getattr(sh, "order", None)
             buyer = getattr(order, "buyer", None) if order else None
             seller = getattr(order, "seller", None) if order else None
@@ -1288,6 +1407,44 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
         if page is not None:
             return self.get_paginated_response(out)
         return Response({"count": len(out), "next": None, "previous": None, "results": out})
+
+    @action(detail=False, methods=["post"], url_path="update-shipment-status")
+    def update_shipment_status(self, request):
+        shipment_id = request.data.get("id") or request.data.get("shipment_id")
+        if not shipment_id:
+            return Response({"detail": "id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            sh = Shipment.objects.get(id=int(shipment_id), deleted_at__isnull=True)
+        except (Shipment.DoesNotExist, ValueError):
+            return Response({"detail": "Shipment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        new_status = request.data.get("status")
+        if new_status not in dict(Shipment.Status.choices):
+            return Response({"detail": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sh.status = new_status
+        if new_status == Shipment.Status.DELIVERED:
+            sh.actual_delivery_at = timezone.now()
+            # Also update order status
+            if sh.order:
+                sh.order.status = Order.Status.DELIVERED
+                sh.order.save(update_fields=["status", "updated_at"])
+        
+        sh.save()
+
+        # Create tracking event
+        from apps.orders.models import ShipmentEvent
+        ShipmentEvent.objects.create(
+            shipment=sh,
+            type=new_status,
+            location=request.data.get("location") or "Warehouse",
+            occurred_at=timezone.now(),
+            payload=request.data.get("payload") or {}
+        )
+
+        audit(request.user, action="admin_logistics_shipment_status_updated", target_type="shipment", target_id=str(sh.id), payload={"status": new_status})
+        return Response({"detail": "Shipment status updated.", "status": sh.status})
 
     @action(detail=False, methods=["get"], url_path="shipment-detail")
     def shipment_detail(self, request):
@@ -1726,49 +1883,57 @@ class AdminReleaseOrderViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
-        orders_qs = (
-            Order.objects.filter(deleted_at__isnull=True)
-            .exclude(status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED])
-            .prefetch_related("release_conditions")
+        base_qs = Order.objects.filter(deleted_at__isnull=True).exclude(
+            status__in=[Order.Status.DELIVERED, Order.Status.COMPLETED, Order.Status.CANCELLED]
         )
 
-        active_orders = orders_qs.count()
+        active_orders = base_qs.count()
 
-        total_conditions = ReleaseCondition.objects.filter(order__in=orders_qs).count()
-        satisfied_conditions = ReleaseCondition.objects.filter(
-            order__in=orders_qs, status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED]
-        ).count()
+        # Get aggregate condition stats
+        cond_stats = ReleaseCondition.objects.filter(order__in=base_qs).aggregate(
+            total=Count("id"),
+            satisfied=Count("id", filter=Q(status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED])),
+        )
 
-        cleared = 0
-        blocked = 0
-        ready_to_ship = 0
-        for o in orders_qs.iterator(chunk_size=200):
-            conds = list(o.release_conditions.all())
-            if not conds:
-                blocked += 1
-                continue
-            all_ok = all(c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED} for c in conds)
-            any_ok = any(
-                c.status in {ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.IN_PROGRESS, ReleaseCondition.Status.WAIVED}
-                for c in conds
-            )
-            if all_ok:
-                cleared += 1
-                if not o.release_authorized_at:
-                    ready_to_ship += 1
-            elif any_ok:
-                blocked += 1
-            else:
-                blocked += 1
+        # Annotate orders with condition summary to avoid loop
+        orders_with_counts = base_qs.annotate(
+            total_conds=Count("release_conditions", distinct=True),
+            ok_conds=Count(
+                "release_conditions",
+                filter=Q(release_conditions__status__in=[ReleaseCondition.Status.SATISFIED, ReleaseCondition.Status.WAIVED]),
+                distinct=True,
+            ),
+            partial_conds=Count(
+                "release_conditions",
+                filter=Q(
+                    release_conditions__status__in=[
+                        ReleaseCondition.Status.SATISFIED,
+                        ReleaseCondition.Status.IN_PROGRESS,
+                        ReleaseCondition.Status.WAIVED,
+                    ]
+                ),
+                distinct=True,
+            ),
+        )
+
+        # Orders where all conditions are ok
+        cleared_qs = orders_with_counts.filter(total_conds__gt=0, total_conds=F("ok_conds"))
+        cleared_orders = cleared_qs.count()
+
+        # Orders ready to ship (cleared but not yet authorized)
+        ready_to_ship = cleared_qs.filter(release_authorized_at__isnull=True).count()
+
+        # Blocked orders (not cleared)
+        blocked_orders = active_orders - cleared_orders
 
         return Response(
             {
                 "active_orders": active_orders,
-                "blocked_orders": blocked,
+                "blocked_orders": blocked_orders,
                 "ready_to_ship": ready_to_ship,
-                "total_conditions": total_conditions,
-                "satisfied_conditions": satisfied_conditions,
-                "cleared_orders": cleared,
+                "total_conditions": cond_stats["total"] or 0,
+                "satisfied_conditions": cond_stats["satisfied"] or 0,
+                "cleared_orders": cleared_orders,
             }
         )
 

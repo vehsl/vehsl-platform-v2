@@ -392,7 +392,7 @@ export function ScrollingForm({
       const loginRes = await fetch(`${base}/api/v1/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: email || phone, password }),
+        body: JSON.stringify({ identifier: (email || phone || "").trim(), password: (password || "").trim() }),
       });
 
       if (!loginRes.ok) {
@@ -403,7 +403,7 @@ export function ScrollingForm({
             const retryRes = await fetch(`${base}/api/v1/auth/login`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ identifier: email || phone, password, otp }),
+              body: JSON.stringify({ identifier: (email || phone || "").trim(), password: (password || "").trim(), otp }),
             });
             if (retryRes.ok) {
               const tokens = await retryRes.json();

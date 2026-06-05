@@ -273,6 +273,7 @@ function SuggestedProducts() {
       price: `${String(p?.currency || "USD")} ${String(p?.price || "").trim()}`.trim(),
       rating: Number(p?.average_rating || 0),
       image: String(p?.hero_image_url || ""),
+      stockStatus: p?.stock_status,
     })).filter((x: any) => x.id && x.name);
   }, [products]);
 
@@ -294,7 +295,7 @@ function SuggestedProducts() {
         {cards.map((product: any, i: number) => (
           <SectionReveal key={`suggested-${product.id}-${i}`} delay={i + 1}>
             <Link href={`/products/${product.id}`}>
-              <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i} />
+              <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i} stockStatus={product.stockStatus} />
             </Link>
           </SectionReveal>
         ))}
@@ -615,6 +616,7 @@ function WeeklyProducts() {
       price: `${String(p?.currency || "USD")} ${String(p?.price || "").trim()}`.trim(),
       rating: Number(p?.average_rating || 0),
       image: String(p?.hero_image_url || ""),
+      stockStatus: p?.stock_status,
     })).filter((x: any) => x.id && x.name);
   }, [products]);
 
@@ -636,7 +638,7 @@ function WeeklyProducts() {
         {cards.map((product: any, i: number) => (
           <SectionReveal key={`weekly-${product.id}-${i}`} delay={i + 1}>
             <Link href={`/products/${product.id}`}>
-              <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i + 4} />
+              <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i + 4} stockStatus={product.stockStatus} />
             </Link>
           </SectionReveal>
         ))}

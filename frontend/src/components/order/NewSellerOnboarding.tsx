@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import {
@@ -9,14 +9,14 @@ import {
     Truck, Bell, HelpCircle, Eye, Factory, Star,
     MessageCircle, ChevronRight, CheckCircle2, Zap,
     EyeOff, X, FileText, Award, Search, FlaskConical,
-    Building2, ClipboardCheck,
+    Building2, ClipboardCheck, ShieldCheck, Clock,
 } from 'lucide-react';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 import { FONT, EASE, GLASS, GLASS_ELEVATED, fmt } from './seller-dashboard-data';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type StepId = 'request' | 'samples' | 'inspection' | 'live';
+type StepId = 'request' | 'compliance' | 'samples' | 'inspection' | 'live';
 type FullStep = 'welcome' | StepId | 'done';
 
 interface ProductDraft {
@@ -27,9 +27,29 @@ interface ProductDraft {
     price: string;
     qty: number;
     category: string;
+    categoryId: number | null;
+    currency: string;
+    sku: string;
+    hsCode: string;
+    originCountry: string;
+    originRegion: string;
+    originCity: string;
+    leadTimeDays: string;
+    weightGrams: string;
+    shipTimeMinDays: string;
+    shipTimeMaxDays: string;
+    sampleAvailable: boolean;
+    sampleShipDays: string;
+    extraPhotos: File[];
+    documents: File[];
     description: string;
     companyName: string;
     monthlyCapacity: string;
+    ipProtectionLevel: 'low' | 'medium' | 'high';
+    trademarkRegistrationNumber: string;
+    variations: Array<{ sku: string; attributes: Array<{ key: string; value: string }> }>;
+    pricingTiers: Array<{ variationIndex: number | null; minQuantity: string; maxQuantity: string; unitPrice: string; currency: string }>;
+    specifications: Array<{ title: string; collapsed?: boolean; items: Array<{ label: string; value: string }> }>;
 }
 
 interface SampleDraft {
@@ -49,6 +69,7 @@ const CATEGORIES = [
 
 const MILESTONES: { id: StepId; Icon: React.ElementType; label: string; tip: string }[] = [
     { id: 'request', Icon: FileText,       label: 'Request',  tip: 'Submit your listing' },
+    { id: 'compliance', Icon: Shield,      label: 'Compliance', tip: 'Compliance verification' },
     { id: 'samples', Icon: Package,        label: 'Samples',  tip: 'We collect samples'  },
     { id: 'inspection', Icon: Factory,     label: 'Inspect',  tip: 'Factory visit'        },
     { id: 'live',    Icon: Star,           label: 'Rated & Live', tip: 'Published with rating' },
@@ -195,7 +216,30 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
     // Product / request draft
     const [product, setProduct] = useState<ProductDraft>({
         photo: null, photoFile: null, uploading: false, name: '', price: '', qty: 50,
-        category: '', description: '', companyName: '', monthlyCapacity: '',
+        category: '',
+        categoryId: null,
+        currency: 'USD',
+        sku: '',
+        hsCode: '',
+        originCountry: '',
+        originRegion: '',
+        originCity: '',
+        leadTimeDays: '',
+        weightGrams: '',
+        shipTimeMinDays: '',
+        shipTimeMaxDays: '',
+        sampleAvailable: false,
+        sampleShipDays: '',
+        extraPhotos: [],
+        documents: [],
+        description: '',
+        companyName: '',
+        monthlyCapacity: '',
+        ipProtectionLevel: 'low',
+        trademarkRegistrationNumber: '',
+        variations: [],
+        pricingTiers: [],
+        specifications: [],
     });
     const [detailsOpen, setDetailsOpen] = useState(false);
     const [showPreview, setShowPreview] = useState(false);
@@ -213,14 +257,24 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
 
     // Assigned rating (shown in live step)
     const [assignedRating, setAssignedRating] = useState<number>(4.8);
+    const [serverStage, setServerStage] = useState<string>('');
 
     const [listingId, setListingId] = useState<number | null>(null);
     const [submittingRequest, setSubmittingRequest] = useState(false);
     const [savingSample, setSavingSample] = useState(false);
     const [advancing, setAdvancing] = useState(false);
     const [publishing, setPublishing] = useState(false);
+    const didAutoCompleteRef = useRef(false);
 
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const extraPhotosRef = useRef<HTMLInputElement | null>(null);
+    const documentsRef = useRef<HTMLInputElement | null>(null);
+    const [extraPhotoUrls, setExtraPhotoUrls] = useState<string[]>([]);
+
+    const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; name: string }>>([]);
+    const [categoryLoading, setCategoryLoading] = useState(true);
+    const [categoryQuery, setCategoryQuery] = useState("");
+    const [showAllCategories, setShowAllCategories] = useState(false);
 
     const apiBase = useCallback(() => {
         const fromEnv = (process.env.NEXT_PUBLIC_API_URL || '').trim();
@@ -242,6 +296,38 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
     }, []);
 
     useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                if (!cancelled) setCategoryLoading(true);
+                const res = await fetch(`${apiBase()}/api/v1/categories/explore/`);
+                if (!res.ok) return;
+                const data = await res.json().catch(() => null);
+                const rows = Array.isArray(data?.categories) ? data.categories : [];
+                const flat: Array<{ id: number; name: string }> = [];
+                for (const c of rows) {
+                    const topId = Number((c as any)?.id || 0);
+                    const topName = String((c as any)?.name || '').trim();
+                    if (topId && topName) flat.push({ id: topId, name: topName });
+                    const children = Array.isArray((c as any)?.children) ? (c as any).children : [];
+                    for (const ch of children) {
+                        const chId = Number((ch as any)?.id || 0);
+                        const chName = String((ch as any)?.name || '').trim();
+                        if (chId && chName) flat.push({ id: chId, name: `${topName} · ${chName}`.trim() });
+                    }
+                }
+                if (!cancelled) setCategoryOptions(flat);
+            } catch { 
+            } finally {
+                if (!cancelled) setCategoryLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [apiBase]);
+
+    useEffect(() => {
         const { access } = readAuth();
         if (!access) return;
         (async () => {
@@ -252,13 +338,53 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 if (!res.ok) return;
                 const list = await res.json().catch(() => null);
                 if (!Array.isArray(list) || list.length === 0) return;
-                const active = (list.find((x: any) => x && x.stage !== 'done') || list[0]) as any;
+                const active = list.find((x: any) => x && String(x.stage || '').toLowerCase() !== 'done') as any;
+                if (!active) return;
                 if (!active || typeof active.id !== 'number') return;
 
                 setListingId(active.id);
                 setAssignedRating(typeof active.rating === 'number' ? active.rating : Number(active.rating || 4.8));
+                setServerStage((active.stage || '').toString().toLowerCase());
 
                 const firstPhoto = Array.isArray(active.photos) && active.photos[0] ? active.photos[0] : null;
+                const meta = active.product_meta && typeof active.product_meta === 'object' ? active.product_meta : {};
+                const origin = meta.origin_location && typeof meta.origin_location === 'object' ? meta.origin_location : {};
+                const detailCfg = meta.detail_config && typeof meta.detail_config === 'object' ? meta.detail_config : {};
+                const rawSpecs = Array.isArray((detailCfg as any)?.specifications) ? (detailCfg as any).specifications : [];
+                const specs = rawSpecs
+                    .filter((g: any) => g && typeof g === 'object')
+                    .map((g: any) => ({
+                        title: String(g.title || '').trim(),
+                        collapsed: Boolean(g.collapsed),
+                        items: Array.isArray(g.items)
+                            ? g.items
+                                  .filter((it: any) => it && typeof it === 'object')
+                                  .map((it: any) => ({ label: String(it.label || '').trim(), value: String(it.value || '').trim() }))
+                                  .filter((it: any) => it.label && it.value)
+                            : [],
+                    }))
+                    .filter((g: any) => g.title && g.items.length > 0);
+                const rawVars = Array.isArray((meta as any)?.variations) ? (meta as any).variations : [];
+                const variations = rawVars
+                    .filter((v: any) => v && typeof v === 'object')
+                    .map((v: any) => {
+                        const attrs = v.attributes && typeof v.attributes === 'object' ? v.attributes : {};
+                        const pairs = Object.entries(attrs as Record<string, any>)
+                            .map(([k, val]) => ({ key: String(k || '').trim(), value: String(val || '').trim() }))
+                            .filter((p: any) => p.key && p.value);
+                        return { sku: String(v.sku || '').trim(), attributes: pairs.length ? pairs : [{ key: '', value: '' }] };
+                    });
+                const rawTiers = Array.isArray((meta as any)?.pricing_tiers) ? (meta as any).pricing_tiers : [];
+                const pricingTiers = rawTiers
+                    .filter((t: any) => t && typeof t === 'object')
+                    .map((t: any) => ({
+                        variationIndex: t.variation == null ? null : Number(t.variation),
+                        minQuantity: t.min_quantity != null ? String(t.min_quantity) : '1',
+                        maxQuantity: t.max_quantity != null ? String(t.max_quantity) : '',
+                        unitPrice: t.unit_price != null ? String(t.unit_price) : '',
+                        currency: String(t.currency || active.currency || 'USD').toUpperCase(),
+                    }))
+                    .filter((t: any) => t.unitPrice.trim());
                 setProduct(p => ({
                     ...p,
                     photo: (firstPhoto?.file_url || p.photo),
@@ -268,8 +394,28 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     price: (active.unit_price != null ? String(active.unit_price) : p.price),
                     qty: (active.moq != null ? Number(active.moq) : p.qty),
                     category: (active.category_label || p.category),
+                    categoryId: (typeof active.category === 'number' ? active.category : p.categoryId),
+                    currency: (active.currency || p.currency),
+                    sku: (meta.sku || p.sku),
+                    hsCode: (meta.hs_code || p.hsCode),
+                    originCountry: (origin.country || p.originCountry),
+                    originRegion: (origin.region || p.originRegion),
+                    originCity: (origin.city || p.originCity),
+                    leadTimeDays: (meta.lead_time_days != null ? String(meta.lead_time_days) : p.leadTimeDays),
+                    weightGrams: (meta.weight_grams != null ? String(meta.weight_grams) : p.weightGrams),
+                    shipTimeMinDays: (meta.ship_time_min_days != null ? String(meta.ship_time_min_days) : p.shipTimeMinDays),
+                    shipTimeMaxDays: (meta.ship_time_max_days != null ? String(meta.ship_time_max_days) : p.shipTimeMaxDays),
+                    sampleAvailable: Boolean(meta.sample_available ?? p.sampleAvailable),
+                    sampleShipDays: (meta.sample_ship_days != null ? String(meta.sample_ship_days) : p.sampleShipDays),
                     description: (active.description || p.description),
                     monthlyCapacity: (active.monthly_capacity || p.monthlyCapacity),
+                    ipProtectionLevel: (['low', 'medium', 'high'] as const).includes(String(meta.ip_protection_level || '').toLowerCase() as any)
+                        ? (String(meta.ip_protection_level || '').toLowerCase() as any)
+                        : p.ipProtectionLevel,
+                    trademarkRegistrationNumber: (meta.trademark_registration_number || p.trademarkRegistrationNumber),
+                    specifications: specs.length ? specs : p.specifications,
+                    variations: variations.length ? variations : p.variations,
+                    pricingTiers: pricingTiers.length ? pricingTiers : p.pricingTiers,
                 }));
                 setSample(s => ({
                     ...s,
@@ -281,16 +427,19 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
 
                 const stage = (active.stage || '').toString().toLowerCase();
                 if (stage === 'samples') {
-                    setCompleted(new Set(['request']));
+                    setCompleted(new Set(['request', 'compliance']));
                     setStep('samples');
-                } else if (stage === 'inspection') {
-                    setCompleted(new Set(['request', 'samples']));
+                } else if (stage === 'compliance') {
+                    setCompleted(new Set(['request']));
+                    setStep('compliance');
+                } else if (stage === 'inspection' || stage === 'inbound') {
+                    setCompleted(new Set(['request', 'compliance', 'samples']));
                     setStep('inspection');
                 } else if (stage === 'live') {
-                    setCompleted(new Set(['request', 'samples', 'inspection']));
+                    setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
                     setStep('live');
                 } else if (stage === 'done') {
-                    setCompleted(new Set(['request', 'samples', 'inspection', 'live']));
+                    setCompleted(new Set(['request', 'compliance', 'samples', 'inspection', 'live']));
                     setStep('done');
                 }
             } catch { }
@@ -301,11 +450,72 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
     const [helpOpen, setHelpOpen] = useState(false);
 
     // Computed helpers
-    const canSubmitRequest = !!product.photo && product.name.trim().length > 0
-        && product.price.trim().length > 0 && product.companyName.trim().length > 0;
+    const currencySymbol = useMemo(() => {
+        const c = (product.currency || 'USD').toUpperCase();
+        if (c === 'EUR') return '€';
+        if (c === 'GBP') return '£';
+        if (c === 'CNY') return '¥';
+        return '$';
+    }, [product.currency]);
+    const canSubmitRequest = !!product.photo
+        && product.name.trim().length > 0
+        && product.price.trim().length > 0
+        && product.companyName.trim().length > 0
+        && product.sku.trim().length > 0
+        && product.hsCode.trim().length > 0
+        && product.originCountry.trim().length > 0
+        && product.leadTimeDays.trim().length > 0
+        && product.weightGrams.trim().length > 0
+        && product.shipTimeMinDays.trim().length > 0
+        && product.shipTimeMaxDays.trim().length > 0;
     const canSaveSampleAddress = sample.address.trim().length > 6 && sample.contactName.trim().length > 1;
 
     // ── Handlers ────────────────────────────────────────────────────────────
+
+    const buildDetailConfig = useCallback((p: ProductDraft) => {
+        const groups = (p.specifications || [])
+            .map(g => ({
+                title: (g.title || '').trim(),
+                collapsed: Boolean(g.collapsed),
+                items: (g.items || [])
+                    .map(it => ({ label: (it.label || '').trim(), value: (it.value || '').trim() }))
+                    .filter(it => it.label && it.value),
+            }))
+            .filter(g => g.title && g.items.length > 0);
+        const cfg: Record<string, unknown> = {};
+        if (groups.length) cfg.specifications = groups;
+        return cfg;
+    }, []);
+
+    const buildVariationsPayload = useCallback((p: ProductDraft) => {
+        const vars = (p.variations || [])
+            .map(v => {
+                const attrs: Record<string, string> = {};
+                for (const pair of v.attributes || []) {
+                    const k = (pair.key || '').trim();
+                    const val = (pair.value || '').trim();
+                    if (!k || !val) continue;
+                    attrs[k] = val;
+                }
+                const sku = (v.sku || '').trim();
+                return { attributes: attrs, sku };
+            })
+            .filter(v => Object.keys(v.attributes || {}).length > 0 || v.sku.trim());
+        return vars;
+    }, []);
+
+    const buildPricingTiersPayload = useCallback((p: ProductDraft) => {
+        const tiers = (p.pricingTiers || [])
+            .map(t => ({
+                variation: t.variationIndex == null ? null : t.variationIndex,
+                min_quantity: Number((t.minQuantity || '1').trim() || '1'),
+                max_quantity: (t.maxQuantity || '').trim() ? Number((t.maxQuantity || '').trim()) : null,
+                unit_price: (t.unitPrice || '').trim(),
+                currency: (t.currency || p.currency || 'USD').toUpperCase(),
+            }))
+            .filter(t => String(t.unit_price || '').trim());
+        return tiers;
+    }, []);
 
     const completeStep = useCallback((id: StepId, next: FullStep, msg: string, desc?: string) => {
         setCompleted(prev => new Set([...prev, id]));
@@ -317,12 +527,47 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         fileInputRef.current?.click();
     }, []);
 
-    const handlePhotoChange = useCallback((file: File | null) => {
-        if (!file) return;
-        const url = URL.createObjectURL(file);
-        setProduct(p => ({ ...p, photo: url, photoFile: file, uploading: false }));
-        toast.success('Photo added!', { description: 'Tap the photo to change it anytime' });
+    const addExtraPhotos = useCallback((files: File[]) => {
+        const incoming = (files || []).filter(Boolean).slice(0, 20);
+        if (!incoming.length) return;
+        setProduct(p => {
+            const existing = Array.isArray(p.extraPhotos) ? p.extraPhotos : [];
+            const keyOf = (f: File) => `${f.name}::${f.size}::${f.lastModified}`;
+            const seen = new Set(existing.map(keyOf));
+            const merged: File[] = [...existing];
+            for (const f of incoming) {
+                const k = keyOf(f);
+                if (seen.has(k)) continue;
+                seen.add(k);
+                merged.push(f);
+            }
+            return { ...p, extraPhotos: merged.slice(0, 7) };
+        });
+        toast.success('More photos added', { description: 'Up to 8 total product images' });
     }, []);
+
+    const handlePickExtraPhotos = useCallback(() => {
+        extraPhotosRef.current?.click();
+    }, []);
+
+    const handlePhotoChange = useCallback((files: File[]) => {
+        const picked = (files || []).filter(Boolean);
+        if (!picked.length) return;
+        const main = picked[0];
+        const url = URL.createObjectURL(main);
+        setProduct(p => ({ ...p, photo: url, photoFile: main, uploading: false, extraPhotos: (picked.slice(1, 8) || []).slice(0, 7) }));
+        toast.success('Photos added!', { description: 'You can add up to 8 product images' });
+    }, []);
+
+    useEffect(() => {
+        const urls = (product.extraPhotos || []).slice(0, 7).map(f => URL.createObjectURL(f));
+        setExtraPhotoUrls(urls);
+        return () => {
+            for (const u of urls) {
+                try { URL.revokeObjectURL(u); } catch { }
+            }
+        };
+    }, [product.extraPhotos]);
 
     const handleSubmitRequest = useCallback(async (el: HTMLElement | null) => {
         let hasErr = false;
@@ -337,6 +582,18 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
             toast('Almost there', { description: 'Fill in the required fields to submit your request' });
             return;
         }
+        const missing: string[] = [];
+        if (!product.sku.trim()) missing.push('SKU');
+        if (!product.hsCode.trim()) missing.push('HS code');
+        if (!product.originCountry.trim()) missing.push('Origin country');
+        if (!product.leadTimeDays.trim()) missing.push('Lead time');
+        if (!product.weightGrams.trim()) missing.push('Weight (grams)');
+        if (!product.shipTimeMinDays.trim() || !product.shipTimeMaxDays.trim()) missing.push('Ship time range');
+        if (missing.length) {
+            setDetailsOpen(true);
+            toast('Missing required product details', { description: missing.join(', ') });
+            return;
+        }
         wBounce(el);
         const { access } = readAuth();
         if (!access) {
@@ -349,12 +606,38 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
             const fd = new FormData();
             fd.set('product_name', product.name.trim());
             fd.set('company_name', product.companyName.trim());
+            if (product.currency.trim()) fd.set('currency', product.currency.trim());
             fd.set('unit_price', product.price.trim());
             fd.set('moq', String(product.qty || 1));
-            if (product.category.trim()) fd.set('category', product.category.trim());
+            if (!product.categoryId) {
+                toast.error('Category required', { description: 'Select a category before submitting.' });
+                return;
+            }
+            fd.set('category_id', String(product.categoryId));
+            if (product.sku.trim()) fd.set('sku', product.sku.trim());
+            if (product.hsCode.trim()) fd.set('hs_code', product.hsCode.trim());
+            if (product.originCountry.trim()) fd.set('origin_country', product.originCountry.trim());
+            if (product.originRegion.trim()) fd.set('origin_region', product.originRegion.trim());
+            if (product.originCity.trim()) fd.set('origin_city', product.originCity.trim());
+            if (product.leadTimeDays.trim()) fd.set('lead_time_days', product.leadTimeDays.trim());
+            if (product.weightGrams.trim()) fd.set('weight_grams', product.weightGrams.trim());
+            if (product.shipTimeMinDays.trim()) fd.set('ship_time_min_days', product.shipTimeMinDays.trim());
+            if (product.shipTimeMaxDays.trim()) fd.set('ship_time_max_days', product.shipTimeMaxDays.trim());
+            fd.set('sample_available', product.sampleAvailable ? 'true' : 'false');
+            if (product.sampleShipDays.trim()) fd.set('sample_ship_days', product.sampleShipDays.trim());
             if (product.description.trim()) fd.set('description', product.description.trim());
             if (product.monthlyCapacity.trim()) fd.set('monthly_capacity', product.monthlyCapacity.trim());
+            if (product.ipProtectionLevel) fd.set('ip_protection_level', product.ipProtectionLevel);
+            if (product.trademarkRegistrationNumber.trim()) fd.set('trademark_registration_number', product.trademarkRegistrationNumber.trim());
+            const detailCfg = buildDetailConfig(product);
+            if (Object.keys(detailCfg).length) fd.set('detail_config', JSON.stringify(detailCfg));
+            const varsPayload = buildVariationsPayload(product);
+            if (varsPayload.length) fd.set('variations', JSON.stringify(varsPayload));
+            const tiersPayload = buildPricingTiersPayload(product);
+            if (tiersPayload.length) fd.set('pricing_tiers', JSON.stringify(tiersPayload));
             fd.set('photo', product.photoFile);
+            for (const f of (product.extraPhotos || []).slice(0, 7)) fd.append('photos', f);
+            for (const f of (product.documents || []).slice(0, 10)) fd.append('documents', f);
             const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${access}` },
@@ -371,14 +654,14 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 setProduct(p => ({ ...p, photo: data.photos[0].file_url, photoFile: null }));
             }
             completeStep(
-                'request', 'samples',
+                'request', 'compliance',
                 'Listing request submitted \u2713',
                 'Our team will review your details within 24\u00A0hours'
             );
         } finally {
             setSubmittingRequest(false);
         }
-    }, [apiBase, completeStep, product, readAuth, submittingRequest, wBounce]);
+    }, [apiBase, buildDetailConfig, buildPricingTiersPayload, buildVariationsPayload, completeStep, product, readAuth, submittingRequest, wBounce]);
 
     const handleSaveSampleAddress = useCallback(async (el: HTMLElement | null) => {
         if (!canSaveSampleAddress) {
@@ -415,7 +698,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 return;
             }
             completeStep(
-                'samples', 'inspection',
+                'samples', 'compliance',
                 'Sample address saved \u2713',
                 'We\u2019ll contact you to arrange pickup timing'
             );
@@ -430,69 +713,63 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
             setVerifyPhase(t => t + 1);
         } else {
             const allPrior = completed.has('request') && completed.has('samples');
-            if (allPrior && listingId) {
-                const { access } = readAuth();
-                if (access && !advancing) {
-                    try {
-                        setAdvancing(true);
-                        const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/${listingId}/advance/`, {
-                            method: 'POST',
-                            headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ rating: assignedRating }),
-                        });
-                        const data = await res.json().catch(() => null);
-                        if (res.ok) {
-                            const r = typeof data?.rating === 'number' ? data.rating : Number(data?.rating || assignedRating);
-                            if (Number.isFinite(r)) setAssignedRating(r);
-                        }
-                    } catch { }
-                    setAdvancing(false);
-                }
-            }
             completeStep(
                 'inspection',
                 allPrior ? 'live' : 'request',
                 'You know what to expect \u2713',
-                allPrior ? 'Ready for your rating and listing' : 'Let\u2019s start with your request'
+                allPrior ? 'Our team is reviewing your samples and details' : 'Let\u2019s start with your request'
             );
         }
     }, [advancing, apiBase, assignedRating, completeStep, completed, listingId, readAuth, verifyPhase, wBounce]);
 
-    const handleGoLive = useCallback(async (el: HTMLElement | null) => {
-        wBounce(el);
-        if (!listingId) {
-            toast('Missing listing request', { description: 'Please submit your listing request first.' });
-            return;
-        }
+    const [refreshingStatus, setRefreshingStatus] = useState(false);
+    const refreshStatus = useCallback(async () => {
+        if (!listingId) return;
         const { access } = readAuth();
-        if (!access) {
-            toast.error('Please sign in again.');
-            return;
-        }
-        if (publishing) return;
+        if (!access) return;
+        if (refreshingStatus) return;
         try {
-            setPublishing(true);
-            const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/${listingId}/publish/`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
+            setRefreshingStatus(true);
+            const res = await fetch(`${apiBase()}/api/v1/seller/listing-requests/${listingId}/`, {
+                headers: { Authorization: `Bearer ${access}` },
             });
             const data = await res.json().catch(() => null);
-            if (!res.ok) {
-                const msg = (data && (data.detail || data.error)) || `Request failed (${res.status})`;
-                toast.error(typeof msg === 'string' ? msg : `Request failed (${res.status})`);
-                return;
+            if (!res.ok || !data) return;
+            const stage = (data.stage || '').toString().toLowerCase();
+            setServerStage(stage);
+            if (stage === 'samples') {
+                setCompleted(new Set(['request']));
+                setStep('samples');
+            } else if (stage === 'compliance') {
+                setCompleted(new Set(['request']));
+                setStep('compliance');
+            } else if (stage === 'inspection' || stage === 'inbound') {
+                setCompleted(new Set(['request', 'compliance', 'samples']));
+                setStep('inspection');
+            } else if (stage === 'live') {
+                setCompleted(new Set(['request', 'compliance', 'samples', 'inspection']));
+                setStep('live');
+            } else if (stage === 'done') {
+                setCompleted(new Set(['request', 'samples', 'inspection', 'live']));
+                if (typeof data.rating === 'number' || data.rating) {
+                    const r = typeof data.rating === 'number' ? data.rating : Number(data.rating || assignedRating);
+                    if (Number.isFinite(r)) setAssignedRating(r);
+                }
+                setStep('done');
             }
         } finally {
-            setPublishing(false);
+            setRefreshingStatus(false);
         }
-        setCelebrating(true);
-        completeStep(
-            'live', 'done',
-            "You\u2019re live! \uD83C\uDF89",
-            `Your verified rating of ${assignedRating}\u2605 is now visible to buyers`
-        );
-    }, [apiBase, completeStep, listingId, publishing, readAuth, assignedRating, wBounce]);
+    }, [apiBase, assignedRating, listingId, readAuth, refreshingStatus]);
+
+    useEffect(() => {
+        if (step !== 'done') return;
+        if (didAutoCompleteRef.current) return;
+        didAutoCompleteRef.current = true;
+        toast.success('Listing is live', { description: 'Redirecting to your dashboard…' });
+        const t = window.setTimeout(() => onComplete(), 900);
+        return () => window.clearTimeout(t);
+    }, [onComplete, step]);
 
     // Clear field errors when user types
     useEffect(() => { if (product.name.trim()) setNameError(false); }, [product.name]);
@@ -516,7 +793,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     }}
                     className="flex items-center gap-1.5 text-[12px] font-semibold text-[#1A1A1A]/25 hover:text-[#1A1A1A]/50 transition-colors bg-transparent border-none cursor-pointer px-0"
                 >
-                    <span>\u2190 Back</span>
+                    <span>← Back</span>
                 </button>
                 <span className="text-[12px] font-semibold text-[#1A1A1A]/20">
                     {completed.size} of 4 steps done
@@ -606,10 +883,10 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     Welcome to your store
                 </p>
                 <h1 className="text-[38px] md:text-[50px] font-black text-[#1A1A1A]/88 tracking-tighter leading-[1.04]">
-                    Good to have you,<br />{sellerName}.&nbsp;\u2736
+                    Good to have you,<br />{sellerName}.&nbsp;✶
                 </h1>
                 <p className="mt-4 text-[16px] md:text-[17px] font-medium text-[#1A1A1A]/42 leading-relaxed max-w-[440px]">
-                    Every seller on this platform is quality-verified. Submit your listing request and we handle the rest \u2014 from sample collection to factory inspection.
+                    Every seller on this platform is quality-verified. Submit your listing request and we handle the rest — from sample collection to factory inspection.
                 </p>
             </motion.div>
 
@@ -667,7 +944,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     onClick={() => { setVerifyPhase(0); setStep('inspection'); }}
                     className="text-[13px] font-semibold text-[#1A1A1A]/28 hover:text-[#0171E3] transition-colors cursor-pointer bg-transparent border-none py-1 px-1"
                 >
-                    See how verification works first \u2192
+                    See how verification works first →
                 </button>
             </motion.div>
 
@@ -702,7 +979,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     Tell us what<br />you make
                 </h2>
                 <p className="text-[14px] font-medium text-[#1A1A1A]/40 mt-2 leading-relaxed">
-                    This is a listing <span className="font-bold text-[#1A1A1A]/60">request</span> \u2014 not an auto-publish. Our team reviews every submission before anything goes live.
+                    This is a listing <span className="font-bold text-[#1A1A1A]/60">request</span> — not an auto-publish. Our team reviews every submission before anything goes live.
                 </p>
             </div>
 
@@ -714,7 +991,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 <ClipboardCheck size={14} color="#0171E3" strokeWidth={2.5} className="flex-shrink-0 mt-0.5" />
                 <p className="text-[12px] font-medium text-[#1A1A1A]/55 leading-relaxed">
                     <span className="font-bold text-[#0171E3]">How it works:</span>{' '}
-                    Submit your details \u2192 we collect samples \u2192 inspect your factory \u2192 run quality tests \u2192 publish you with a verified rating badge.
+                    Submit your details → we collect samples → inspect your factory → run quality tests → publish you with a verified rating badge.
                 </p>
             </div>
 
@@ -737,7 +1014,16 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             type="file"
                             accept="image/*"
                             className="hidden"
-                            onChange={(e) => handlePhotoChange(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                            multiple
+                            onChange={(e) => handlePhotoChange(Array.from(e.target.files || []).slice(0, 8))}
+                        />
+                        <input
+                            ref={extraPhotosRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            multiple
+                            onChange={(e) => addExtraPhotos(Array.from(e.target.files || []).slice(0, 8))}
                         />
                         {product.photo ? (
                             <div className="relative group">
@@ -759,6 +1045,14 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                     <Camera size={12} strokeWidth={2.5} />
                                     <span className="text-[11px] font-semibold">Change</span>
                                 </button>
+                                <button
+                                    onClick={handlePickExtraPhotos}
+                                    className="absolute top-3 right-[92px] flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm border-none cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                                    style={{ color: 'white' }}
+                                >
+                                    <Plus size={12} strokeWidth={2.5} />
+                                    <span className="text-[11px] font-semibold">Add more</span>
+                                </button>
                                 <div
                                     className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full"
                                     style={{ background: 'rgba(94,192,114,0.9)', backdropFilter: 'blur(8px)' }}
@@ -766,6 +1060,32 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                     <Check size={10} color="white" strokeWidth={3} />
                                     <span className="text-[10px] font-bold text-white">Added</span>
                                 </div>
+                                {!!(product.extraPhotos || []).length && (
+                                    <div className="mt-3 grid grid-cols-4 gap-2">
+                                        {extraPhotoUrls.slice(0, 7).map((u, idx) => (
+                                            <div
+                                                key={u}
+                                                className="relative h-[52px] rounded-[12px] overflow-hidden"
+                                                style={{ border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                            >
+                                                <img src={u} alt="" className="w-full h-full object-cover" />
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            extraPhotos: (p.extraPhotos || []).filter((_, i) => i !== idx),
+                                                        }))
+                                                    }
+                                                    className="absolute top-1 right-1 w-6 h-6 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                    style={{ background: 'rgba(0,0,0,0.45)', color: 'white' }}
+                                                >
+                                                    <X size={12} strokeWidth={2.5} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         ) : (
                             <motion.button
@@ -788,8 +1108,8 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                             <Camera size={22} color="#0171E3" strokeWidth={1.8} />
                                         </div>
                                         <div className="text-center">
-                                            <p className="text-[14px] font-semibold text-[#1A1A1A]/55">Drop a photo or tap to add</p>
-                                            <p className="text-[12px] font-medium text-[#1A1A1A]/28 mt-0.5">JPG, PNG or HEIC \u00B7 Up to 10 photos</p>
+                                            <p className="text-[14px] font-semibold text-[#1A1A1A]/55">Drop photos or tap to add</p>
+                                            <p className="text-[12px] font-medium text-[#1A1A1A]/28 mt-0.5">JPG, PNG or HEIC · Up to 8 photos</p>
                                         </div>
                                     </>
                                 )}
@@ -805,7 +1125,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             placeholder="e.g. Handmade Leather Wallet"
                             value={product.name}
                             onChange={e => setProduct(p => ({ ...p, name: e.target.value }))}
-                            className="w-full rounded-[14px] px-4 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
+                            className="w-full rounded-[14px] px-5 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
                             style={{
                                 background: nameError ? 'rgba(230,126,34,0.05)' : 'rgba(0,0,0,0.028)',
                                 border: nameError ? '0.5px solid rgba(230,126,34,0.35)' : '0.5px solid rgba(0,0,0,0.07)',
@@ -824,7 +1144,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             placeholder="e.g. Noah Craft Industries"
                             value={product.companyName}
                             onChange={e => setProduct(p => ({ ...p, companyName: e.target.value }))}
-                            className="w-full rounded-[14px] px-4 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
+                            className="w-full rounded-[14px] px-5 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
                             style={{
                                 background: companyError ? 'rgba(230,126,34,0.05)' : 'rgba(0,0,0,0.028)',
                                 border: companyError ? '0.5px solid rgba(230,126,34,0.35)' : '0.5px solid rgba(0,0,0,0.07)',
@@ -840,13 +1160,13 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                         <div className="flex-1">
                             <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">UNIT PRICE <span className="text-[#e67e22]/60">*</span></p>
                             <div className="relative">
-                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[14px] font-semibold text-[#1A1A1A]/28">$</span>
+                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[14px] font-semibold text-[#1A1A1A]/28">{currencySymbol}</span>
                                 <input
                                     type="number"
                                     placeholder="0.00"
                                     value={product.price}
                                     onChange={e => setProduct(p => ({ ...p, price: e.target.value }))}
-                                    className="w-full rounded-[14px] pl-8 pr-4 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
+                                    className="w-full rounded-[14px] pl-9 pr-5 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
                                     style={{
                                         background: priceError ? 'rgba(230,126,34,0.05)' : 'rgba(0,0,0,0.028)',
                                         border: priceError ? '0.5px solid rgba(230,126,34,0.35)' : '0.5px solid rgba(0,0,0,0.07)',
@@ -867,7 +1187,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                     onClick={() => setProduct(p => ({ ...p, qty: Math.max(1, p.qty - 10) }))}
                                     className="w-10 py-3.5 flex items-center justify-center text-[#1A1A1A]/28 hover:text-[#1A1A1A]/55 transition-colors border-none bg-transparent cursor-pointer"
                                 >
-                                    <span className="text-[16px] leading-none">\u2212</span>
+                                    <span className="text-[16px] leading-none">−</span>
                                 </button>
                                 <span className="w-12 text-center text-[14px] font-bold tabular-nums text-[#1A1A1A]/78">
                                     {product.qty}
@@ -908,26 +1228,285 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                     className="overflow-hidden"
                                 >
                                     <div className="pt-5 space-y-5">
-                                        {/* Category */}
+                                        {/* Currency */}
                                         <div>
-                                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CATEGORY</p>
+                                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CURRENCY</p>
                                             <div className="flex flex-wrap gap-2">
-                                                {CATEGORIES.map(cat => (
+                                                {['USD', 'EUR', 'GBP', 'CNY'].map(cur => (
                                                     <button
-                                                        key={cat}
-                                                        onClick={() => setProduct(p => ({ ...p, category: p.category === cat ? '' : cat }))}
+                                                        key={cur}
+                                                        onClick={() =>
+                                                            setProduct(p => ({
+                                                                ...p,
+                                                                currency: cur,
+                                                                pricingTiers: (p.pricingTiers || []).map(t => ({ ...t, currency: cur })),
+                                                            }))
+                                                        }
                                                         className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
                                                         style={{
-                                                            background: product.category === cat ? 'rgba(1,113,227,0.08)' : 'transparent',
-                                                            borderColor: product.category === cat ? 'rgba(1,113,227,0.25)' : 'rgba(0,0,0,0.07)',
-                                                            color: product.category === cat ? '#0171E3' : 'rgba(26,26,26,0.42)',
+                                                            background: product.currency === cur ? 'rgba(1,113,227,0.08)' : 'transparent',
+                                                            borderColor: product.currency === cur ? 'rgba(1,113,227,0.25)' : 'rgba(0,0,0,0.07)',
+                                                            color: product.currency === cur ? '#0171E3' : 'rgba(26,26,26,0.42)',
                                                         }}
                                                     >
-                                                        {cat}
+                                                        {cur}
                                                     </button>
                                                 ))}
                                             </div>
                                         </div>
+
+                                        {/* Category */}
+                                        <div>
+                                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CATEGORY</p>
+                                            <div className="space-y-3">
+                                                <input
+                                                    type="text"
+                                                    placeholder="Search categories..."
+                                                    value={categoryQuery}
+                                                    onChange={(e) => { setCategoryQuery(e.target.value); setShowAllCategories(false); }}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                                <div className="flex flex-wrap gap-2">
+                                                {categoryOptions.length ? (() => {
+                                                    const q = categoryQuery.trim().toLowerCase();
+                                                    const filtered = q ? categoryOptions.filter((c) => c.name.toLowerCase().includes(q)) : categoryOptions;
+                                                    const visible = showAllCategories ? filtered : filtered.slice(0, 24);
+                                                    return (
+                                                        <>
+                                                            {visible.map(cat => (
+                                                        <button
+                                                            key={cat.id}
+                                                            onClick={() =>
+                                                                setProduct(p => {
+                                                                    const same = p.categoryId === cat.id;
+                                                                    return { ...p, category: same ? '' : cat.name, categoryId: same ? null : cat.id };
+                                                                })
+                                                            }
+                                                            className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                                            style={{
+                                                                background: product.categoryId === cat.id ? 'rgba(1,113,227,0.08)' : 'transparent',
+                                                                borderColor: product.categoryId === cat.id ? 'rgba(1,113,227,0.25)' : 'rgba(0,0,0,0.07)',
+                                                                color: product.categoryId === cat.id ? '#0171E3' : 'rgba(26,26,26,0.42)',
+                                                            }}
+                                                        >
+                                                            {cat.name}
+                                                        </button>
+                                                            ))}
+                                                            {!showAllCategories && filtered.length > 24 ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setShowAllCategories(true)}
+                                                                    className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                                                    style={{
+                                                                        background: 'rgba(0,0,0,0.02)',
+                                                                        borderColor: 'rgba(0,0,0,0.07)',
+                                                                        color: 'rgba(26,26,26,0.42)',
+                                                                    }}
+                                                                >
+                                                                    Show {filtered.length - 24} more
+                                                                </button>
+                                                            ) : null}
+                                                        </>
+                                                    );
+                                                })() : categoryLoading ? (
+                                                    <span className="text-[12px] font-semibold text-[#1A1A1A]/30">Loading categories…</span>
+                                                ) : (
+                                                    <div className="w-full space-y-2">
+                                                        <span className="text-[12px] font-semibold text-[#1A1A1A]/30">No categories found.</span>
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Enter category"
+                                                            value={product.category}
+                                                            onChange={e => setProduct(p => ({ ...p, category: e.target.value, categoryId: null }))}
+                                                            className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                            style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                        />
+                                                    </div>
+                                                )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">SKU</p>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Optional"
+                                                    value={product.sku}
+                                                    onChange={e => setProduct(p => ({ ...p, sku: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">HS CODE</p>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Optional"
+                                                    value={product.hsCode}
+                                                    onChange={e => setProduct(p => ({ ...p, hsCode: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">ORIGIN COUNTRY</p>
+                                                <input
+                                                    type="text"
+                                                    placeholder="e.g. USA"
+                                                    value={product.originCountry}
+                                                    onChange={e => setProduct(p => ({ ...p, originCountry: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">ORIGIN REGION</p>
+                                                <input
+                                                    type="text"
+                                                    placeholder="e.g. CA"
+                                                    value={product.originRegion}
+                                                    onChange={e => setProduct(p => ({ ...p, originRegion: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">ORIGIN CITY</p>
+                                                <input
+                                                    type="text"
+                                                    placeholder="e.g. Los Angeles"
+                                                    value={product.originCity}
+                                                    onChange={e => setProduct(p => ({ ...p, originCity: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">LEAD TIME (DAYS)</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="e.g. 7"
+                                                    value={product.leadTimeDays}
+                                                    onChange={e => setProduct(p => ({ ...p, leadTimeDays: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">WEIGHT (GRAMS)</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="e.g. 500"
+                                                    value={product.weightGrams}
+                                                    onChange={e => setProduct(p => ({ ...p, weightGrams: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">SHIP TIME MIN (DAYS)</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="e.g. 2"
+                                                    value={product.shipTimeMinDays}
+                                                    onChange={e => setProduct(p => ({ ...p, shipTimeMinDays: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">SHIP TIME MAX (DAYS)</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="e.g. 5"
+                                                    value={product.shipTimeMaxDays}
+                                                    onChange={e => setProduct(p => ({ ...p, shipTimeMaxDays: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">SAMPLE AVAILABLE</p>
+                                                <p className="text-[12px] font-medium text-[#1A1A1A]/35 mt-1">Show sample option on product page</p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => setProduct(p => ({ ...p, sampleAvailable: !p.sampleAvailable }))}
+                                                className="px-3 py-2 rounded-full text-[12px] font-bold border"
+                                                style={{
+                                                    background: product.sampleAvailable ? 'rgba(94,192,114,0.12)' : 'rgba(0,0,0,0.03)',
+                                                    borderColor: product.sampleAvailable ? 'rgba(94,192,114,0.28)' : 'rgba(0,0,0,0.07)',
+                                                    color: product.sampleAvailable ? 'rgba(46,170,87,0.95)' : 'rgba(26,26,26,0.42)',
+                                                }}
+                                            >
+                                                {product.sampleAvailable ? 'Yes' : 'No'}
+                                            </button>
+                                        </div>
+
+                                        {product.sampleAvailable && (
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">SAMPLE SHIP DAYS</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="e.g. 3"
+                                                    value={product.sampleShipDays}
+                                                    onChange={e => setProduct(p => ({ ...p, sampleShipDays: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        )}
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">EXTRA PHOTOS</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={handlePickExtraPhotos}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-left text-[13px] font-semibold cursor-pointer border"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                >
+                                                    {(product.extraPhotos || []).length ? `${product.extraPhotos.length} selected` : 'Choose images (up to 7)'}
+                                                </button>
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">DOCUMENTS</p>
+                                                <input
+                                                    ref={documentsRef}
+                                                    type="file"
+                                                    multiple
+                                                    onChange={(e) => {
+                                                        const files = Array.from(e.target.files || []);
+                                                        setProduct(p => ({ ...p, documents: files }));
+                                                    }}
+                                                    className="hidden"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => documentsRef.current?.click()}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-left text-[13px] font-semibold cursor-pointer border"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                >
+                                                    {(product.documents || []).length ? `${product.documents.length} selected` : 'Choose documents'}
+                                                </button>
+                                            </div>
+                                        </div>
+
                                         {/* Monthly capacity */}
                                         <div>
                                             <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">MONTHLY PRODUCTION CAPACITY</p>
@@ -936,7 +1515,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                                 placeholder="e.g. 500 units / month"
                                                 value={product.monthlyCapacity}
                                                 onChange={e => setProduct(p => ({ ...p, monthlyCapacity: e.target.value }))}
-                                                className="w-full rounded-[14px] px-4 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
                                                 style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
                                             />
                                         </div>
@@ -944,13 +1523,482 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                         <div>
                                             <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">DESCRIPTION</p>
                                             <textarea
-                                                placeholder="Describe your product \u2014 materials, dimensions, what makes it special\u2026"
+                                                placeholder="Describe your product — materials, dimensions, what makes it special…"
                                                 value={product.description}
                                                 onChange={e => setProduct(p => ({ ...p, description: e.target.value }))}
                                                 rows={3}
-                                                className="w-full rounded-[14px] px-4 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none resize-none"
+                                                className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none resize-none"
                                                 style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
                                             />
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">IP PROTECTION LEVEL</p>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {([
+                                                        { id: 'low' as const, label: 'Low' },
+                                                        { id: 'medium' as const, label: 'Medium' },
+                                                        { id: 'high' as const, label: 'High' },
+                                                    ]).map(opt => (
+                                                        <button
+                                                            key={opt.id}
+                                                            onClick={() => setProduct(p => ({ ...p, ipProtectionLevel: opt.id }))}
+                                                            className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                                            style={{
+                                                                background: product.ipProtectionLevel === opt.id ? 'rgba(94,192,114,0.12)' : 'transparent',
+                                                                borderColor: product.ipProtectionLevel === opt.id ? 'rgba(94,192,114,0.26)' : 'rgba(0,0,0,0.07)',
+                                                                color: product.ipProtectionLevel === opt.id ? 'rgba(46,170,87,0.95)' : 'rgba(26,26,26,0.42)',
+                                                            }}
+                                                        >
+                                                            {opt.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">TRADEMARK REG. NUMBER</p>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Optional"
+                                                    value={product.trademarkRegistrationNumber}
+                                                    onChange={e => setProduct(p => ({ ...p, trademarkRegistrationNumber: e.target.value }))}
+                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">VARIANTS</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            variations: [...(p.variations || []), { sku: '', attributes: [{ key: '', value: '' }] }],
+                                                        }))
+                                                    }
+                                                    className="px-3 py-1.5 rounded-full text-[12px] font-bold cursor-pointer border"
+                                                    style={{ background: 'rgba(0,0,0,0.03)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                >
+                                                    Add variant
+                                                </button>
+                                            </div>
+
+                                            {(product.variations || []).length === 0 ? (
+                                                <p className="text-[12px] font-medium text-[#1A1A1A]/30">No variants yet. Add one if you sell different sizes/colors.</p>
+                                            ) : (
+                                                <div className="space-y-3">
+                                                    {(product.variations || []).map((v, idx) => (
+                                                        <div
+                                                            key={idx}
+                                                            className="rounded-[18px] p-4"
+                                                            style={{ background: 'rgba(0,0,0,0.022)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                                        >
+                                                            <div className="flex items-center justify-between gap-3 mb-3">
+                                                                <p className="text-[12px] font-bold text-[#1A1A1A]/60">Variant #{idx + 1}</p>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() =>
+                                                                        setProduct(p => ({
+                                                                            ...p,
+                                                                            variations: (p.variations || []).filter((_, i) => i !== idx),
+                                                                            pricingTiers: (p.pricingTiers || []).map(t => ({
+                                                                                ...t,
+                                                                                variationIndex:
+                                                                                    t.variationIndex == null
+                                                                                        ? null
+                                                                                        : t.variationIndex === idx
+                                                                                          ? null
+                                                                                          : t.variationIndex > idx
+                                                                                            ? t.variationIndex - 1
+                                                                                            : t.variationIndex,
+                                                                            })),
+                                                                        }))
+                                                                    }
+                                                                    className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                                    style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
+                                                                >
+                                                                    <X size={14} strokeWidth={2.5} />
+                                                                </button>
+                                                            </div>
+
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                                <div>
+                                                                    <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">SKU</p>
+                                                                    <input
+                                                                        type="text"
+                                                                        placeholder="Optional"
+                                                                        value={v.sku}
+                                                                        onChange={e =>
+                                                                            setProduct(p => ({
+                                                                                ...p,
+                                                                                variations: (p.variations || []).map((vv, i) => (i === idx ? { ...vv, sku: e.target.value } : vv)),
+                                                                            }))
+                                                                        }
+                                                                        className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                                        style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                    />
+                                                                </div>
+                                                                <div className="flex items-end justify-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() =>
+                                                                            setProduct(p => ({
+                                                                                ...p,
+                                                                                variations: (p.variations || []).map((vv, i) =>
+                                                                                    i === idx ? { ...vv, attributes: [...(vv.attributes || []), { key: '', value: '' }] } : vv
+                                                                                ),
+                                                                            }))
+                                                                        }
+                                                                        className="px-3 py-2 rounded-full text-[12px] font-bold cursor-pointer border"
+                                                                        style={{ background: 'rgba(255,255,255,0.55)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                                    >
+                                                                        Add attribute
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="mt-3 space-y-2">
+                                                                {(v.attributes || []).map((pair, j) => (
+                                                                    <div key={j} className="flex gap-2 items-center">
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="Attribute (e.g. Color)"
+                                                                            value={pair.key}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    variations: (p.variations || []).map((vv, i) =>
+                                                                                        i === idx
+                                                                                            ? {
+                                                                                                  ...vv,
+                                                                                                  attributes: (vv.attributes || []).map((pp, k) => (k === j ? { ...pp, key: e.target.value } : pp)),
+                                                                                              }
+                                                                                            : vv
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="flex-1 rounded-[14px] px-5 py-2.5 text-[13px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="Value (e.g. Red)"
+                                                                            value={pair.value}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    variations: (p.variations || []).map((vv, i) =>
+                                                                                        i === idx
+                                                                                            ? {
+                                                                                                  ...vv,
+                                                                                                  attributes: (vv.attributes || []).map((pp, k) => (k === j ? { ...pp, value: e.target.value } : pp)),
+                                                                                              }
+                                                                                            : vv
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="flex-1 rounded-[14px] px-5 py-2.5 text-[13px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    variations: (p.variations || []).map((vv, i) =>
+                                                                                        i === idx ? { ...vv, attributes: (vv.attributes || []).filter((_, k) => k !== j) } : vv
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                                            style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
+                                                                        >
+                                                                            <X size={14} strokeWidth={2.5} />
+                                                                        </button>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">BULK PRICING TIERS</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            pricingTiers: [
+                                                                ...(p.pricingTiers || []),
+                                                                { variationIndex: null, minQuantity: '1', maxQuantity: '', unitPrice: '', currency: p.currency || 'USD' },
+                                                            ],
+                                                        }))
+                                                    }
+                                                    className="px-3 py-1.5 rounded-full text-[12px] font-bold cursor-pointer border"
+                                                    style={{ background: 'rgba(0,0,0,0.03)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                >
+                                                    Add tier
+                                                </button>
+                                            </div>
+
+                                            {(product.pricingTiers || []).length === 0 ? (
+                                                <p className="text-[12px] font-medium text-[#1A1A1A]/30">Optional. Add tiers like 100+ units, 500+ units, etc.</p>
+                                            ) : (
+                                                <div className="space-y-2">
+                                                    {(product.pricingTiers || []).map((t, idx) => {
+                                                        const labelFor = (v: any) => {
+                                                            const pairs = (v?.attributes || []).filter((p: any) => (p.key || '').trim() && (p.value || '').trim());
+                                                            if (pairs.length) return pairs.map((p: any) => `${p.key}: ${p.value}`).join(', ');
+                                                            return (v?.sku || '').trim() ? `SKU: ${(v.sku || '').trim()}` : 'Variant';
+                                                        };
+                                                        return (
+                                                            <div
+                                                                key={idx}
+                                                                className="rounded-[18px] p-4"
+                                                                style={{ background: 'rgba(0,0,0,0.022)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                                            >
+                                                                <div className="flex items-center justify-between gap-3 mb-3">
+                                                                    <p className="text-[12px] font-bold text-[#1A1A1A]/60">Tier #{idx + 1}</p>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setProduct(p => ({ ...p, pricingTiers: (p.pricingTiers || []).filter((_, i) => i !== idx) }))}
+                                                                        className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                                        style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
+                                                                    >
+                                                                        <X size={14} strokeWidth={2.5} />
+                                                                    </button>
+                                                                </div>
+
+                                                                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                                    <div>
+                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">APPLIES TO</p>
+                                                                        <select
+                                                                            value={t.variationIndex == null ? '' : String(t.variationIndex)}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) =>
+                                                                                        i === idx ? { ...tt, variationIndex: e.target.value === '' ? null : Number(e.target.value) } : tt
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="w-full rounded-[14px] px-4 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        >
+                                                                            <option value="">All variants</option>
+                                                                            {(product.variations || []).map((v, i) => (
+                                                                                <option key={i} value={String(i)}>
+                                                                                    Variant #{i + 1} — {labelFor(v)}
+                                                                                </option>
+                                                                            ))}
+                                                                        </select>
+                                                                    </div>
+                                                                    <div>
+                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">MIN QTY</p>
+                                                                        <input
+                                                                            type="number"
+                                                                            value={t.minQuantity}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) => (i === idx ? { ...tt, minQuantity: e.target.value } : tt)),
+                                                                                }))
+                                                                            }
+                                                                            className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">MAX QTY</p>
+                                                                        <input
+                                                                            type="number"
+                                                                            placeholder="Optional"
+                                                                            value={t.maxQuantity}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) => (i === idx ? { ...tt, maxQuantity: e.target.value } : tt)),
+                                                                                }))
+                                                                            }
+                                                                            className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">UNIT PRICE ({product.currency})</p>
+                                                                        <input
+                                                                            type="number"
+                                                                            placeholder="0.00"
+                                                                            value={t.unitPrice}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) =>
+                                                                                        i === idx ? { ...tt, unitPrice: e.target.value, currency: p.currency || 'USD' } : tt
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">SPECIFICATIONS</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            specifications: [...(p.specifications || []), { title: '', collapsed: false, items: [{ label: '', value: '' }] }],
+                                                        }))
+                                                    }
+                                                    className="px-3 py-1.5 rounded-full text-[12px] font-bold cursor-pointer border"
+                                                    style={{ background: 'rgba(0,0,0,0.03)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                >
+                                                    Add group
+                                                </button>
+                                            </div>
+
+                                            {(product.specifications || []).length === 0 ? (
+                                                <p className="text-[12px] font-medium text-[#1A1A1A]/30">Add materials, dimensions, packaging, certifications, etc.</p>
+                                            ) : (
+                                                <div className="space-y-3">
+                                                    {(product.specifications || []).map((g, gi) => (
+                                                        <div
+                                                            key={gi}
+                                                            className="rounded-[18px] p-4"
+                                                            style={{ background: 'rgba(0,0,0,0.022)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                                        >
+                                                            <div className="flex items-center justify-between gap-3 mb-3">
+                                                                <p className="text-[12px] font-bold text-[#1A1A1A]/60">Group #{gi + 1}</p>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setProduct(p => ({ ...p, specifications: (p.specifications || []).filter((_, i) => i !== gi) }))}
+                                                                    className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                                    style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
+                                                                >
+                                                                    <X size={14} strokeWidth={2.5} />
+                                                                </button>
+                                                            </div>
+
+                                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                                <div className="md:col-span-2">
+                                                                    <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">TITLE</p>
+                                                                    <input
+                                                                        type="text"
+                                                                        placeholder="e.g. Materials"
+                                                                        value={g.title}
+                                                                        onChange={e =>
+                                                                            setProduct(p => ({
+                                                                                ...p,
+                                                                                specifications: (p.specifications || []).map((gg, i) => (i === gi ? { ...gg, title: e.target.value } : gg)),
+                                                                            }))
+                                                                        }
+                                                                        className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                        style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                    />
+                                                                </div>
+                                                                <div className="flex items-end justify-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() =>
+                                                                            setProduct(p => ({
+                                                                                ...p,
+                                                                                specifications: (p.specifications || []).map((gg, i) =>
+                                                                                    i === gi ? { ...gg, items: [...(gg.items || []), { label: '', value: '' }] } : gg
+                                                                                ),
+                                                                            }))
+                                                                        }
+                                                                        className="px-3 py-2 rounded-full text-[12px] font-bold cursor-pointer border"
+                                                                        style={{ background: 'rgba(255,255,255,0.55)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
+                                                                    >
+                                                                        Add item
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="mt-3 space-y-2">
+                                                                {(g.items || []).map((it, ii) => (
+                                                                    <div key={ii} className="flex gap-2 items-center">
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="Label (e.g. Material)"
+                                                                            value={it.label}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    specifications: (p.specifications || []).map((gg, i) =>
+                                                                                        i === gi
+                                                                                            ? {
+                                                                                                  ...gg,
+                                                                                                  items: (gg.items || []).map((x, k) => (k === ii ? { ...x, label: e.target.value } : x)),
+                                                                                              }
+                                                                                            : gg
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="flex-1 rounded-[14px] px-5 py-2.5 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                        <input
+                                                                            type="text"
+                                                                            placeholder="Value (e.g. Stainless steel)"
+                                                                            value={it.value}
+                                                                            onChange={e =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    specifications: (p.specifications || []).map((gg, i) =>
+                                                                                        i === gi
+                                                                                            ? {
+                                                                                                  ...gg,
+                                                                                                  items: (gg.items || []).map((x, k) => (k === ii ? { ...x, value: e.target.value } : x)),
+                                                                                              }
+                                                                                            : gg
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="flex-1 rounded-[14px] px-5 py-2.5 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                                        />
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() =>
+                                                                                setProduct(p => ({
+                                                                                    ...p,
+                                                                                    specifications: (p.specifications || []).map((gg, i) =>
+                                                                                        i === gi ? { ...gg, items: (gg.items || []).filter((_, k) => k !== ii) } : gg
+                                                                                    ),
+                                                                                }))
+                                                                            }
+                                                                            className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                                            style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
+                                                                        >
+                                                                            <X size={14} strokeWidth={2.5} />
+                                                                        </button>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </motion.div>
@@ -990,7 +2038,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                         <div className="flex items-center gap-1 mt-0.5">
                                             <RatingStars rating={4.8} size={9} />
                                             <span className="text-[10px] font-bold text-[#e67e22] ml-1">4.8</span>
-                                            <span className="text-[10px] font-medium text-[#1A1A1A]/28 ml-1">\u2022 Verified Seller</span>
+                                                <span className="text-[10px] font-medium text-[#1A1A1A]/28 ml-1">• Verified Seller</span>
                                         </div>
                                         <p className="text-[13px] font-bold text-[#0171E3] mt-1">
                                             {product.price ? `$${parseFloat(product.price || '0').toFixed(2)} per unit` : 'Price not set yet'}
@@ -1036,7 +2084,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     </motion.button>
 
                     <p className="text-center text-[12px] font-medium text-[#1A1A1A]/22">
-                        Not published yet \u2014 our team reviews this before anything goes live
+                        Not published yet — our team reviews this before anything goes live
                     </p>
                 </div>
             </div>
@@ -1057,7 +2105,77 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         </motion.div>
     );
 
-    // ── STEP 2: SAMPLE COLLECTION ─────────────────────────────────────────────
+    // ── STEP 2: COMPLIANCE REVIEW ─────────────────────────────────────────────
+
+    const complianceStep = (
+        <motion.div
+            key="compliance"
+            initial={{ opacity: 0, x: 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -18 }}
+            transition={{ duration: 0.42, ease: EASE }}
+        >
+            <div className="mb-6">
+                <p className="text-[12px] font-bold text-[#D97706]/55 tracking-widest mb-1.5">STEP 2 OF 5 · IN REVIEW</p>
+                <h2 className="text-[30px] md:text-[34px] font-black text-[#1A1A1A]/88 tracking-tight leading-tight">
+                    Compliance &<br />Review
+                </h2>
+                <p className="text-[14px] font-medium text-[#1A1A1A]/40 mt-2 leading-relaxed">
+                    Our team is currently verifying your product details and certifications. This typically takes 24-48 hours.
+                </p>
+            </div>
+
+            <div
+                className="rounded-[28px] overflow-hidden"
+                style={{
+                    background: 'rgba(255,255,255,0.80)',
+                    backdropFilter: 'blur(28px)',
+                    border: '0.5px solid rgba(255,255,255,0.65)',
+                    boxShadow: GLASS_ELEVATED,
+                }}
+            >
+                <div className="p-12 flex flex-col items-center justify-center text-center">
+                    <div
+                        className="w-20 h-20 rounded-full flex items-center justify-center mb-6"
+                        style={{ background: 'rgba(217,119,6,0.1)' }}
+                    >
+                        <ShieldCheck size={40} color="#D97706" />
+                    </div>
+                    <h3 className="text-[20px] font-black text-[#1A1A1A]/88 mb-2">Awaiting Verification</h3>
+                    <p className="text-[14px] font-medium text-[#1A1A1A]/42 max-w-[320px] leading-relaxed">
+                        We&apos;re checking your HS Code, Origin Location, and required documents. You&apos;ll be notified once this stage is complete.
+                    </p>
+
+                    <div className="mt-8 pt-8 border-t border-black/[0.04] w-full">
+                        <div className="flex items-center justify-center gap-2 mb-4">
+                            <Clock size={14} color="rgba(26,26,26,0.35)" />
+                            <span className="text-[12px] font-bold text-[#1A1A1A]/35 uppercase tracking-widest">Typical Timeline</span>
+                        </div>
+                        <div className="flex justify-between max-w-[280px] mx-auto text-[11px] font-bold text-[#1A1A1A]/25 uppercase tracking-tighter">
+                            <span>Reviewing</span>
+                            <ArrowRight size={10} />
+                            <span>Vetted</span>
+                            <ArrowRight size={10} />
+                            <span>Approved</span>
+                        </div>
+                    </div>
+
+                    <button
+                        onClick={() => refreshStatus()}
+                        className="mt-10 px-8 py-3.5 rounded-full text-[14px] font-bold cursor-pointer transition-all border-none text-white"
+                        style={{
+                            background: 'linear-gradient(135deg, #D97706 0%, #B45309 100%)',
+                            boxShadow: '0 6px 20px rgba(217,119,6,0.25)',
+                        }}
+                    >
+                        {refreshingStatus ? 'Checking...' : 'Check Status'}
+                    </button>
+                </div>
+            </div>
+        </motion.div>
+    );
+
+    // ── STEP 3: SAMPLE COLLECTION ─────────────────────────────────────────────
 
     const samplesStep = (
         <motion.div
@@ -1085,7 +2203,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 <Package size={14} color="#e67e22" strokeWidth={2.5} className="flex-shrink-0 mt-0.5" />
                 <p className="text-[12px] font-medium text-[#1A1A1A]/55 leading-relaxed">
                     <span className="font-bold text-[#e67e22]">What we collect:</span>{' '}
-                    3\u20135 sample units per product. We test them in our lab and use results to compute your quality rating. Samples are returned or compensated after testing.
+                    3–5 sample units per product. We test them in our lab and use results to compute your quality rating. Samples are returned or compensated after testing.
                 </p>
             </div>
 
@@ -1139,7 +2257,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             value={sample.address}
                             onChange={e => setSample(p => ({ ...p, address: e.target.value }))}
                             rows={3}
-                            className="w-full rounded-[14px] px-4 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none resize-none"
+                            className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none resize-none"
                             style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
                         />
                     </div>
@@ -1153,18 +2271,18 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                 placeholder="e.g. Noah Ahmed"
                                 value={sample.contactName}
                                 onChange={e => setSample(p => ({ ...p, contactName: e.target.value }))}
-                                className="w-full rounded-[14px] px-4 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
                                 style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
                             />
                         </div>
                         <div className="flex-1">
-                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">PHONE <span className="font-medium text-[#1A1A1A]/20 normal-case tracking-normal text-[11px]">\u00B7 optional</span></p>
+                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">PHONE <span className="font-medium text-[#1A1A1A]/20 normal-case tracking-normal text-[11px]">· optional</span></p>
                             <input
                                 type="tel"
                                 placeholder="+1 555 000 0000"
                                 value={sample.phone}
                                 onChange={e => setSample(p => ({ ...p, phone: e.target.value }))}
-                                className="w-full rounded-[14px] px-4 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
                                 style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
                             />
                         </div>
@@ -1428,7 +2546,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                             <p className="text-[13px] font-bold text-[#1A1A1A]/80">Verified Seller Badge</p>
                                             <div className="flex items-center gap-1 mt-0.5">
                                                 <RatingStars rating={assignedRating} size={10} />
-                                                <span className="text-[11px] font-bold text-[#e67e22] ml-1">{assignedRating} \u2022 Verified</span>
+                                            <span className="text-[11px] font-bold text-[#e67e22] ml-1">{assignedRating} • Verified</span>
                                             </div>
                                         </div>
                                     </div>
@@ -1585,25 +2703,40 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             <Sparkles size={26} color="#5EC072" strokeWidth={1.6} />
                         </div>
                         <p className="text-[16px] font-bold text-[#1A1A1A]/80 mb-1.5">
-                            Accept your rating and go live?
+                            {(serverStage === 'live' || serverStage === 'done') ? 'Awaiting publish' : 'Awaiting review'}
                         </p>
                         <p className="text-[13px] font-medium text-[#1A1A1A]/38 mb-7 max-w-[280px] mx-auto leading-relaxed">
-                            Your listing publishes with a <span className="font-bold text-[#e67e22]">{assignedRating}\u2605 verified badge</span>. You can pause from Settings anytime.
+                            Our team will inspect and publish your listing after review. Tap refresh to check the latest status.
                         </p>
                         <motion.button
                             whileHover={{ scale: 1.02 }}
                             whileTap={{ scale: 0.95 }}
-                            onClick={e => handleGoLive(e.currentTarget)}
+                            onClick={() => refreshStatus()}
                             className="w-full py-5 rounded-full text-[16px] font-black border-none cursor-pointer flex items-center justify-center gap-2.5 relative overflow-hidden"
                             style={{
-                                background: 'linear-gradient(135deg, #5EC072 0%, #2eaa57 100%)',
+                                background: 'linear-gradient(135deg, #0171E3 0%, #0159B2 100%)',
                                 color: 'white',
-                                boxShadow: '0 8px 36px rgba(94,192,114,0.42), 0 2px 8px rgba(94,192,114,0.25)',
+                                boxShadow: '0 8px 36px rgba(1,113,227,0.35), 0 2px 8px rgba(1,113,227,0.18)',
                             }}
                         >
                             {celebrating && <CelebrationBurst />}
                             <Rocket size={18} strokeWidth={2.5} />
-                            Accept rating &amp; publish my listing
+                            {refreshingStatus ? 'Refreshing…' : 'Refresh status'}
+                        </motion.button>
+
+                        <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.96 }}
+                            onClick={() => onComplete()}
+                            className="w-full mt-3 py-4 rounded-full text-[14px] font-black cursor-pointer flex items-center justify-center gap-2"
+                            style={{
+                                background: 'rgba(26,26,26,0.06)',
+                                color: 'rgba(26,26,26,0.72)',
+                                border: '0.5px solid rgba(0,0,0,0.10)',
+                            }}
+                        >
+                            <ArrowRight size={16} strokeWidth={2.5} />
+                            Go to dashboard
                         </motion.button>
                     </div>
                 </div>
@@ -1642,7 +2775,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.35, duration: 0.5, ease: EASE }}
             >
-                <h2 className="text-[34px] font-black text-[#1A1A1A]/90 tracking-tight">You&apos;re verified \u2713</h2>
+                <h2 className="text-[34px] font-black text-[#1A1A1A]/90 tracking-tight">You&apos;re verified ✓</h2>
                 <div className="flex items-center justify-center gap-1.5 mt-3 mb-2">
                     <RatingStars rating={assignedRating} size={16} />
                     <span className="text-[18px] font-black text-[#e67e22]">{assignedRating}</span>
@@ -1677,9 +2810,29 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             price: '',
                             qty: 50,
                             category: '',
+                            categoryId: null,
+                            currency: 'USD',
+                            sku: '',
+                            hsCode: '',
+                            originCountry: '',
+                            originRegion: '',
+                            originCity: '',
+                            leadTimeDays: '',
+                            weightGrams: '',
+                            shipTimeMinDays: '',
+                            shipTimeMaxDays: '',
+                            sampleAvailable: false,
+                            sampleShipDays: '',
+                            extraPhotos: [],
+                            documents: [],
                             description: '',
                             companyName: '',
                             monthlyCapacity: '',
+                            ipProtectionLevel: 'low',
+                            trademarkRegistrationNumber: '',
+                            variations: [],
+                            pricingTiers: [],
+                            specifications: [],
                         });
                         setSample({ type: 'factory', address: '', contactName: '', phone: '' });
                         setCompleted(new Set());
@@ -1782,6 +2935,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                         {journeyArc}
                         <AnimatePresence mode="wait">
                             {step === 'request' && requestStep}
+                            {step === 'compliance' && complianceStep}
                             {step === 'samples' && samplesStep}
                             {step === 'inspection' && inspectionStep}
                             {step === 'live' && liveStep}

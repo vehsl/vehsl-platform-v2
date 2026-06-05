@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from 'react';
 import type { ApiOrder, ApiOrderItem } from './order-types';
-import { Copy, CheckCircle2, MapPin, CreditCard, Phone, Package as PackageIcon, Ban, FlaskConical } from 'lucide-react';
+import { Copy, CheckCircle2, MapPin, CreditCard, Phone, Package as PackageIcon, Ban, FlaskConical, Truck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
 import { toast } from 'sonner';
@@ -162,13 +162,15 @@ interface OrderDetailsViewProps {
     order: ApiOrder;
     onCancelOrder: (id: number) => void;
     onRequestSample: (id: number) => void;
+    onConfirmDelivered: (id: number) => void;
+    onConfirmReceived: (id: number) => void;
 }
 
 function fmtMoney(currency: string, amount: string | number) {
     return fmtMoneyUtil(amount, currency);
 }
 
-export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: OrderDetailsViewProps) {
+export function OrderDetailsView({ order, onCancelOrder, onRequestSample, onConfirmDelivered, onConfirmReceived }: OrderDetailsViewProps) {
     const [copied, setCopied] = useState(false);
     const status = (order.status || '').toLowerCase();
     const steps = useMemo<TrackingStep[]>(() => {
@@ -228,6 +230,13 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
     const shipStreet1 = String(ship.street1 || ship.street || '').trim();
     const shipStreet2 = String(ship.street2 || '').trim();
     const shipPostal = String(ship.postal_code || ship.zip || '').trim();
+    const shipMethod = String((order as any).shipping_method || '').trim();
+    const shipCostRaw = (order as any).shipping_cost;
+    const shipCost = Number(shipCostRaw || 0);
+
+    const canCancel = !['shipped', 'delivered', 'completed', 'cancelled', 'rejected'].includes(status);
+    const canConfirmDelivered = status === 'shipped';
+    const canConfirmReceived = status === 'delivered';
 
     return (
         <motion.div
@@ -384,6 +393,14 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
                                     <p className="text-[11px] font-medium text-[#1A1A1A]/40">{shipPhone}</p>
                                 </div>
                             ) : null}
+                            {(shipMethod || shipCost > 0) ? (
+                                <div className="flex gap-3 items-center mt-2 ml-[1px]">
+                                    <Truck size={12} strokeWidth={2} className="text-[#1A1A1A]/28 flex-shrink-0" />
+                                    <p className="text-[11px] font-medium text-[#1A1A1A]/40">
+                                        Shipped via: {shipMethod || '—'} ({fmtMoney(order.currency, shipCost)})
+                                    </p>
+                                </div>
+                            ) : null}
                         </div>
 
                         {/* Glass divider */}
@@ -424,13 +441,33 @@ export function OrderDetailsView({ order, onCancelOrder, onRequestSample }: Orde
                                 <FlaskConical size={12} strokeWidth={2.5} />
                                 Request sample
                             </button>
-                            <button
-                                onClick={() => onCancelOrder(order.id)}
-                                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
-                            >
-                                <Ban size={12} strokeWidth={2.5} />
-                                Cancel
-                            </button>
+                            {canConfirmDelivered ? (
+                                <button
+                                    onClick={() => onConfirmDelivered(order.id)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                                >
+                                    <Truck size={12} strokeWidth={2.5} />
+                                    Confirm delivered
+                                </button>
+                            ) : canConfirmReceived ? (
+                                <button
+                                    onClick={() => onConfirmReceived(order.id)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                                >
+                                    <CheckCircle2 size={12} strokeWidth={2.5} />
+                                    Confirm received
+                                </button>
+                            ) : canCancel ? (
+                                <button
+                                    onClick={() => onCancelOrder(order.id)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-white/55 border border-white/70 px-4 py-2 text-[11px] font-bold text-[#1A1A1A]/60 hover:bg-white/75 transition-colors"
+                                >
+                                    <Ban size={12} strokeWidth={2.5} />
+                                    Cancel
+                                </button>
+                            ) : (
+                                <div className="flex-1" />
+                            )}
                         </div>
                     </Glass>
                 </motion.div>

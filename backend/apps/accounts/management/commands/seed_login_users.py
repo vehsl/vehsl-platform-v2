@@ -9,6 +9,7 @@ from apps.accounts.models import AdminProfile, BuyerProfile, SellerProfile, User
 class Command(BaseCommand):
     def handle(self, *args, **options):
         default_password = os.environ.get("SEED_DEFAULT_PASSWORD", "Test123!@#")
+        force_password = str(os.environ.get("SEED_FORCE_PASSWORD", "0") or "").strip().lower() in {"1", "true", "yes"}
 
         users = [
             {
@@ -113,7 +114,8 @@ class Command(BaseCommand):
                 u.is_staff = spec["is_staff"]
                 u.is_superuser = spec["is_superuser"]
                 u.is_active = True
-                u.set_password(default_password)
+                if was_created or force_password:
+                    u.set_password(default_password)
                 u.save()
 
                 UserProfile.objects.get_or_create(user=u)
@@ -134,4 +136,4 @@ class Command(BaseCommand):
                     AdminProfile.objects.filter(user=u).delete()
 
         self.stdout.write(self.style.SUCCESS(f"seed_login_users: created={created} updated={updated}"))
-        self.stdout.write(self.style.SUCCESS(f"seed_login_users password: {default_password}"))
+        self.stdout.write(self.style.SUCCESS("seed_login_users: done"))

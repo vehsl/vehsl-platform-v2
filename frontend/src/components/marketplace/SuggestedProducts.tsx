@@ -15,6 +15,7 @@ type ApiProductRow = {
   price: string;
   hero_image_url?: string;
   average_rating?: number | null;
+  stock_status?: string;
 };
 
 export function SuggestedProducts() {
@@ -49,6 +50,7 @@ export function SuggestedProducts() {
       price: `${p.currency || "USD"} ${p.price || ""}`.trim(),
       rating: Number(p.average_rating || 0),
       image: p.hero_image_url || "",
+      stockStatus: p.stock_status,
     }));
   }, [products]);
 
@@ -68,7 +70,7 @@ export function SuggestedProducts() {
           {cards.map((product, i) => (
             <SectionReveal key={`suggested-${product.id}-${i}`} delay={i + 1}>
               <Link href={`/products/${product.id}`}>
-                <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i} />
+                <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i} stockStatus={product.stockStatus} />
               </Link>
             </SectionReveal>
           ))}

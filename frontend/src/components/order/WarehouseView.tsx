@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { createPortal } from 'react-dom';
 import { authedFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
@@ -10,7 +11,7 @@ import {
     Check, MapPin, Fingerprint, Car, UserCheck, Clock,
     Calendar, ArrowUpRight, Package, DollarSign, Warehouse as WarehouseIcon,
     Copy, Phone, Star, User, PenLine, FileText, Hash, Download, Share2,
-    Lock, ShieldCheck, Layers
+    Lock, ShieldCheck, Layers, Truck, ArrowRight, BadgeCheck, MoreHorizontal
 } from 'lucide-react';
 import {
     Warehouse, InventoryItem, ReleaseRequest, ReleaseRecord
@@ -31,6 +32,28 @@ function asString(v: unknown, fallback = ''): string {
 function asNumber(v: unknown, fallback = 0): number {
     const n = typeof v === 'number' ? v : Number(v);
     return Number.isFinite(n) ? n : fallback;
+}
+
+function ClientPortal({ children }: { children: React.ReactNode }) {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+    if (!mounted) return null;
+    return createPortal(children, document.body);
+}
+
+function getCreatedProductId(lr: any): number | null {
+    const raw = lr?.created_product;
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw === 'string') {
+        const n = Number(raw);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    if (typeof raw === 'object') {
+        const n = Number((raw as any)?.id);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    return null;
 }
 
 function isWarehouseFeature(v: unknown): v is Warehouse['features'][number] {
@@ -260,6 +283,86 @@ function StatusBadge({ isOpen, hoursLabel }: { isOpen: boolean; hoursLabel: stri
                 {isOpen ? 'Open' : 'Closed'}
             </span>
             <span className="text-[10px] font-medium text-[#1A1A1A]/20">{hoursLabel}</span>
+        </div>
+    );
+}
+
+
+// ═══════════════════════════════════════════
+// LISTING STATUS STEPPER — onboarding progress
+// ═══════════════════════════════════════════
+function ListingStatusStepper({ lr }: { lr: any }) {
+    const stages = [
+        { key: 'samples', label: 'Samples', icon: <Package size={14} /> },
+        { key: 'compliance', label: 'Compliance', icon: <ShieldCheck size={14} /> },
+        { key: 'inspection', label: 'Inspection', icon: <Search size={14} /> },
+        { key: 'live', label: 'Approved', icon: <Check size={14} /> },
+        { key: 'done', label: 'Published', icon: <BadgeCheck size={14} /> },
+    ];
+
+    const isPublished = String(lr?.stage || '').toLowerCase() === 'done' || !!lr?.created_product;
+    const rawStageKey = isPublished ? 'done' : String(lr?.stage || '').toLowerCase();
+    const stageKey = rawStageKey === 'inbound' ? 'inspection' : rawStageKey;
+    const currentStageIndex = stages.findIndex(s => s.key === stageKey);
+    
+    return (
+        <div className="flex items-center gap-6 mt-4">
+            {stages.map((stage, i) => {
+                const isCompleted = i < currentStageIndex;
+                const isCurrent = i === currentStageIndex;
+                
+                return (
+                    <React.Fragment key={stage.key}>
+                        <div className="flex flex-col items-center gap-1.5 relative">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-500 ${
+                                isCompleted ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' :
+                                isCurrent ? 'bg-[#0171E3] text-white shadow-lg shadow-[#0171E3]/20 scale-110' :
+                                'bg-[#1A1A1A]/[0.04] text-[#1A1A1A]/25'
+                            }`}>
+                                {isCompleted ? <Check size={18} strokeWidth={3} /> : stage.icon}
+                            </div>
+                            <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                                isCurrent ? 'text-[#0171E3]' : 'text-[#1A1A1A]/30'
+                            }`}>
+                                {stage.label}
+                            </span>
+                            
+                            {stage.key === 'compliance' && lr.compliance_verified && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10">
+                                    <Check size={10} strokeWidth={4} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'compliance' && !lr.compliance_verified && lr.stage === 'compliance' && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse">
+                                    <Clock size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+
+                            {stage.key === 'inspection' && lr.inspected && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10">
+                                    <Check size={10} strokeWidth={4} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'inspection' && lr.inspector_name && !lr.inspected && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10" title={`Inspector Assigned: ${lr.inspector_name}`}>
+                                    <User size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+                            {stage.key === 'inspection' && !lr.inspector_name && !lr.inspected && lr.stage === 'inspection' && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center shadow-sm z-10 animate-pulse">
+                                    <Clock size={10} strokeWidth={3} className="text-white" />
+                                </div>
+                            )}
+
+                        </div>
+                        {i < stages.length - 1 && (
+                            <div className={`h-[2px] w-12 -mt-5 rounded-full transition-all duration-700 ${
+                                isCompleted ? 'bg-emerald-500' : 'bg-[#1A1A1A]/[0.06]'
+                            }`} />
+                        )}
+                    </React.Fragment>
+                );
+            })}
         </div>
     );
 }
@@ -1657,18 +1760,111 @@ function ReleaseSheet({ item, onClose, onSubmit, prefill, productColor }: {
 // ═══════════════════════════════════════════
 // MAIN VIEW
 // ═══════════════════════════════════════════
-type ViewState = 'select' | 'inventory';
+type ViewState = 'select' | 'inventory' | 'onboarding';
 
 export function WarehouseView() {
     const [mounted, setMounted] = useState(false);
     useEffect(() => { setMounted(true); }, []);
 
-    const { isSeller } = useRole();
+    const { isSeller, isAdmin, isLogistics } = useRole();
+    const showWarehouseOps = (isAdmin || isLogistics) && !isSeller;
     const [view, setView] = useState<ViewState>('select');
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [inventory, setInventory] = useState<InventoryItem[]>([]);
+    const [listingRequests, setListingRequests] = useState<any[]>([]);
+    const [editingListingRequest, setEditingListingRequest] = useState<any | null>(null);
+    const [listingEditSaving, setListingEditSaving] = useState(false);
+    const [historyOpen, setHistoryOpen] = useState(false);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [historyError, setHistoryError] = useState('');
+    const [historyData, setHistoryData] = useState<any | null>(null);
+    const [historyTarget, setHistoryTarget] = useState<any | null>(null);
+    const [listQuery, setListQuery] = useState('');
+    const [rowMenuId, setRowMenuId] = useState<string | number | null>(null);
+    const [rowMenuTarget, setRowMenuTarget] = useState<any | null>(null);
+    const [rowMenuPos, setRowMenuPos] = useState<{ top: number; right: number } | null>(null);
+    const rowMenuRef = useRef<HTMLDivElement | null>(null);
+    const [sampleEditOpen, setSampleEditOpen] = useState(false);
+    const [sampleEditTarget, setSampleEditTarget] = useState<any | null>(null);
+    const [sampleEditQty, setSampleEditQty] = useState('');
+    const [sampleEditSaving, setSampleEditSaving] = useState(false);
+    const [stockEditOpen, setStockEditOpen] = useState(false);
+    const [stockEditTarget, setStockEditTarget] = useState<any | null>(null);
+    const [stockEditMode, setStockEditMode] = useState<'made_to_order' | 'seller_stock'>('made_to_order');
+    const [stockEditQty, setStockEditQty] = useState('');
+    const [stockEditSaving, setStockEditSaving] = useState(false);
+    const [filters, setFilters] = useState({
+        publishedOnly: false,
+        needsAction: false,
+        bulk: 'all' as 'all' | 'oos' | 'low',
+        samples: 'all' as 'all' | 'none' | 'low',
+        mode: 'all' as 'all' | 'made_to_order' | 'seller_stock',
+    });
+    const [sellerThresholds, setSellerThresholds] = useState({ sampleLow: 50, stockLow: 10 });
+    const [thresholdsOpen, setThresholdsOpen] = useState(false);
+    const [thresholdsSaving, setThresholdsSaving] = useState(false);
+    const [thresholdsDraft, setThresholdsDraft] = useState({ sampleLow: '50', stockLow: '10' });
+    const [quickOpen, setQuickOpen] = useState(false);
+    const [quickTarget, setQuickTarget] = useState<any | null>(null);
+    const [quickStockMode, setQuickStockMode] = useState<'made_to_order' | 'seller_stock'>('made_to_order');
+    const [quickStockQty, setQuickStockQty] = useState('');
+    const [quickSamplesQty, setQuickSamplesQty] = useState('');
+    const [quickSavingStock, setQuickSavingStock] = useState(false);
+    const [quickSavingSamples, setQuickSavingSamples] = useState(false);
+    const [feedbackOpen, setFeedbackOpen] = useState(false);
+    const [feedbackTarget, setFeedbackTarget] = useState<any | null>(null);
+    const [feedbackProductId, setFeedbackProductId] = useState<number | null>(null);
+    const [feedbackLoading, setFeedbackLoading] = useState(false);
+    const [feedbackMarkingRead, setFeedbackMarkingRead] = useState(false);
+    const [feedbackRows, setFeedbackRows] = useState<any[]>([]);
+    const [feedbackError, setFeedbackError] = useState('');
+    const [productEditOpen, setProductEditOpen] = useState(false);
+    const [productEditTarget, setProductEditTarget] = useState<any | null>(null);
+    const [productEditProductId, setProductEditProductId] = useState<number | null>(null);
+    const [productEditLoading, setProductEditLoading] = useState(false);
+    const [productEditSaving, setProductEditSaving] = useState(false);
+    const [productEditUploading, setProductEditUploading] = useState(false);
+    const [productEditDeletingId, setProductEditDeletingId] = useState<number | null>(null);
+    const [productEditData, setProductEditData] = useState<any | null>(null);
+    const [productEditUploadKey, setProductEditUploadKey] = useState(0);
+    const [productEditDraft, setProductEditDraft] = useState({
+        category_id: '',
+        name: '',
+        title: '',
+        description: '',
+        price: '',
+        currency: '',
+        sku: '',
+        hs_code: '',
+        lead_time_days: '',
+        weight_grams: '',
+        ship_time_min_days: '',
+        ship_time_max_days: '',
+        origin_country: '',
+        origin_region: '',
+        origin_city: '',
+    });
+    const [listingEditDraft, setListingEditDraft] = useState({
+        category_id: '',
+        product_name: '',
+        company_name: '',
+        description: '',
+        unit_price: '',
+        moq: '1',
+        sku: '',
+        hs_code: '',
+        origin_country: '',
+        origin_region: '',
+        origin_city: '',
+        lead_time_days: '',
+        weight_grams: '',
+        ship_time_min_days: '',
+        ship_time_max_days: '',
+    });
+    const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; label: string }>>([]);
+    const [categoryOptionsLoading, setCategoryOptionsLoading] = useState(false);
     const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]);
     const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -1679,11 +1875,37 @@ export function WarehouseView() {
     const fetchWarehouseData = useCallback(async () => {
         try {
             setLoading(true);
-            const [wRes, rRes, recRes, autoRes] = await Promise.all([
+            if (!showWarehouseOps) {
+                const [lrRes, profRes] = await Promise.all([
+                    authedFetch('/api/v1/seller/listing-requests/'),
+                    authedFetch('/api/v1/profiles/seller/me'),
+                ]);
+                if (lrRes.ok) {
+                    const raw = await lrRes.json();
+                    setListingRequests(Array.isArray(raw) ? raw : []);
+                } else {
+                    setListingRequests([]);
+                }
+                if (profRes.ok) {
+                    const prof = await profRes.json().catch(() => null);
+                    const sampleLow = Number(prof?.sample_low_threshold || 0) || 0;
+                    const stockLow = Number(prof?.stock_low_threshold || 0) || 0;
+                    const resolved = {
+                        sampleLow: sampleLow > 0 ? sampleLow : 50,
+                        stockLow: stockLow > 0 ? stockLow : 10,
+                    };
+                    setSellerThresholds(resolved);
+                    setThresholdsDraft({ sampleLow: String(resolved.sampleLow), stockLow: String(resolved.stockLow) });
+                }
+                setView('onboarding');
+                return;
+            }
+            const [wRes, rRes, recRes, autoRes, lrRes] = await Promise.all([
                 authedFetch('/api/v1/warehouse/dashboard/list_warehouses/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_requests/'),
                 authedFetch('/api/v1/warehouse/dashboard/release_records/'),
                 authedFetch('/api/v1/warehouse/dashboard/auto_order_settings/'),
+                authedFetch('/api/v1/seller/listing-requests/'),
             ]);
 
             if (wRes.ok) {
@@ -1711,6 +1933,11 @@ export function WarehouseView() {
                 setReleaseRecords(mapped);
             }
 
+            if (lrRes.ok) {
+                const raw = await lrRes.json();
+                setListingRequests(Array.isArray(raw) ? raw : []);
+            }
+
             if (autoRes.ok) {
                 const raw = await autoRes.json().catch(() => ({}));
                 if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
@@ -1731,7 +1958,741 @@ export function WarehouseView() {
         } finally {
             setLoading(false);
         }
+    }, [showWarehouseOps]);
+
+    const loadCategoryOptions = useCallback(async () => {
+        if (categoryOptionsLoading) return;
+        if (categoryOptions.length) return;
+        setCategoryOptionsLoading(true);
+        try {
+            const res = await authedFetch('/api/v1/categories/explore');
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                setCategoryOptions([]);
+                return;
+            }
+            const cats = Array.isArray(payload?.categories) ? payload.categories : [];
+            const flat: Array<{ id: number; label: string }> = [];
+            for (const top of cats) {
+                const topId = Number(top?.id || 0);
+                const topName = asString(top?.name).trim();
+                if (topId && topName) flat.push({ id: topId, label: topName });
+                const children = Array.isArray(top?.children) ? top.children : [];
+                for (const ch of children) {
+                    const cid = Number(ch?.id || 0);
+                    const cname = asString(ch?.name).trim();
+                    if (cid && cname) {
+                        flat.push({ id: cid, label: topName ? `${topName} / ${cname}` : cname });
+                    }
+                }
+            }
+            setCategoryOptions(flat);
+        } catch {
+            setCategoryOptions([]);
+        } finally {
+            setCategoryOptionsLoading(false);
+        }
+    }, [authedFetch, categoryOptions.length, categoryOptionsLoading]);
+
+    const openListingFix = useCallback((lr: any) => {
+        if (!categoryOptions.length) void loadCategoryOptions();
+        const meta = lr?.product_meta && typeof lr.product_meta === 'object' ? lr.product_meta : {};
+        const origin = meta?.origin_location && typeof meta.origin_location === 'object' ? meta.origin_location : {};
+        setListingEditDraft({
+            category_id: String(Number(lr?.category || 0) || ''),
+            product_name: asString(lr?.product_name),
+            company_name: asString(lr?.company_name),
+            description: asString(lr?.description),
+            unit_price: asString(lr?.unit_price),
+            moq: asString(lr?.moq ?? '1'),
+            sku: asString(meta?.sku),
+            hs_code: asString(meta?.hs_code),
+            origin_country: asString(origin?.country),
+            origin_region: asString(origin?.region),
+            origin_city: asString(origin?.city),
+            lead_time_days: asString(meta?.lead_time_days),
+            weight_grams: asString(meta?.weight_grams),
+            ship_time_min_days: asString(meta?.ship_time_min_days),
+            ship_time_max_days: asString(meta?.ship_time_max_days),
+        });
+        setEditingListingRequest(lr);
+    }, [categoryOptions.length, loadCategoryOptions]);
+
+    const closeListingFix = useCallback(() => {
+        setEditingListingRequest(null);
+        setListingEditSaving(false);
+    }, []);
+
+    const closeHistory = useCallback(() => {
+        setHistoryOpen(false);
+        setHistoryLoading(false);
+        setHistoryError('');
+        setHistoryData(null);
+        setHistoryTarget(null);
+    }, []);
+
+    const openHistory = useCallback(async (lr: any) => {
+        try {
+            setHistoryTarget(lr);
+            setHistoryOpen(true);
+            setHistoryLoading(true);
+            setHistoryError('');
+            setHistoryData(null);
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${lr?.id}/history/`);
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                setHistoryError(asString(payload?.detail, `Could not load history (${res.status})`));
+                setHistoryData(null);
+                return;
+            }
+            setHistoryData(payload);
+        } catch {
+            setHistoryError('Could not load history.');
+            setHistoryData(null);
+        } finally {
+            setHistoryLoading(false);
+        }
     }, [authedFetch]);
+
+    const closeSampleEdit = useCallback(() => {
+        setSampleEditOpen(false);
+        setSampleEditTarget(null);
+        setSampleEditQty('');
+        setSampleEditSaving(false);
+    }, []);
+
+    const openSampleEdit = useCallback((lr: any) => {
+        setSampleEditTarget(lr);
+        const v = lr?.sample_units ?? 0;
+        setSampleEditQty(String(v));
+        setSampleEditOpen(true);
+    }, []);
+
+    const submitSampleEdit = useCallback(async () => {
+        if (!sampleEditTarget) return;
+        if (sampleEditSaving) return;
+        const raw = (sampleEditQty || '').trim();
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) {
+            toast.error('Invalid quantity', { description: 'Sample stock must be a number >= 0.' });
+            return;
+        }
+        const qty = Math.floor(n);
+        setSampleEditSaving(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${sampleEditTarget.id}/sample-stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock_units: qty }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === sampleEditTarget.id ? payload : lr)));
+            toast.success('Sample stock updated', { description: qty === 0 ? 'Samples are now 0.' : `Samples: ${qty}` });
+            closeSampleEdit();
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setSampleEditSaving(false);
+        }
+    }, [authedFetch, closeSampleEdit, sampleEditQty, sampleEditSaving, sampleEditTarget]);
+
+    const closeStockEdit = useCallback(() => {
+        setStockEditOpen(false);
+        setStockEditTarget(null);
+        setStockEditSaving(false);
+    }, []);
+
+    const openStockEdit = useCallback((lr: any) => {
+        setStockEditTarget(lr);
+        const mode = (asString(lr?.product_fulfillment_mode, 'made_to_order') || 'made_to_order').toLowerCase();
+        const normalized = mode === 'seller_stock' ? 'seller_stock' : 'made_to_order';
+        setStockEditMode(normalized as any);
+        setStockEditQty(String(Number(lr?.product_stock_units ?? 0)));
+        setStockEditOpen(true);
+    }, []);
+
+    const submitStockEdit = useCallback(async () => {
+        if (!stockEditTarget) return;
+        if (stockEditSaving) return;
+
+        let qty = 0;
+        if (stockEditMode === 'seller_stock') {
+            const raw = (stockEditQty || '').trim();
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n < 0) {
+                toast.error('Invalid quantity', { description: 'Stock must be a number >= 0.' });
+                return;
+            }
+            qty = Math.floor(n);
+        }
+
+        setStockEditSaving(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${stockEditTarget.id}/stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    fulfillment_mode: stockEditMode,
+                    seller_stock_units: qty,
+                }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === stockEditTarget.id ? payload : lr)));
+            toast.success('Stock updated');
+            closeStockEdit();
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setStockEditSaving(false);
+        }
+    }, [authedFetch, closeStockEdit, stockEditMode, stockEditQty, stockEditSaving, stockEditTarget]);
+
+    const closeQuick = useCallback(() => {
+        setQuickOpen(false);
+        setQuickTarget(null);
+        setQuickSavingStock(false);
+        setQuickSavingSamples(false);
+    }, []);
+
+    const closeFeedback = useCallback(() => {
+        setFeedbackOpen(false);
+        setFeedbackTarget(null);
+        setFeedbackProductId(null);
+        setFeedbackLoading(false);
+        setFeedbackMarkingRead(false);
+        setFeedbackRows([]);
+        setFeedbackError('');
+    }, []);
+
+    const openFeedback = useCallback(async (lr: any) => {
+        const pid = getCreatedProductId(lr);
+        if (!pid) {
+            toast.error('No product yet', { description: 'This listing does not have a published product.' });
+            return;
+        }
+        setFeedbackTarget(lr);
+        setFeedbackProductId(pid);
+        setFeedbackOpen(true);
+        setFeedbackLoading(true);
+        setFeedbackError('');
+        try {
+            const res = await authedFetch(`/api/v1/products/${pid}/feedback/`);
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                setFeedbackRows([]);
+                setFeedbackError(asString(payload?.detail, `Failed to load feedback (${res.status})`));
+                return;
+            }
+            const rows = Array.isArray(payload?.results) ? payload.results : [];
+            setFeedbackRows(rows);
+        } catch {
+            setFeedbackRows([]);
+            setFeedbackError('Failed to load feedback.');
+        } finally {
+            setFeedbackLoading(false);
+        }
+
+        setFeedbackMarkingRead(true);
+        try {
+            await authedFetch(`/api/v1/products/${pid}/feedback/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            setListingRequests((prev) => prev.map((x) => (x?.id === lr?.id ? { ...x, product_feedback_unread: 0 } : x)));
+            setQuickTarget((cur: any) => (cur?.id === lr?.id ? { ...cur, product_feedback_unread: 0 } : cur));
+        } catch {
+        } finally {
+            setFeedbackMarkingRead(false);
+        }
+    }, [authedFetch]);
+
+    const fetchProductById = useCallback(async (productId: number) => {
+        try {
+            const res = await authedFetch(`/api/v1/products/${productId}/`);
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) return null;
+            return payload;
+        } catch {
+            return null;
+        }
+    }, []);
+
+    const hydrateListingWithProduct = useCallback(async (lr: any) => {
+        const pid = getCreatedProductId(lr);
+        if (!pid) return null;
+        if (lr?._product && Number(lr._product?.id) === pid) return lr._product;
+        const product = await fetchProductById(pid);
+        if (!product) return null;
+        setListingRequests((prev) => prev.map((x) => (x?.id === lr?.id ? { ...x, _product: product } : x)));
+        setQuickTarget((cur: any) => (cur?.id === lr?.id ? { ...cur, _product: product } : cur));
+        return product;
+    }, [fetchProductById]);
+
+    const openQuick = useCallback((lr: any) => {
+        setQuickTarget(lr);
+        const mode = (asString(lr?.product_fulfillment_mode, 'made_to_order') || 'made_to_order').toLowerCase();
+        const normalized = mode === 'seller_stock' ? 'seller_stock' : 'made_to_order';
+        setQuickStockMode(normalized as any);
+        setQuickStockQty(String(Number(lr?.product_stock_units ?? 0)));
+        setQuickSamplesQty(String(Number(lr?.sample_units ?? 0)));
+        setQuickOpen(true);
+        if (!!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done') {
+            void hydrateListingWithProduct(lr);
+        }
+    }, [hydrateListingWithProduct]);
+
+    const closeProductEdit = useCallback(() => {
+        setProductEditOpen(false);
+        setProductEditTarget(null);
+        setProductEditProductId(null);
+        setProductEditLoading(false);
+        setProductEditSaving(false);
+        setProductEditUploading(false);
+        setProductEditDeletingId(null);
+        setProductEditData(null);
+        setProductEditUploadKey((k) => k + 1);
+        setProductEditDraft({
+            category_id: '',
+            name: '',
+            title: '',
+            description: '',
+            price: '',
+            currency: '',
+            sku: '',
+            hs_code: '',
+            lead_time_days: '',
+            weight_grams: '',
+            ship_time_min_days: '',
+            ship_time_max_days: '',
+            origin_country: '',
+            origin_region: '',
+            origin_city: '',
+        });
+    }, []);
+
+    const openProductEdit = useCallback(async (lr: any) => {
+        if (!categoryOptions.length) void loadCategoryOptions();
+        const pid = getCreatedProductId(lr);
+        if (!pid) {
+            toast.error('No product yet', { description: 'This listing does not have a published product to edit.' });
+            return;
+        }
+        setProductEditTarget(lr);
+        setProductEditProductId(pid);
+        setProductEditOpen(true);
+        setProductEditLoading(true);
+        try {
+            const product = (await hydrateListingWithProduct(lr)) || (await fetchProductById(pid));
+            if (!product) {
+                toast.error('Could not load product');
+                return;
+            }
+            setProductEditData(product);
+            const origin = product?.origin_location && typeof product.origin_location === 'object' ? product.origin_location : {};
+            setProductEditDraft({
+                category_id: String(Number(product?.category || lr?.category || 0) || ''),
+                name: asString(product?.name || product?.title || lr?.product_name),
+                title: asString(product?.title),
+                description: asString(product?.description),
+                price: product?.price === null || product?.price === undefined ? '' : String(product.price),
+                currency: asString(product?.currency),
+                sku: asString(product?.sku),
+                hs_code: asString(product?.hs_code),
+                lead_time_days: product?.lead_time_days === null || product?.lead_time_days === undefined ? '' : String(product.lead_time_days),
+                weight_grams: product?.weight_grams === null || product?.weight_grams === undefined ? '' : String(product.weight_grams),
+                ship_time_min_days: product?.ship_time_min_days === null || product?.ship_time_min_days === undefined ? '' : String(product.ship_time_min_days),
+                ship_time_max_days: product?.ship_time_max_days === null || product?.ship_time_max_days === undefined ? '' : String(product.ship_time_max_days),
+                origin_country: asString(origin?.country),
+                origin_region: asString(origin?.region),
+                origin_city: asString(origin?.city),
+            });
+        } finally {
+            setProductEditLoading(false);
+        }
+    }, [categoryOptions.length, fetchProductById, hydrateListingWithProduct, loadCategoryOptions]);
+
+    const saveProductEdit = useCallback(async () => {
+        if (!productEditProductId) return;
+        if (productEditSaving) return;
+        const categoryId = Math.floor(Number((productEditDraft.category_id || '').trim()));
+        if (!Number.isFinite(categoryId) || categoryId <= 0) {
+            toast.error('Category required', { description: 'Select a category before saving.' });
+            return;
+        }
+        const name = (productEditDraft.name || '').trim();
+        if (!name) {
+            toast.error('Name required', { description: 'Product name cannot be empty.' });
+            return;
+        }
+        const toIntOrNull = (v: string) => {
+            const raw = (v || '').trim();
+            if (!raw) return null;
+            const n = Math.floor(Number(raw));
+            if (!Number.isFinite(n)) return null;
+            return n;
+        };
+        const toNumOrNull = (v: string) => {
+            const raw = (v || '').trim();
+            if (!raw) return null;
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return null;
+            return n;
+        };
+        const origin = {
+            country: (productEditDraft.origin_country || '').trim(),
+            region: (productEditDraft.origin_region || '').trim(),
+            city: (productEditDraft.origin_city || '').trim(),
+        };
+        setProductEditSaving(true);
+        try {
+            const res = await authedFetch(`/api/v1/products/${productEditProductId}/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    category: categoryId,
+                    name,
+                    title: (productEditDraft.title || '').trim(),
+                    description: (productEditDraft.description || '').trim(),
+                    price: toNumOrNull(productEditDraft.price),
+                    currency: (productEditDraft.currency || '').trim() || undefined,
+                    sku: (productEditDraft.sku || '').trim(),
+                    hs_code: (productEditDraft.hs_code || '').trim(),
+                    lead_time_days: toIntOrNull(productEditDraft.lead_time_days),
+                    weight_grams: toIntOrNull(productEditDraft.weight_grams),
+                    ship_time_min_days: toIntOrNull(productEditDraft.ship_time_min_days),
+                    ship_time_max_days: toIntOrNull(productEditDraft.ship_time_max_days),
+                    origin_location: origin.country || origin.region || origin.city ? origin : {},
+                }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not save', { description: asString(payload?.detail, `Save failed (${res.status})`) });
+                return;
+            }
+            setProductEditData(payload);
+            setListingRequests((prev) =>
+                prev.map((x) => (x?.id === productEditTarget?.id ? { ...x, _product: payload } : x))
+            );
+            setQuickTarget((cur: any) => (cur?.id === productEditTarget?.id ? { ...cur, _product: payload } : cur));
+            toast.success('Product updated');
+        } catch {
+            toast.error('Could not save', { description: 'Save failed.' });
+        } finally {
+            setProductEditSaving(false);
+        }
+    }, [authedFetch, productEditDraft, productEditProductId, productEditSaving, productEditTarget]);
+
+    const uploadProductImages = useCallback(async (files: FileList | null) => {
+        if (!productEditProductId) return;
+        if (!files || files.length === 0) return;
+        if (productEditUploading) return;
+        setProductEditUploading(true);
+        try {
+            for (const file of Array.from(files)) {
+                const fd = new FormData();
+                fd.set('product', String(productEditProductId));
+                fd.set('media_type', 'image');
+                fd.set('file', file);
+                fd.set('title', file.name || 'image');
+                const res = await authedFetch('/api/v1/product-media/upload', { method: 'POST', body: fd });
+                const payload = await res.json().catch(() => null);
+                if (!res.ok) {
+                    toast.error('Upload failed', { description: asString(payload?.detail, `Upload failed (${res.status})`) });
+                    break;
+                }
+            }
+            const refreshed = await fetchProductById(productEditProductId);
+            if (refreshed) {
+                setProductEditData(refreshed);
+                setListingRequests((prev) =>
+                    prev.map((x) => (x?.id === productEditTarget?.id ? { ...x, _product: refreshed } : x))
+                );
+                setQuickTarget((cur: any) => (cur?.id === productEditTarget?.id ? { ...cur, _product: refreshed } : cur));
+                toast.success('Images updated');
+            }
+        } finally {
+            setProductEditUploading(false);
+            setProductEditUploadKey((k) => k + 1);
+        }
+    }, [authedFetch, fetchProductById, productEditProductId, productEditTarget, productEditUploading]);
+
+    const deleteProductMedia = useCallback(async (mediaId: number) => {
+        if (!mediaId) return;
+        if (productEditDeletingId) return;
+        setProductEditDeletingId(mediaId);
+        try {
+            const res = await authedFetch(`/api/v1/product-media/${mediaId}/`, { method: 'DELETE' });
+            if (!res.ok) {
+                const payload = await res.json().catch(() => null);
+                toast.error('Could not delete', { description: asString(payload?.detail, `Delete failed (${res.status})`) });
+                return;
+            }
+            setProductEditData((cur: any) => {
+                if (!cur) return cur;
+                const nextMedia = Array.isArray(cur.media) ? cur.media.filter((m: any) => Number(m?.id) !== Number(mediaId)) : [];
+                const next = { ...cur, media: nextMedia };
+                return next;
+            });
+            toast.success('Image removed');
+        } catch {
+            toast.error('Could not delete', { description: 'Delete failed.' });
+        } finally {
+            setProductEditDeletingId(null);
+        }
+    }, [authedFetch, productEditDeletingId]);
+
+    const saveQuickStock = useCallback(async () => {
+        if (!quickTarget) return;
+        if (quickSavingStock) return;
+        let qty = 0;
+        if (quickStockMode === 'seller_stock') {
+            const raw = (quickStockQty || '').trim();
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n < 0) {
+                toast.error('Invalid quantity', { description: 'Stock must be a number >= 0.' });
+                return;
+            }
+            qty = Math.floor(n);
+        }
+        setQuickSavingStock(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${quickTarget.id}/stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fulfillment_mode: quickStockMode, seller_stock_units: qty }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === quickTarget.id ? payload : lr)));
+            setQuickTarget(payload);
+            toast.success('Stock updated');
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setQuickSavingStock(false);
+        }
+    }, [authedFetch, quickSavingStock, quickStockMode, quickStockQty, quickTarget]);
+
+    const saveQuickSamples = useCallback(async () => {
+        if (!quickTarget) return;
+        if (quickSavingSamples) return;
+        const raw = (quickSamplesQty || '').trim();
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) {
+            toast.error('Invalid quantity', { description: 'Sample stock must be a number >= 0.' });
+            return;
+        }
+        const qty = Math.floor(n);
+        setQuickSavingSamples(true);
+        try {
+            const res = await authedFetch(`/api/v1/seller/listing-requests/${quickTarget.id}/sample-stock/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock_units: qty }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setListingRequests((prev) => prev.map((lr) => (lr?.id === quickTarget.id ? payload : lr)));
+            setQuickTarget(payload);
+            toast.success('Samples updated');
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setQuickSavingSamples(false);
+        }
+    }, [authedFetch, quickSamplesQty, quickSavingSamples, quickTarget]);
+
+    const saveThresholds = useCallback(async () => {
+        if (thresholdsSaving) return;
+        const sample = Math.floor(Number((thresholdsDraft.sampleLow || '').trim()));
+        const stock = Math.floor(Number((thresholdsDraft.stockLow || '').trim()));
+        if (!Number.isFinite(sample) || sample < 1 || sample > 100000) {
+            toast.error('Invalid threshold', { description: 'Sample low threshold must be between 1 and 100000.' });
+            return;
+        }
+        if (!Number.isFinite(stock) || stock < 1 || stock > 100000) {
+            toast.error('Invalid threshold', { description: 'Stock low threshold must be between 1 and 100000.' });
+            return;
+        }
+        setThresholdsSaving(true);
+        try {
+            const res = await authedFetch('/api/v1/profiles/seller/me', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sample_low_threshold: sample, stock_low_threshold: stock }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not update', { description: asString(payload?.detail, `Update failed (${res.status})`) });
+                return;
+            }
+            setSellerThresholds({ sampleLow: sample, stockLow: stock });
+            setThresholdsOpen(false);
+            toast.success('Alert thresholds updated');
+            const lrRes = await authedFetch('/api/v1/seller/listing-requests/');
+            if (lrRes.ok) {
+                const raw = await lrRes.json();
+                setListingRequests(Array.isArray(raw) ? raw : []);
+            }
+        } catch {
+            toast.error('Could not update', { description: 'Update failed.' });
+        } finally {
+            setThresholdsSaving(false);
+        }
+    }, [authedFetch, thresholdsDraft.sampleLow, thresholdsDraft.stockLow, thresholdsSaving]);
+
+    useEffect(() => {
+        if (!rowMenuId) return;
+        const onDown = (e: MouseEvent) => {
+            const el = rowMenuRef.current;
+            if (!el) return;
+            const target = e.target as Node | null;
+            if (target && el.contains(target)) return;
+            setRowMenuId(null);
+            setRowMenuTarget(null);
+            setRowMenuPos(null);
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setRowMenuId(null);
+                setRowMenuTarget(null);
+                setRowMenuPos(null);
+            }
+        };
+        window.addEventListener('mousedown', onDown);
+        window.addEventListener('keydown', onKey);
+        return () => {
+            window.removeEventListener('mousedown', onDown);
+            window.removeEventListener('keydown', onKey);
+        };
+    }, [rowMenuId]);
+
+    const submitListingFix = useCallback(async () => {
+        const lr = editingListingRequest;
+        const id = Number(lr?.id || 0);
+        if (!id) return;
+        if (listingEditSaving) return;
+
+        const toInt = (raw: any) => {
+            const s = String(raw ?? '').trim();
+            if (!s) return null;
+            const n = Number(s);
+            if (!Number.isFinite(n)) return null;
+            return Math.trunc(n);
+        };
+        const pickFirstError = (obj: any) => {
+            if (!obj) return '';
+            if (typeof obj === 'string') return obj;
+            if (typeof obj?.detail === 'string') return obj.detail;
+            if (typeof obj?.error === 'string') return obj.error;
+            if (typeof obj === 'object') {
+                for (const k of Object.keys(obj)) {
+                    const v = (obj as any)[k];
+                    if (typeof v === 'string' && v.trim()) return `${k}: ${v}`;
+                    if (Array.isArray(v) && v.length && typeof v[0] === 'string') return `${k}: ${v[0]}`;
+                }
+            }
+            return '';
+        };
+
+        const payload: any = {
+            category_id: toInt(listingEditDraft.category_id),
+            product_name: listingEditDraft.product_name.trim(),
+            company_name: listingEditDraft.company_name.trim(),
+            description: listingEditDraft.description.trim(),
+            unit_price: listingEditDraft.unit_price.trim(),
+            moq: toInt(listingEditDraft.moq),
+            sku: listingEditDraft.sku.trim(),
+            hs_code: listingEditDraft.hs_code.trim(),
+            origin_country: listingEditDraft.origin_country.trim(),
+            origin_region: listingEditDraft.origin_region.trim(),
+            origin_city: listingEditDraft.origin_city.trim(),
+            lead_time_days: toInt(listingEditDraft.lead_time_days),
+            weight_grams: toInt(listingEditDraft.weight_grams),
+            ship_time_min_days: toInt(listingEditDraft.ship_time_min_days),
+            ship_time_max_days: toInt(listingEditDraft.ship_time_max_days),
+        };
+
+        const missing: string[] = [];
+        if (!payload.category_id) missing.push('Category');
+        if (!payload.sku) missing.push('SKU');
+        if (!payload.hs_code) missing.push('HS code');
+        if (!payload.origin_country) missing.push('Origin country');
+        if (payload.lead_time_days == null) missing.push('Lead time');
+        if (payload.weight_grams == null) missing.push('Weight (grams)');
+        if (payload.ship_time_min_days == null || payload.ship_time_max_days == null) missing.push('Shipping time range');
+        if (!payload.product_name) missing.push('Product name');
+        if (!payload.unit_price) missing.push('Unit price');
+        if (missing.length) {
+            toast.error('Missing required fields', { description: missing.join(', ') });
+            return;
+        }
+        if (payload.moq != null && payload.moq < 1) {
+            toast.error('Invalid MOQ', { description: 'MOQ must be 1 or more.' });
+            return;
+        }
+        if (payload.lead_time_days != null && payload.lead_time_days < 0) {
+            toast.error('Invalid lead time', { description: 'Lead time must be 0 or more.' });
+            return;
+        }
+        if (payload.weight_grams != null && payload.weight_grams <= 0) {
+            toast.error('Invalid weight', { description: 'Weight must be greater than 0.' });
+            return;
+        }
+        if (
+            payload.ship_time_min_days != null &&
+            payload.ship_time_max_days != null &&
+            payload.ship_time_min_days > payload.ship_time_max_days
+        ) {
+            toast.error('Invalid shipping time', { description: `Ship time min (${payload.ship_time_min_days}) must be less than or equal to max (${payload.ship_time_max_days}).` });
+            return;
+        }
+
+        setListingEditSaving(true);
+        try {
+            const patchRes = await authedFetch(`/api/v1/seller/listing-requests/${id}/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const patchData = await patchRes.json().catch(() => null);
+            if (!patchRes.ok) {
+                const msg = pickFirstError(patchData) || `Could not update (${patchRes.status})`;
+                toast.error('Update failed', { description: msg });
+                return;
+            }
+
+            const resubmitRes = await authedFetch(`/api/v1/seller/listing-requests/${id}/resubmit/`, { method: 'POST' });
+            const resubmitData = await resubmitRes.json().catch(() => null);
+            if (!resubmitRes.ok) {
+                toast.error('Resubmit failed', { description: asString(resubmitData?.detail, `Could not resubmit (${resubmitRes.status})`) });
+                return;
+            }
+
+            toast.success('Resubmitted for review', { description: 'Your updates were sent back to the compliance team.' });
+            closeListingFix();
+            fetchWarehouseData();
+        } catch {
+            toast.error('Resubmit failed', { description: 'Could not resubmit your changes.' });
+        } finally {
+            setListingEditSaving(false);
+        }
+    }, [authedFetch, closeListingFix, editingListingRequest, fetchWarehouseData, listingEditDraft, listingEditSaving]);
 
     const fetchInventory = useCallback(async (wId: string) => {
         try {
@@ -1752,6 +2713,23 @@ export function WarehouseView() {
         if (!mounted) return;
         fetchWarehouseData();
     }, [fetchWarehouseData, mounted]);
+
+    useEffect(() => {
+        if (!mounted) return;
+        if (editingListingRequest) return;
+        if (!Array.isArray(listingRequests) || listingRequests.length === 0) return;
+        let raw = "";
+        try {
+            raw = window.sessionStorage.getItem("vehsl.open_listing_request_fix_id") || "";
+        } catch {}
+        const id = Number(raw || 0);
+        if (!id) return;
+        const match = listingRequests.find((x: any) => Number(x?.id || 0) === id);
+        try {
+            window.sessionStorage.removeItem("vehsl.open_listing_request_fix_id");
+        } catch {}
+        if (match) openListingFix(match);
+    }, [editingListingRequest, listingRequests, mounted, openListingFix]);
 
     useEffect(() => {
         if (!mounted || !selectedWarehouse?.id) return;
@@ -1805,7 +2783,7 @@ export function WarehouseView() {
     const PAGE_SIZE = 10;
 
     const hasActiveWarehouse = Boolean(selectedWarehouse?.id);
-    const effectiveView: ViewState = hasActiveWarehouse ? view : 'select';
+    const effectiveView: ViewState = showWarehouseOps ? (hasActiveWarehouse ? view : 'select') : 'onboarding';
     const activeWarehouse: Warehouse = selectedWarehouse ?? {
         id: '',
         name: '',
@@ -2012,6 +2990,1141 @@ export function WarehouseView() {
                 )}
             </AnimatePresence>
 
+            <AnimatePresence>
+                {editingListingRequest && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.25)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeListingFix();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.97, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 5 }}
+                            transition={{ duration: 0.25, ease: EASE }}
+                            className="w-full max-w-[720px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Fix & Resubmit</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{editingListingRequest.id} · {(editingListingRequest.product_name || '').toString()}
+                                    </div>
+                                </div>
+                                <button onClick={closeListingFix} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-4">
+                                {(() => {
+                                    const meta = editingListingRequest?.product_meta && typeof editingListingRequest.product_meta === 'object' ? editingListingRequest.product_meta : {};
+                                    const msg = asString((meta as any)?.review_message, '');
+                                    if (!msg) return null;
+                                    return (
+                                        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 flex gap-3">
+                                            <FileText size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                                            <div className="min-w-0">
+                                                <div className="text-[11px] font-black text-amber-700/80 uppercase tracking-[1.4px]">Admin requested changes</div>
+                                                <div className="text-[12px] font-medium text-[#1A1A1A]/70 mt-1 whitespace-pre-wrap break-words">{msg}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="sm:col-span-2">
+                                        <select
+                                            value={listingEditDraft.category_id}
+                                            onChange={(e) => setListingEditDraft((p) => ({ ...p, category_id: e.target.value }))}
+                                            className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 focus:outline-none focus:border-[#0171E3]/30"
+                                        >
+                                            <option value="" disabled>
+                                                {categoryOptionsLoading ? 'Loading categories…' : 'Select category'}
+                                            </option>
+                                            {categoryOptions.map((opt) => (
+                                                <option key={opt.id} value={String(opt.id)}>
+                                                    {opt.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <input
+                                        value={listingEditDraft.product_name}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, product_name: e.target.value }))}
+                                        placeholder="Product name"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.company_name}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, company_name: e.target.value }))}
+                                        placeholder="Company name"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.unit_price}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, unit_price: e.target.value }))}
+                                        placeholder="Unit price (e.g. 12.50)"
+                                        inputMode="decimal"
+                                        type="number"
+                                        step="0.01"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.moq}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, moq: e.target.value }))}
+                                        placeholder="MOQ"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+
+                                <textarea
+                                    value={listingEditDraft.description}
+                                    onChange={(e) => setListingEditDraft((p) => ({ ...p, description: e.target.value }))}
+                                    placeholder="Description"
+                                    rows={4}
+                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-medium text-[#1A1A1A]/75 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30 resize-none"
+                                />
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <input
+                                        value={listingEditDraft.sku}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, sku: e.target.value }))}
+                                        placeholder="SKU"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.hs_code}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, hs_code: e.target.value }))}
+                                        placeholder="HS code"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.origin_country}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, origin_country: e.target.value }))}
+                                        placeholder="Origin country"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.lead_time_days}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, lead_time_days: e.target.value }))}
+                                        placeholder="Lead time (days)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.weight_grams}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, weight_grams: e.target.value }))}
+                                        placeholder="Weight (grams)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.ship_time_min_days}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, ship_time_min_days: e.target.value }))}
+                                        placeholder="Ship time min (days)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                    <input
+                                        value={listingEditDraft.ship_time_max_days}
+                                        onChange={(e) => setListingEditDraft((p) => ({ ...p, ship_time_max_days: e.target.value }))}
+                                        placeholder="Ship time max (days)"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeListingFix}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitListingFix()}
+                                    disabled={listingEditSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white flex items-center gap-2 ${
+                                        listingEditSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    <ArrowRight size={14} strokeWidth={2.5} />
+                                    {listingEditSaving ? 'Submitting…' : 'Resubmit'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {historyOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[70] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeHistory();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[760px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Inventory History</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(historyTarget?.id)} · {asString(historyTarget?.product_name)}
+                                    </div>
+                                </div>
+                                <button onClick={closeHistory} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6">
+                                {historyLoading ? (
+                                    <div className="text-[13px] font-medium text-[#1A1A1A]/45">Loading history…</div>
+                                ) : historyError ? (
+                                    <div className="text-[13px] font-medium text-[#E5484D]/80">{historyError}</div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        {(() => {
+                                            const orders = historyData?.orders || {};
+                                            const sample = historyData?.sample || null;
+                                            const hasOrders = Number(orders?.order_count || 0) > 0;
+                                            const hasSample = sample && typeof sample === 'object';
+                                            if (!hasOrders && !hasSample) return null;
+                                            return (
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                    <div className="p-4 rounded-2xl bg-black/[0.02] border border-black/[0.06]">
+                                                        <div className="text-[10px] font-black text-[#1A1A1A]/35 uppercase tracking-[1.5px]">Orders</div>
+                                                        <div className="mt-2 text-[13px] font-bold text-[#1A1A1A]/70">
+                                                            {Number(orders?.order_count || 0).toLocaleString()} orders · {Number(orders?.units || 0).toLocaleString()} units
+                                                        </div>
+                                                        <div className="mt-1 text-[11px] font-medium text-[#1A1A1A]/35">
+                                                            {orders?.last_order_at ? `Last: ${new Date(orders.last_order_at).toLocaleString()}` : 'No orders yet'}
+                                                        </div>
+                                                    </div>
+                                                    <div className="p-4 rounded-2xl bg-black/[0.02] border border-black/[0.06]">
+                                                        <div className="text-[10px] font-black text-[#1A1A1A]/35 uppercase tracking-[1.5px]">Samples</div>
+                                                        <div className="mt-2 text-[13px] font-bold text-[#1A1A1A]/70">
+                                                            {hasSample ? `${Number(sample?.available_quantity || 0).toLocaleString()} available` : '—'}
+                                                        </div>
+                                                        <div className="mt-1 text-[11px] font-medium text-[#1A1A1A]/35">
+                                                            {hasSample && sample?.last_updated ? `Updated: ${new Date(sample.last_updated).toLocaleString()}` : 'No sample tracking'}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })()}
+
+                                        <div className="rounded-2xl border border-black/[0.06] overflow-hidden">
+                                            <div className="px-4 py-3 bg-black/[0.02] border-b border-black/[0.06] flex items-center justify-between">
+                                                <div className="text-[11px] font-black text-[#1A1A1A]/40 uppercase tracking-[1.5px]">Timeline</div>
+                                                <div className="text-[11px] font-bold text-[#1A1A1A]/30 tabular-nums">
+                                                    {Array.isArray(historyData?.events) ? historyData.events.length : 0}
+                                                </div>
+                                            </div>
+                                            <div className="max-h-[340px] overflow-auto">
+                                                {(Array.isArray(historyData?.events) ? historyData.events : []).slice().reverse().map((ev: any) => {
+                                                    const when = ev?.occurred_at ? new Date(ev.occurred_at).toLocaleString() : '';
+                                                    const actor = asString(ev?.actor);
+                                                    const action = asString(ev?.action);
+                                                    const label =
+                                                        action === 'seller_listing_request_submitted' ? 'Submitted' :
+                                                        action === 'seller_listing_request_updated' ? 'Updated' :
+                                                        action === 'seller_listing_request_resubmitted' ? 'Resubmitted' :
+                                                        action === 'admin_listing_request_compliance_verified' ? 'Compliance verified' :
+                                                        action === 'admin_listing_request_inspected' ? 'Inspection complete' :
+                                                        action === 'admin_listing_request_reviewed' ? 'Review decision' :
+                                                        action === 'admin_listing_request_published' ? 'Published' :
+                                                        action;
+                                                    return (
+                                                        <div key={asString(ev?.id)} className="px-4 py-3 border-b border-black/[0.04] last:border-b-0">
+                                                            <div className="flex items-start justify-between gap-3">
+                                                                <div className="min-w-0">
+                                                                    <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">{label}</div>
+                                                                    <div className="text-[11px] font-medium text-[#1A1A1A]/35 mt-0.5 truncate">
+                                                                        {actor ? `${actor} · ${when}` : when}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                                {!Array.isArray(historyData?.events) || historyData.events.length === 0 ? (
+                                                    <div className="px-4 py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">
+                                                        No history events yet.
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {feedbackOpen && feedbackTarget && feedbackProductId && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[79] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeFeedback();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[720px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Feedback</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{feedbackProductId} · {asString(feedbackTarget?._product?.name || feedbackTarget?._product?.title || feedbackTarget?.product_name, '—')}
+                                    </div>
+                                </div>
+                                <button onClick={closeFeedback} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-3 max-h-[70vh] overflow-auto">
+                                {feedbackLoading ? (
+                                    <div className="py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">Loading…</div>
+                                ) : feedbackError ? (
+                                    <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[12px] font-medium text-[#E5484D]/80">
+                                        {feedbackError}
+                                    </div>
+                                ) : feedbackRows.length === 0 ? (
+                                    <div className="py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">No feedback yet.</div>
+                                ) : (
+                                    <div className="rounded-2xl border border-black/[0.06] overflow-hidden">
+                                        <div className="divide-y divide-black/[0.04]">
+                                            {feedbackRows.map((fb) => {
+                                                const kind = asString(fb?.kind).toLowerCase();
+                                                const kindCls =
+                                                    kind === 'action_required' ? 'bg-[#E5484D]/10 text-[#E5484D]/80' :
+                                                    kind === 'warning' ? 'bg-[#FFB224]/10 text-[#FFB224]/80' :
+                                                    'bg-black/[0.04] text-[#1A1A1A]/55';
+                                                const when = fb?.created_at ? new Date(fb.created_at).toLocaleString() : '';
+                                                return (
+                                                    <div key={asString(fb?.id)} className="px-4 py-3">
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-[1.2px] ${kindCls}`}>
+                                                                        {kind === 'action_required' ? 'Action required' : kind || 'Info'}
+                                                                    </span>
+                                                                    <div className="text-[11px] font-bold text-[#1A1A1A]/35 truncate">
+                                                                        {asString(fb?.author_label) ? `${asString(fb.author_label)} · ${when}` : when}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="mt-1 text-[12px] font-medium text-[#1A1A1A]/70 whitespace-pre-wrap break-words">
+                                                                    {asString(fb?.message, '—')}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                                {feedbackMarkingRead ? (
+                                    <div className="text-[11px] font-medium text-[#1A1A1A]/30">Marking as read…</div>
+                                ) : null}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {productEditOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[78] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeProductEdit();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[780px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Edit product</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{productEditProductId || '—'} · {asString(productEditData?.category_name) || asString(productEditTarget?.category_label, 'Uncategorized')}
+                                    </div>
+                                </div>
+                                <button onClick={closeProductEdit} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-5 max-h-[75vh] overflow-auto">
+                                {productEditLoading ? (
+                                    <div className="py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">Loading…</div>
+                                ) : (
+                                    <>
+                                        <div>
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Category</div>
+                                            <select
+                                                value={productEditDraft.category_id}
+                                                onChange={(e) => setProductEditDraft((d) => ({ ...d, category_id: e.target.value }))}
+                                                className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 focus:outline-none focus:border-[#0171E3]/30"
+                                            >
+                                                <option value="" disabled>
+                                                    {categoryOptionsLoading ? 'Loading categories…' : 'Select category'}
+                                                </option>
+                                                {categoryOptions.map((opt) => (
+                                                    <option key={opt.id} value={String(opt.id)}>
+                                                        {opt.label}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Name</div>
+                                                <input
+                                                    value={productEditDraft.name}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, name: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Title</div>
+                                                <input
+                                                    value={productEditDraft.title}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, title: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Description</div>
+                                            <textarea
+                                                value={productEditDraft.description}
+                                                onChange={(e) => setProductEditDraft((d) => ({ ...d, description: e.target.value }))}
+                                                rows={5}
+                                                className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30 resize-none"
+                                            />
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Price</div>
+                                                <input
+                                                    value={productEditDraft.price}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, price: e.target.value }))}
+                                                    inputMode="decimal"
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.01"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Currency</div>
+                                                <input
+                                                    value={productEditDraft.currency}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, currency: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">SKU</div>
+                                                <input
+                                                    value={productEditDraft.sku}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, sku: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">HS code</div>
+                                                <input
+                                                    value={productEditDraft.hs_code}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, hs_code: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Lead time (days)</div>
+                                                <input
+                                                    value={productEditDraft.lead_time_days}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, lead_time_days: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Weight (grams)</div>
+                                                <input
+                                                    value={productEditDraft.weight_grams}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, weight_grams: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Ship time min (days)</div>
+                                                <input
+                                                    value={productEditDraft.ship_time_min_days}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, ship_time_min_days: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Ship time max (days)</div>
+                                                <input
+                                                    value={productEditDraft.ship_time_max_days}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, ship_time_max_days: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Origin country</div>
+                                                <input
+                                                    value={productEditDraft.origin_country}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, origin_country: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Origin region</div>
+                                                <input
+                                                    value={productEditDraft.origin_region}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, origin_region: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Origin city</div>
+                                                <input
+                                                    value={productEditDraft.origin_city}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, origin_city: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Images</div>
+                                                <label className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${
+                                                    productEditUploading ? 'bg-black/[0.04] text-[#1A1A1A]/35 cursor-not-allowed' : 'bg-[#0171E3]/10 text-[#0171E3]/80 hover:bg-[#0171E3]/15 cursor-pointer'
+                                                }`}>
+                                                    {productEditUploading ? 'Uploading…' : 'Upload'}
+                                                    <input
+                                                        key={productEditUploadKey}
+                                                        type="file"
+                                                        accept="image/*"
+                                                        multiple
+                                                        className="hidden"
+                                                        disabled={productEditUploading}
+                                                        onChange={(e) => void uploadProductImages(e.target.files)}
+                                                    />
+                                                </label>
+                                            </div>
+                                            <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                                                {(Array.isArray(productEditData?.media) ? productEditData.media : [])
+                                                    .filter((m: any) => String(m?.media_type).toLowerCase() === 'image')
+                                                    .slice()
+                                                    .sort((a: any, b: any) => Number(a?.position ?? 0) - Number(b?.position ?? 0))
+                                                    .map((m: any) => {
+                                                        const mid = Number(m?.id || 0);
+                                                        const url = asString(m?.public_url);
+                                                        return (
+                                                            <div key={asString(m?.id)} className="relative rounded-2xl overflow-hidden border border-black/[0.06] bg-white aspect-square">
+                                                                {url ? (
+                                                                    <img src={url} alt={asString(m?.title || 'image')} className="w-full h-full object-cover" />
+                                                                ) : (
+                                                                    <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-[#1A1A1A]/25">—</div>
+                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={!mid || productEditDeletingId === mid}
+                                                                    onClick={() => void deleteProductMedia(mid)}
+                                                                    className={`absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center ${
+                                                                        productEditDeletingId === mid ? 'bg-black/[0.08] text-[#1A1A1A]/35 cursor-not-allowed' : 'bg-black/[0.06] hover:bg-black/[0.10] text-[#1A1A1A]/65'
+                                                                    }`}
+                                                                    aria-label="Remove image"
+                                                                >
+                                                                    <X size={14} strokeWidth={2.5} />
+                                                                </button>
+                                                            </div>
+                                                        );
+                                                    })}
+                                            </div>
+                                            {(Array.isArray(productEditData?.media) ? productEditData.media : []).filter((m: any) => String(m?.media_type).toLowerCase() === 'image').length === 0 ? (
+                                                <div className="text-[12px] font-medium text-[#1A1A1A]/40">No images yet.</div>
+                                            ) : null}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2 border-t border-black/[0.06]">
+                                <button
+                                    type="button"
+                                    onClick={closeProductEdit}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void saveProductEdit()}
+                                    disabled={productEditSaving || productEditLoading}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        productEditSaving || productEditLoading ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {productEditSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {sampleEditOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[75] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeSampleEdit();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[520px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Update samples</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(sampleEditTarget?.id)} · {asString(sampleEditTarget?.product_name)}
+                                    </div>
+                                </div>
+                                <button onClick={closeSampleEdit} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-3">
+                                <div className="text-[12px] font-medium text-[#1A1A1A]/50">
+                                    This controls sample availability (the “No samples / Low samples” status). Buyer purchasing is still made-to-order.
+                                </div>
+                                <input
+                                    value={sampleEditQty}
+                                    onChange={(e) => setSampleEditQty(e.target.value)}
+                                    placeholder="Sample quantity"
+                                    inputMode="numeric"
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                />
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeSampleEdit}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitSampleEdit()}
+                                    disabled={sampleEditSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        sampleEditSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {sampleEditSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {stockEditOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[76] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeStockEdit();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[560px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Update stock</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(stockEditTarget?.id)} · {asString(stockEditTarget?.product_name)}
+                                    </div>
+                                </div>
+                                <button onClick={closeStockEdit} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-4">
+                                <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-2 flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setStockEditMode('made_to_order')}
+                                        className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                            stockEditMode === 'made_to_order' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                        }`}
+                                    >
+                                        Made to order
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setStockEditMode('seller_stock')}
+                                        className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                            stockEditMode === 'seller_stock' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                        }`}
+                                    >
+                                        Track stock
+                                    </button>
+                                </div>
+
+                                {stockEditMode === 'seller_stock' ? (
+                                    <input
+                                        value={stockEditQty}
+                                        onChange={(e) => setStockEditQty(e.target.value)}
+                                        placeholder="Stock quantity"
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                ) : (
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/50">
+                                        Buyers can place orders even when stock is zero. Use this when you manufacture on demand.
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={closeStockEdit}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitStockEdit()}
+                                    disabled={stockEditSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        stockEditSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {stockEditSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {thresholdsOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[77] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) setThresholdsOpen(false);
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[560px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Alert thresholds</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1">
+                                        Low stock: {sellerThresholds.stockLow} · Low samples: {sellerThresholds.sampleLow}
+                                    </div>
+                                </div>
+                                <button onClick={() => setThresholdsOpen(false)} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Low stock threshold</div>
+                                    <input
+                                        value={thresholdsDraft.stockLow}
+                                        onChange={(e) => setThresholdsDraft((d) => ({ ...d, stockLow: e.target.value }))}
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+                                <div>
+                                    <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Low samples threshold</div>
+                                    <input
+                                        value={thresholdsDraft.sampleLow}
+                                        onChange={(e) => setThresholdsDraft((d) => ({ ...d, sampleLow: e.target.value }))}
+                                        inputMode="numeric"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setThresholdsOpen(false)}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void saveThresholds()}
+                                    disabled={thresholdsSaving}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        thresholdsSaving ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {thresholdsSaving ? 'Saving…' : 'Save'}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {quickOpen && quickTarget && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[74]"
+                        onClick={closeQuick}
+                    >
+                        <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }} />
+                        <motion.div
+                            initial={{ x: 40, opacity: 0 }}
+                            animate={{ x: 0, opacity: 1 }}
+                            exit={{ x: 40, opacity: 0 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="absolute right-0 top-0 h-full w-full max-w-[440px] bg-white/95 backdrop-blur-2xl border-l border-black/[0.06] overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight truncate">
+                                        {asString(quickTarget?._product?.name || quickTarget?._product?.title || quickTarget?.product_name, '—')}
+                                    </div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{asString(quickTarget?.id)} · {asString(quickTarget?.category_label, 'Uncategorized')}
+                                    </div>
+                                </div>
+                                <button onClick={closeQuick} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-5 overflow-auto h-[calc(100%-76px)]">
+                                <div className="flex flex-wrap gap-2">
+                                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55">
+                                        Stage: {asString(quickTarget?.stage).toLowerCase() === 'done' ? 'published' : asString(quickTarget?.stage)}
+                                    </span>
+                                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55">
+                                        Stock: {asString(quickTarget?.product_fulfillment_mode, 'made_to_order').toLowerCase() === 'seller_stock'
+                                            ? (Number(quickTarget?.product_stock_units ?? 0) <= 0 ? 'out' : `in (${Number(quickTarget?.product_stock_units ?? 0)})`)
+                                            : 'made to order'}
+                                    </span>
+                                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55">
+                                        Samples: {Number(quickTarget?.sample_units ?? 0) <= 0 ? '0' : Number(quickTarget?.sample_units ?? 0)}
+                                    </span>
+                                </div>
+
+                                {asString(quickTarget?.compliance_notes) ? (
+                                    <div className="rounded-2xl bg-amber-500/5 border border-amber-500/10 p-4">
+                                        <div className="text-[10px] font-black text-amber-700/70 uppercase tracking-[1.5px]">Admin note</div>
+                                        <div className="mt-1 text-[12px] font-medium text-[#1A1A1A]/70 whitespace-pre-wrap break-words">
+                                            {asString(quickTarget?.compliance_notes)}
+                                        </div>
+                                    </div>
+                                ) : null}
+
+                                {getCreatedProductId(quickTarget) && (Number(quickTarget?.product_feedback_unread ?? 0) > 0 || asString(quickTarget?.product_feedback_latest?.message)) ? (
+                                    <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-4">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/35 uppercase tracking-[1.5px]">Feedback</div>
+                                                <div className="mt-1 text-[12px] font-medium text-[#1A1A1A]/70 whitespace-pre-wrap break-words">
+                                                    {asString(quickTarget?.product_feedback_latest?.message, '—')}
+                                                </div>
+                                            </div>
+                                            {Number(quickTarget?.product_feedback_unread ?? 0) > 0 ? (
+                                                <span className="px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.2px] bg-[#E5484D]/10 text-[#E5484D]/80">
+                                                    {Number(quickTarget?.product_feedback_unread ?? 0)} new
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => void openFeedback(quickTarget)}
+                                            className="mt-3 w-full px-4 py-2.5 rounded-2xl text-[12px] font-black bg-black/[0.04] text-[#1A1A1A]/65 hover:bg-black/[0.06]"
+                                        >
+                                            View feedback
+                                        </button>
+                                    </div>
+                                ) : null}
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => void openHistory(quickTarget)}
+                                        className="px-4 py-2.5 rounded-2xl text-[12px] font-black bg-black/[0.04] text-[#1A1A1A]/65 hover:bg-black/[0.06]"
+                                    >
+                                        View history
+                                    </button>
+                                    {asString(quickTarget?.stage).toLowerCase() === 'samples' && quickTarget?.product_meta?.review_message ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => openListingFix(quickTarget)}
+                                            className="px-4 py-2.5 rounded-2xl text-[12px] font-black bg-[#1A1A1A] text-white hover:bg-[#2A2A2A]"
+                                        >
+                                            Fix & resubmit
+                                        </button>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setThresholdsOpen(true); }}
+                                            className="px-4 py-2.5 rounded-2xl text-[12px] font-black bg-[#0171E3]/10 text-[#0171E3]/80 hover:bg-[#0171E3]/15"
+                                        >
+                                            Alerts
+                                        </button>
+                                    )}
+                                </div>
+
+                                {(!!quickTarget?.created_product || asString(quickTarget?.stage).toLowerCase() === 'done') ? (
+                                    <>
+                                        {getCreatedProductId(quickTarget) ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => void openProductEdit(quickTarget)}
+                                                className="w-full px-4 py-2.5 rounded-2xl text-[12px] font-black bg-black/[0.04] text-[#1A1A1A]/65 hover:bg-black/[0.06]"
+                                            >
+                                                Edit product details & images
+                                            </button>
+                                        ) : null}
+                                        <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Bulk stock</div>
+                                            <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-2 flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setQuickStockMode('made_to_order')}
+                                                    className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                                        quickStockMode === 'made_to_order' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                                    }`}
+                                                >
+                                                    Made to order
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setQuickStockMode('seller_stock')}
+                                                    className={`flex-1 px-4 py-2.5 rounded-2xl text-[12px] font-black transition-colors ${
+                                                        quickStockMode === 'seller_stock' ? 'bg-[#1A1A1A] text-white' : 'bg-transparent text-[#1A1A1A]/55 hover:bg-black/[0.03]'
+                                                    }`}
+                                                >
+                                                    Track stock
+                                                </button>
+                                            </div>
+                                            {quickStockMode === 'seller_stock' ? (
+                                                <input
+                                                    value={quickStockQty}
+                                                    onChange={(e) => setQuickStockQty(e.target.value)}
+                                                    placeholder="Stock quantity"
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            ) : (
+                                                <div className="text-[12px] font-medium text-[#1A1A1A]/45">Buyers can order even when stock is 0.</div>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => void saveQuickStock()}
+                                                disabled={quickSavingStock}
+                                                className={`w-full px-4 py-2.5 rounded-2xl text-[12px] font-black text-white ${
+                                                    quickSavingStock ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                                }`}
+                                            >
+                                                {quickSavingStock ? 'Saving…' : 'Save stock'}
+                                            </button>
+                                        </div>
+
+                                        <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Samples</div>
+                                            <input
+                                                value={quickSamplesQty}
+                                                onChange={(e) => setQuickSamplesQty(e.target.value)}
+                                                placeholder="Sample quantity"
+                                                inputMode="numeric"
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => void saveQuickSamples()}
+                                                disabled={quickSavingSamples}
+                                                className={`w-full px-4 py-2.5 rounded-2xl text-[12px] font-black text-white ${
+                                                    quickSavingSamples ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                                }`}
+                                            >
+                                                {quickSavingSamples ? 'Saving…' : 'Save samples'}
+                                            </button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4">
+                                        <div className="text-[12px] font-medium text-[#1A1A1A]/55">
+                                            Stock and samples can be managed after the admin publishes the product.
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
             {effectiveView === 'select' ? (
                 /* ═══ WAREHOUSE SELECTION ═══ */
                 <motion.div
@@ -2083,7 +4196,7 @@ export function WarehouseView() {
                         })}
                     </div>
                 </motion.div>
-            ) : (
+            ) : effectiveView === 'inventory' ? (
                 /* ═══ INVENTORY DASHBOARD ═══ */
                 <div className="space-y-5">
 
@@ -2136,10 +4249,31 @@ export function WarehouseView() {
                     </motion.div>
 
                     {/* ── 2-column content ── */}
-                    <div className="flex flex-col lg:flex-row gap-5 items-start">
+                    <div className="flex flex-col lg:flex-row gap-5 items-start mt-6">
 
                         {/* Left: Requests + Inventory */}
                         <div className="flex-1 w-full min-w-0 space-y-5">
+                            {/* Tabs */}
+                            <div className="flex items-center gap-6 mb-2 border-b border-[#1A1A1A]/[0.03]">
+                                <button
+                                    onClick={() => setView('inventory')}
+                                    className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                        (view as string) === 'inventory' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                    }`}
+                                >
+                                    Inventory
+                                    {(view as string) === 'inventory' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                                </button>
+                                <button
+                                    onClick={() => setView('onboarding')}
+                                    className={`pb-3 px-2 text-[13px] font-bold transition-all relative ${
+                                        (view as string) === 'onboarding' ? 'text-[#1A1A1A]' : 'text-[#1A1A1A]/25 hover:text-[#1A1A1A]/45'
+                                    }`}
+                                >
+                                    Onboarding
+                                    {(view as string) === 'onboarding' && <motion.div layoutId="tab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1A1A1A] rounded-full" />}
+                                </button>
+                            </div>
 
                             {/* Requests */}
                             {releaseRequests.length > 0 && (
@@ -2295,7 +4429,6 @@ export function WarehouseView() {
                                                     const { minThreshold, maxCapacity, enabled: autoOrderEnabled } = settings;
                                                     
                                                     const percent = Math.round((currentStock / totalStock) * 100);
-                                                    const needsReorder = currentStock < minThreshold;
                                                     const [cr, cg, cb] = productColorMap[item.id] ? parseRgb(productColorMap[item.id]) : [150, 150, 150];
                                                     
                                                     return (
@@ -2863,7 +4996,453 @@ export function WarehouseView() {
                         </motion.div>
                     </div>
                 </div>
-            )}
+            ) : effectiveView === 'onboarding' ? (
+                /* ═══ ONBOARDING DASHBOARD ═══ */
+                <div className="flex flex-col lg:flex-row gap-5 items-start">
+                    <div className="flex-1 w-full min-w-0 space-y-5">
+                        <div className="flex items-baseline justify-between gap-4">
+                            <div className="min-w-0">
+                                <h2 className="text-[22px] font-black text-[#1A1A1A] tracking-tight leading-tight">Inventory</h2>
+                                <p className="text-[13px] font-medium text-[#1A1A1A]/25 mt-1">
+                                    Listings, approvals, and activity
+                                </p>
+                            </div>
+                            <div className="text-[12px] font-bold text-[#1A1A1A]/30 tabular-nums">
+                                {listingRequests.length} items
+                            </div>
+                        </div>
+
+                        {(() => {
+                            const total = listingRequests.length;
+                            const publishedRows = listingRequests.filter(lr => (lr.stage === 'done' || !!lr.created_product_id) && !!lr.created_product);
+                            const isSellerStock = (lr: any) => asString(lr?.product_fulfillment_mode, 'made_to_order').toLowerCase() === 'seller_stock';
+                            const bulkOos = publishedRows.filter(lr => isSellerStock(lr) && Number(lr?.product_stock_units ?? 0) <= 0).length;
+                            const bulkLow = publishedRows.filter(lr => isSellerStock(lr) && !!lr?.product_low_stock).length;
+                            const samplesOos = publishedRows.filter(lr => Number(lr?.sample_units ?? 0) <= 0).length;
+                            const samplesLow = publishedRows.filter(lr => !!lr?.sample_low_stock).length;
+                            const changes = listingRequests.filter(lr => lr.stage === 'samples' && lr.product_meta?.review_message).length;
+                            const needsAction = changes;
+                            const stats = [
+                                { k: 'Total', v: total },
+                                { k: 'Published', v: publishedRows.length },
+                                { k: 'Needs action', v: needsAction },
+                                { k: 'Bulk out', v: bulkOos },
+                                { k: 'Samples out', v: samplesOos },
+                                { k: 'Low alerts', v: bulkLow + samplesLow },
+                            ];
+                            return (
+                                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                                    {stats.map((s) => (
+                                        <div key={s.k} className="rounded-[18px] bg-white/45 border border-[#1A1A1A]/[0.06] px-4 py-3">
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">{s.k}</div>
+                                            <div className="mt-1 text-[16px] font-black text-[#1A1A1A]/80 tabular-nums">{Number(s.v).toLocaleString()}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        })()}
+
+                        {(() => {
+                            const q = listQuery.trim().toLowerCase();
+                            const baseRows = !q ? listingRequests : listingRequests.filter((lr) => {
+                                const name = asString(lr?.product_name).toLowerCase();
+                                const cat = asString(lr?.category_label).toLowerCase();
+                                const stage = asString(lr?.stage).toLowerCase();
+                                const id = asString(lr?.id).toLowerCase();
+                                const metaSku = asString(lr?.product_meta?.sku).toLowerCase();
+                                return name.includes(q) || cat.includes(q) || stage.includes(q) || id.includes(q) || metaSku.includes(q);
+                            });
+                            const isPublished = (lr: any) => !!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done';
+                            const hasChanges = (lr: any) => asString(lr?.stage).toLowerCase() === 'samples' && !!lr?.product_meta?.review_message;
+                            const mode = (lr: any) => asString(lr?.product_fulfillment_mode, 'made_to_order').toLowerCase();
+                            const stockUnits = (lr: any) => Number(lr?.product_stock_units ?? 0);
+                            const sampleUnits = (lr: any) => Number(lr?.sample_units ?? 0);
+
+                            const rows = baseRows.filter((lr) => {
+                                if (filters.publishedOnly && !isPublished(lr)) return false;
+                                if (filters.needsAction && !hasChanges(lr)) return false;
+                                if (filters.mode !== 'all' && mode(lr) !== filters.mode) return false;
+                                if (filters.bulk === 'oos') {
+                                    if (!isPublished(lr)) return false;
+                                    if (mode(lr) !== 'seller_stock') return false;
+                                    if (stockUnits(lr) > 0) return false;
+                                }
+                                if (filters.bulk === 'low') {
+                                    if (!isPublished(lr)) return false;
+                                    if (mode(lr) !== 'seller_stock') return false;
+                                    if (!lr?.product_low_stock) return false;
+                                }
+                                if (filters.samples === 'none') {
+                                    if (!isPublished(lr)) return false;
+                                    if (sampleUnits(lr) > 0) return false;
+                                }
+                                if (filters.samples === 'low') {
+                                    if (!isPublished(lr)) return false;
+                                    if (!lr?.sample_low_stock) return false;
+                                }
+                                return true;
+                            });
+
+                            const stagePill = (stage: string) => {
+                                const s = asString(stage).toLowerCase();
+                                if (s === 'done') return { label: 'Published', cls: 'bg-emerald-500/10 text-emerald-600' };
+                                if (s === 'live') return { label: 'Approved', cls: 'bg-emerald-500/10 text-emerald-600' };
+                                if (s === 'inspection') return { label: 'Inspection', cls: 'bg-amber-500/10 text-amber-600' };
+                                if (s === 'compliance') return { label: 'Compliance', cls: 'bg-[#0171E3]/10 text-[#0171E3]' };
+                                if (s === 'samples') return { label: 'Changes', cls: 'bg-[#0171E3]/10 text-[#0171E3]' };
+                                return { label: s || '—', cls: 'bg-black/[0.04] text-[#1A1A1A]/55' };
+                            };
+
+                            return (
+                                <div className="space-y-3">
+                                    <Glass className="bg-white/45 rounded-full px-4 py-2.5 flex items-center gap-3 border border-[#1A1A1A]/[0.06]">
+                                        <Search size={15} strokeWidth={2} className="text-[#1A1A1A]/25 flex-shrink-0" />
+                                        <input
+                                            type="text"
+                                            value={listQuery}
+                                            onChange={(e) => setListQuery(e.target.value)}
+                                            placeholder="Search product, category, sku, stage, id…"
+                                            className="flex-1 bg-transparent text-[13px] font-medium text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/18 focus:outline-none"
+                                        />
+                                        {listQuery && (
+                                            <button onClick={() => setListQuery('')} className="text-[#1A1A1A]/25 hover:text-[#1A1A1A]/55 transition-colors">
+                                                <X size={13} strokeWidth={2.5} />
+                                            </button>
+                                        )}
+                                    </Glass>
+
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setFilters((f) => ({ ...f, needsAction: !f.needsAction }))}
+                                            className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] transition-colors ${
+                                                filters.needsAction ? 'bg-[#1A1A1A] text-white' : 'bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06]'
+                                            }`}
+                                        >
+                                            Needs action
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setFilters((f) => ({ ...f, publishedOnly: !f.publishedOnly }))}
+                                            className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] transition-colors ${
+                                                filters.publishedOnly ? 'bg-[#1A1A1A] text-white' : 'bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06]'
+                                            }`}
+                                        >
+                                            Published
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setFilters((f) => ({
+                                                    ...f,
+                                                    bulk: f.bulk === 'all' ? 'oos' : f.bulk === 'oos' ? 'low' : 'all',
+                                                }))
+                                            }
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06] transition-colors"
+                                        >
+                                            Bulk: {filters.bulk === 'all' ? 'All' : filters.bulk === 'oos' ? 'Out' : 'Low'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setFilters((f) => ({
+                                                    ...f,
+                                                    samples: f.samples === 'all' ? 'none' : f.samples === 'none' ? 'low' : 'all',
+                                                }))
+                                            }
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06] transition-colors"
+                                        >
+                                            Samples: {filters.samples === 'all' ? 'All' : filters.samples === 'none' ? 'Out' : 'Low'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setFilters((f) => ({
+                                                    ...f,
+                                                    mode: f.mode === 'all' ? 'made_to_order' : f.mode === 'made_to_order' ? 'seller_stock' : 'all',
+                                                }))
+                                            }
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.04] text-[#1A1A1A]/55 hover:bg-black/[0.06] transition-colors"
+                                        >
+                                            Mode: {filters.mode === 'all' ? 'All' : filters.mode === 'made_to_order' ? 'MTO' : 'Tracked'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setFilters({ publishedOnly: false, needsAction: false, bulk: 'all', samples: 'all', mode: 'all' });
+                                                setListQuery('');
+                                            }}
+                                            className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-black/[0.03] text-[#1A1A1A]/45 hover:bg-black/[0.05] transition-colors"
+                                        >
+                                            Reset
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setThresholdsOpen(true)}
+                                            className="ml-auto inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] bg-[#0171E3]/10 text-[#0171E3]/80 hover:bg-[#0171E3]/15 transition-colors"
+                                        >
+                                            <SlidersHorizontal size={12} strokeWidth={2.5} />
+                                            Alerts
+                                        </button>
+                                    </div>
+
+                                    {rows.length === 0 ? (
+                                        <div className="py-14 text-center">
+                                            <div className="w-14 h-14 bg-[#1A1A1A]/[0.02] rounded-full flex items-center justify-center mx-auto mb-3">
+                                                <PenLine size={20} className="text-[#1A1A1A]/10" />
+                                            </div>
+                                            <h3 className="text-[15px] font-bold text-[#1A1A1A]/45">No results</h3>
+                                            <p className="text-[13px] text-[#1A1A1A]/25 mt-1">Try a different search.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-[22px] bg-white/45 border border-[#1A1A1A]/[0.06] overflow-hidden">
+                                            <div className="px-5 py-3 bg-black/[0.02] border-b border-black/[0.06] flex items-center justify-between">
+                                                <div className="text-[11px] font-black text-[#1A1A1A]/40 uppercase tracking-[1.5px]">Products</div>
+                                                <div className="text-[11px] font-bold text-[#1A1A1A]/30 tabular-nums">{rows.length}</div>
+                                            </div>
+                                            <div className="divide-y divide-black/[0.04]">
+                                                {rows.map((lr) => {
+                                                    const pill = stagePill(lr?.stage);
+                                                    const hasChanges = asString(lr?.stage).toLowerCase() === 'samples' && !!lr?.product_meta?.review_message;
+                                                    const hasFeedback = !!asString(lr?.compliance_notes);
+                                                    const feedbackUnread = Number(lr?.product_feedback_unread ?? 0);
+                                                    const sampleUnits = Number(lr?.sample_units ?? 0);
+                                                    const sampleLow = !!lr?.sample_low_stock;
+                                                    const isPublished = !!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done';
+                                                    const displayName = isPublished
+                                                        ? asString(lr?._product?.name || lr?._product?.title || lr?.product_name, '—')
+                                                        : asString(lr?.product_name, '—');
+                                                    const displayThumb = isPublished
+                                                        ? asString(lr?._product?.hero_image_url) || asString(lr?.photos?.[0]?.file_url)
+                                                        : asString(lr?.photos?.[0]?.file_url);
+                                                    const isRowMenuOpen = rowMenuId === lr?.id;
+                                                    const sampleLabel =
+                                                        !isPublished ? '' :
+                                                        sampleUnits <= 0 ? 'Samples: 0' :
+                                                        sampleLow ? 'Low samples' :
+                                                        `Samples: ${sampleUnits.toLocaleString()}`;
+                                                    const sampleCls =
+                                                        sampleUnits <= 0 ? 'bg-[#E5484D]/10 text-[#E5484D]/80' :
+                                                        sampleLow ? 'bg-[#FFB224]/10 text-[#FFB224]/80' :
+                                                        'bg-black/[0.04] text-[#1A1A1A]/55';
+                                                    const prodMode = asString(lr?.product_fulfillment_mode, 'made_to_order').toLowerCase();
+                                                    const prodUnits = Number(lr?.product_stock_units ?? 0);
+                                                    const prodLow = !!lr?.product_low_stock;
+                                                    const stockLabel =
+                                                        !isPublished ? '' :
+                                                        prodMode !== 'seller_stock' ? 'Made to order' :
+                                                        prodUnits <= 0 ? 'Out of stock' :
+                                                        prodLow ? 'Low stock' :
+                                                        `In stock: ${prodUnits.toLocaleString()}`;
+                                                    const stockCls =
+                                                        prodMode !== 'seller_stock' ? 'bg-[#0171E3]/10 text-[#0171E3]/80' :
+                                                        prodUnits <= 0 ? 'bg-[#E5484D]/10 text-[#E5484D]/80' :
+                                                        prodLow ? 'bg-[#FFB224]/10 text-[#FFB224]/80' :
+                                                        'bg-black/[0.04] text-[#1A1A1A]/55';
+                                                    return (
+                                                        <div
+                                                            key={asString(lr?.id)}
+                                                            className="px-5 py-4 flex items-center gap-4 hover:bg-black/[0.02] transition-colors cursor-pointer"
+                                                            onClick={() => openQuick(lr)}
+                                                        >
+                                                            <div className="w-11 h-11 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04] flex-shrink-0">
+                                                                {displayThumb ? (
+                                                                    <img src={displayThumb} alt={displayName} className="w-full h-full object-cover" />
+                                                                ) : (
+                                                                    <Package size={18} className="text-[#1A1A1A]/20" />
+                                                                )}
+                                                            </div>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="flex items-center gap-2 min-w-0">
+                                                                    <div className="text-[13px] font-black text-[#1A1A1A]/85 truncate">{displayName}</div>
+                                                                    {hasChanges && (
+                                                                        <span className="text-[10px] font-black text-[#0171E3]/70 bg-[#0171E3]/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">Action</span>
+                                                                    )}
+                                                                    {feedbackUnread > 0 && (
+                                                                        <span className="text-[10px] font-black text-[#E5484D]/80 bg-[#E5484D]/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">
+                                                                            Feedback {feedbackUnread}
+                                                                        </span>
+                                                                    )}
+                                                                    {hasFeedback && !hasChanges && (
+                                                                        <span className="text-[10px] font-black text-amber-700/70 bg-amber-500/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">Note</span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="text-[11px] font-medium text-[#1A1A1A]/35 mt-0.5 truncate">
+                                                                    {asString(lr?.category_label, 'Uncategorized')} · #{asString(lr?.id)}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-3 flex-shrink-0">
+                                                                {isPublished && (
+                                                                    <span
+                                                                        title="Bulk stock for buyer orders"
+                                                                        className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${stockCls}`}
+                                                                    >
+                                                                        {stockLabel}
+                                                                    </span>
+                                                                )}
+                                                                {isPublished && (
+                                                                    <span
+                                                                        title="Sample stock (separate from bulk stock)"
+                                                                        className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${sampleCls}`}
+                                                                    >
+                                                                        {sampleLabel}
+                                                                    </span>
+                                                                )}
+                                                                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${pill.cls}`}>{pill.label}</span>
+                                                                <div className="text-[10px] font-bold text-[#1A1A1A]/25 tabular-nums hidden sm:block">
+                                                                    {lr?.created_at ? new Date(lr.created_at).toLocaleDateString() : '—'}
+                                                                </div>
+                                                                <div className="relative">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            if (isRowMenuOpen) {
+                                                                                setRowMenuId(null);
+                                                                                setRowMenuTarget(null);
+                                                                                setRowMenuPos(null);
+                                                                                return;
+                                                                            }
+                                                                            const btn = e.currentTarget as HTMLElement;
+                                                                            const rect = btn.getBoundingClientRect();
+                                                                            const right = Math.max(8, window.innerWidth - rect.right);
+                                                                            const top = Math.max(8, rect.bottom + 8);
+                                                                            setRowMenuId(lr?.id ?? null);
+                                                                            setRowMenuTarget(lr);
+                                                                            setRowMenuPos({ top, right });
+                                                                        }}
+                                                                        className="w-9 h-9 rounded-full bg-black/[0.03] hover:bg-black/[0.06] flex items-center justify-center transition-colors"
+                                                                        aria-label="Actions"
+                                                                    >
+                                                                        <MoreHorizontal size={16} className="text-[#1A1A1A]/55" />
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+                    </div>
+                </div>
+            ) : null}
+
+            {rowMenuId && rowMenuTarget && rowMenuPos ? (
+                <ClientPortal>
+                    <div className="fixed inset-0 z-[120]" aria-hidden="true">
+                        <div className="absolute inset-0" />
+                        <div
+                            ref={rowMenuRef}
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute w-[220px] rounded-[18px] bg-white/95 backdrop-blur-2xl border border-black/[0.08] overflow-hidden shadow-[0_18px_60px_-20px_rgba(0,0,0,0.35)]"
+                            style={{ top: rowMenuPos.top, right: rowMenuPos.right }}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const lr = rowMenuTarget;
+                                    setRowMenuId(null);
+                                    setRowMenuTarget(null);
+                                    setRowMenuPos(null);
+                                    void openHistory(lr);
+                                }}
+                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                            >
+                                View history
+                            </button>
+                            {(!!rowMenuTarget?.created_product || asString(rowMenuTarget?.stage).toLowerCase() === 'done') && getCreatedProductId(rowMenuTarget) ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const lr = rowMenuTarget;
+                                        setRowMenuId(null);
+                                        setRowMenuTarget(null);
+                                        setRowMenuPos(null);
+                                        void openProductEdit(lr);
+                                    }}
+                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                >
+                                    Edit product
+                                </button>
+                            ) : null}
+                            {(!!rowMenuTarget?.created_product || asString(rowMenuTarget?.stage).toLowerCase() === 'done') ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const lr = rowMenuTarget;
+                                            setRowMenuId(null);
+                                            setRowMenuTarget(null);
+                                            setRowMenuPos(null);
+                                            openStockEdit(lr);
+                                        }}
+                                        className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                    >
+                                        Update stock
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const lr = rowMenuTarget;
+                                            setRowMenuId(null);
+                                            setRowMenuTarget(null);
+                                            setRowMenuPos(null);
+                                            openSampleEdit(lr);
+                                        }}
+                                        className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                    >
+                                        Update samples
+                                    </button>
+                                </>
+                            ) : null}
+                            {asString(rowMenuTarget?.stage).toLowerCase() === 'samples' && !!rowMenuTarget?.product_meta?.review_message ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const lr = rowMenuTarget;
+                                        setRowMenuId(null);
+                                        setRowMenuTarget(null);
+                                        setRowMenuPos(null);
+                                        openListingFix(lr);
+                                    }}
+                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                >
+                                    Fix & resubmit
+                                </button>
+                            ) : null}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const lr = rowMenuTarget;
+                                    setRowMenuId(null);
+                                    setRowMenuTarget(null);
+                                    setRowMenuPos(null);
+                                    try {
+                                        const ta = document.createElement('textarea');
+                                        ta.value = String(lr?.id || '');
+                                        ta.style.position = 'fixed';
+                                        ta.style.opacity = '0';
+                                        document.body.appendChild(ta);
+                                        ta.select();
+                                        document.execCommand('copy');
+                                        document.body.removeChild(ta);
+                                        toast.success('Listing id copied');
+                                    } catch {
+                                        toast.error('Could not copy');
+                                    }
+                                }}
+                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                            >
+                                Copy listing id
+                            </button>
+                        </div>
+                    </div>
+                </ClientPortal>
+            ) : null}
         </motion.div>
     );
 }

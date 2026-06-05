@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 from django.utils.text import slugify
 from uuid import uuid4
 
@@ -48,6 +49,10 @@ class Product(models.Model):
         ACTIVE = "active", "Active"
         ARCHIVED = "archived", "Archived"
 
+    class FulfillmentMode(models.TextChoices):
+        MADE_TO_ORDER = "made_to_order", "Made to order"
+        SELLER_STOCK = "seller_stock", "Seller stock"
+
     class IpProtectionLevel(models.TextChoices):
         LOW = "low", "Low"
         MEDIUM = "medium", "Medium"
@@ -77,6 +82,8 @@ class Product(models.Model):
     seller_rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     ip_protection_level = models.CharField(max_length=16, choices=IpProtectionLevel.choices, default=IpProtectionLevel.LOW)
     detail_config = models.JSONField(default=dict, blank=True)
+    fulfillment_mode = models.CharField(max_length=16, choices=FulfillmentMode.choices, default=FulfillmentMode.MADE_TO_ORDER)
+    seller_stock_units = models.PositiveIntegerField(default=0)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -111,7 +118,9 @@ def _listing_request_upload_to(instance, filename: str) -> str:
 class ListingRequest(models.Model):
     class Stage(models.TextChoices):
         SAMPLES = "samples", "Samples"
+        COMPLIANCE = "compliance", "Compliance"
         INSPECTION = "inspection", "Inspection"
+        INBOUND = "inbound", "Inbound"
         LIVE = "live", "Live"
         DONE = "done", "Done"
 
@@ -133,7 +142,19 @@ class ListingRequest(models.Model):
     pickup_contact_name = models.CharField(max_length=160, blank=True)
     pickup_phone = models.CharField(max_length=32, blank=True)
 
+    product_meta = models.JSONField(default=dict, blank=True)
+
     stage = models.CharField(max_length=16, choices=Stage.choices, default=Stage.SAMPLES)
+    inspector = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="listing_inspections",
+    )
+    inspected = models.BooleanField(default=False)
+    compliance_verified = models.BooleanField(default=False)
+    compliance_notes = models.TextField(blank=True)
     rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     created_product = models.ForeignKey("Product", on_delete=models.SET_NULL, null=True, blank=True, related_name="created_from_listing_requests")
 
@@ -200,6 +221,44 @@ class PricingTier(models.Model):
 
     def __str__(self):
         return f"tier:{self.pk}"
+
+
+class ProductFeedback(models.Model):
+    class Kind(models.TextChoices):
+        INFO = "info", "Info"
+        WARNING = "warning", "Warning"
+        ACTION_REQUIRED = "action_required", "Action required"
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="feedback")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="product_feedback")
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="product_feedback_authored",
+    )
+    kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.INFO)
+    message = models.TextField()
+    read_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["seller", "created_at"]),
+            models.Index(fields=["product", "created_at"]),
+            models.Index(fields=["seller", "product", "read_at"]),
+        ]
+
+    def __str__(self):
+        return f"product_feedback:{self.pk}:{self.product_id}"
+
+    def mark_read(self):
+        if self.read_at:
+            return
+        self.read_at = timezone.now()
+        self.save(update_fields=["read_at"])
 
 
 def resolve_unit_price(product: Product, variation: "ProductVariation | None", quantity: int):
@@ -413,3 +472,46 @@ class WarehouseStock(models.Model):
 
     def __str__(self):
         return f"warehouse_stock:{self.warehouse_id}:{self.product_id}:{self.id}"
+
+
+class InboundRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SHIPPED = "shipped", "Shipped"
+        RECEIVED = "received", "Received"
+        CANCELLED = "cancelled", "Cancelled"
+
+    listing_request = models.OneToOneField(
+        "ListingRequest",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="inbound_request",
+    )
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="inbound_requests")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name="inbound_requests")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    tracking_number = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["seller", "status"]),
+            models.Index(fields=["warehouse", "status"]),
+        ]
+
+    def __str__(self):
+        return f"inbound:{self.id}:{self.seller_id}"
+
+
+class InboundRequestItem(models.Model):
+    inbound_request = models.ForeignKey(InboundRequest, on_delete=models.CASCADE, related_name="items")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    variation = models.ForeignKey(ProductVariation, on_delete=models.SET_NULL, null=True, blank=True)
+    quantity_expected = models.PositiveIntegerField()
+    quantity_received = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return f"inbound_item:{self.id}"

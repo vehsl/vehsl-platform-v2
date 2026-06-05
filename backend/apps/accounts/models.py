@@ -57,6 +57,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         SELLER = "seller", "Seller"
         ADMIN = "admin", "Admin"
         PARTNER = "partner", "Partner"
+        LOGISTICS = "logistics", "Logistics"
 
     class AccountType(models.TextChoices):
         BUYER = "buyer", "Buyer"
@@ -244,6 +245,7 @@ class SellerProfile(models.Model):
     warehouse_location = models.JSONField(default=dict, blank=True)
     vehsl_rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     sample_low_threshold = models.PositiveIntegerField(default=0)
+    stock_low_threshold = models.PositiveIntegerField(default=0)
 
     class Meta:
         indexes = [

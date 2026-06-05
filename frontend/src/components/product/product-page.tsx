@@ -47,8 +47,11 @@ type Product = {
   weight_grams?: number;
   ship_time_min_days?: number;
   ship_time_max_days?: number;
+  fulfillment_mode?: string;
+  seller_stock_units?: number;
   sample_available?: boolean;
   sample_ship_days?: number;
+  sample_units?: number;
   images?: string[];
   media?: Array<{
     id: number;
@@ -73,6 +76,8 @@ type Product = {
   seller_name?: string;
   hero_image_url?: string;
   detail_config?: Record<string, unknown>;
+  quantity_available?: number;
+  stock_status?: string;
 };
 
 type BuyerAddress = {
@@ -149,6 +154,16 @@ export function ProductPage() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareProducts, setCompareProducts] = useState<Product[]>([]);
 
+  const fulfillmentMode = useMemo(() => (product?.fulfillment_mode || "").toString().toLowerCase(), [product?.fulfillment_mode]);
+  const isSellerStock = fulfillmentMode === "seller_stock";
+  const bulkAvailable = useMemo(() => {
+    if (!product) return 0;
+    const v = Number(product.quantity_available ?? (product as any).seller_stock_units ?? 0);
+    return Number.isFinite(v) ? v : 0;
+  }, [product]);
+  const isOutOfStock = Boolean(product && isSellerStock && bulkAvailable <= 0);
+  const maxQty = product && isSellerStock ? Math.max(0, Math.floor(bulkAvailable)) : null;
+
   const fetchProduct = useCallback(async () => {
     if (!productId || !Number.isFinite(productId)) {
       setProduct(null);
@@ -197,16 +212,33 @@ export function ProductPage() {
   }, [productId]);
 
   useEffect(() => {
+    if (!product) return;
+    if (maxQty == null) return;
+    if (maxQty <= 0) {
+      setQty(1);
+      setQtyDraft("1");
+      setQtyEditing(false);
+      return;
+    }
+    setQty((prev) => {
+      const next = Math.max(1, Math.min(maxQty, Number(prev) || 1));
+      if (!qtyEditing) setQtyDraft(String(next));
+      return next;
+    });
+  }, [maxQty, product, qtyEditing]);
+
+  useEffect(() => {
     if (!qtyEditing) setQtyDraft(String(Math.max(1, Number(qty) || 1)));
   }, [qty, qtyEditing]);
 
   const bumpQty = useCallback((delta: number) => {
     setQty((prev) => {
-      const next = Math.max(1, (Number(prev) || 1) + delta);
+      const base = Math.max(1, (Number(prev) || 1) + delta);
+      const next = maxQty == null ? base : Math.max(1, Math.min(maxQty || 1, base));
       setQtyDraft(String(next));
       return next;
     });
-  }, []);
+  }, [maxQty]);
 
   const optionGroups = useMemo(() => {
     const vars = Array.isArray(product?.variations) ? product!.variations! : [];
@@ -936,8 +968,9 @@ export function ProductPage() {
     const needsVariation = normalizedGroups.length > 0;
     const allSelected = normalizedGroups.every((g) => Boolean(selectedAttrs[g.key]));
     const variationOk = needsVariation ? allSelected && Boolean(selectedVariationId) : true;
-    return variationOk;
-  }, [normalizedGroups, selectedAttrs, selectedVariationId]);
+    const stockOk = (product?.quantity_available ?? 0) >= qty;
+    return variationOk && stockOk && !isOutOfStock;
+  }, [isOutOfStock, normalizedGroups, product?.quantity_available, qty, selectedAttrs, selectedVariationId]);
 
   const copyShareLink = useCallback(async () => {
     try {
@@ -1536,11 +1569,31 @@ export function ProductPage() {
                       {t("Quantity.", "数量。")}{" "}
                       <span className="font-medium text-[#1A1A1A]/40">{t("How many do you need?", "你需要多少？")}</span>
                     </div>
-                    {tiers.length ? (
+                    {isOutOfStock ? (
+                      <div className="mt-3 rounded-3xl border border-black/[0.06] bg-black/[0.02] p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="text-[12px] font-extrabold text-[#1A1A1A]/80">{t("Out of stock", "暂时缺货")}</div>
+                            <div className="mt-1 text-[12px] text-[#1A1A1A]/40">
+                              {t("This product is currently unavailable for bulk purchase.", "该商品目前无法购买大货。")}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={toggling || !hasAccessToken}
+                            onClick={() => void toggleWishlist()}
+                            className="h-10 rounded-full bg-black px-4 text-[12px] font-semibold text-white disabled:bg-black/10 disabled:text-[#1A1A1A]/35"
+                          >
+                            {wishlisted ? t("Saved", "已收藏") : t("Notify me", "到货提醒")}
+                          </button>
+                        </div>
+                      </div>
+                    ) : tiers.length ? (
                       <div className="mt-3 rounded-3xl border border-black/[0.06] bg-[#ff2d55]/[0.06] p-4">
                         <div className="space-y-2">
                           {tiers.map((row) => {
                             const selected = row.id === selectedTierId;
+                            const disabledByStock = maxQty != null && maxQty > 0 && row.min_quantity > maxQty;
                             const label = row.max_quantity
                               ? t(`${row.min_quantity}–${row.max_quantity} units`, `${row.min_quantity}–${row.max_quantity} 件`)
                               : t(`${row.min_quantity}+ units`, `${row.min_quantity}+ 件`);
@@ -1548,14 +1601,17 @@ export function ProductPage() {
                               <button
                                 key={row.id}
                                 type="button"
+                                disabled={disabledByStock}
                                 onClick={() => {
+                                  if (disabledByStock) return;
                                   setSelectedTierId(row.id);
                                   const nextQty = Math.max(1, row.min_quantity);
-                                  setQty(nextQty);
-                                  setQtyDraft(String(nextQty));
+                                  const clamped = maxQty == null ? nextQty : Math.max(1, Math.min(maxQty || 1, nextQty));
+                                  setQty(clamped);
+                                  setQtyDraft(String(clamped));
                                   setQtyEditing(false);
                                 }}
-                                className="flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-left hover:bg-white/40"
+                                className={`flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-left ${disabledByStock ? "opacity-40 cursor-not-allowed" : "hover:bg-white/40"}`}
                               >
                                 <div
                                   className={`h-5 w-5 rounded-md border ${selected ? "border-black/40 bg-white" : "border-black/[0.12] bg-white/70"}`}
@@ -1588,7 +1644,10 @@ export function ProductPage() {
                                 setQtyDraft(cleaned);
                                 if (!cleaned) return;
                                 const n = parseInt(cleaned, 10);
-                                if (Number.isFinite(n) && n > 0) setQty(n);
+                                if (Number.isFinite(n) && n > 0) {
+                                  const next = maxQty == null ? n : Math.max(1, Math.min(maxQty || 1, n));
+                                  setQty(next);
+                                }
                               }}
                               onBlur={() => {
                                 setQtyEditing(false);
@@ -1598,7 +1657,8 @@ export function ProductPage() {
                                   return;
                                 }
                                 const n = parseInt(cleaned, 10);
-                                const next = Number.isFinite(n) && n > 0 ? n : 1;
+                                const base = Number.isFinite(n) && n > 0 ? n : 1;
+                                const next = maxQty == null ? base : Math.max(1, Math.min(maxQty || 1, base));
                                 setQty(next);
                                 setQtyDraft(String(next));
                               }}
@@ -1637,7 +1697,10 @@ export function ProductPage() {
                               setQtyDraft(cleaned);
                               if (!cleaned) return;
                               const n = parseInt(cleaned, 10);
-                              if (Number.isFinite(n) && n > 0) setQty(n);
+                              if (Number.isFinite(n) && n > 0) {
+                                const next = maxQty == null ? n : Math.max(1, Math.min(maxQty || 1, n));
+                                setQty(next);
+                              }
                             }}
                             onBlur={() => {
                               setQtyEditing(false);
@@ -1647,7 +1710,8 @@ export function ProductPage() {
                                 return;
                               }
                               const n = parseInt(cleaned, 10);
-                              const next = Number.isFinite(n) && n > 0 ? n : 1;
+                              const base = Number.isFinite(n) && n > 0 ? n : 1;
+                              const next = maxQty == null ? base : Math.max(1, Math.min(maxQty || 1, base));
                               setQty(next);
                               setQtyDraft(String(next));
                             }}
@@ -1787,18 +1851,28 @@ export function ProductPage() {
                     onClick={() => void addThisToCart()}
                     className="mt-2 h-11 w-full rounded-full bg-black px-6 text-[12px] font-semibold text-white disabled:bg-black/10 disabled:text-[#1A1A1A]/35"
                   >
-                    {canAddToCart ? t("Add to cart", "加入购物车") : t("Select options above", "请先选择规格")}
+                    {product.stock_status === "out_of_stock" || (product.quantity_available ?? 0) < qty
+                      ? t("Out of Stock", "暂时缺货")
+                      : canAddToCart
+                        ? t("Add to cart", "加入购物车")
+                        : t("Select options above", "请先选择规格")}
                   </button>
 
                   <div className="mt-2 text-center text-[11px] text-[#1A1A1A]/35">
-                    {product.sample_available
+                    {(() => {
+                      const units = Number(product.sample_units ?? 0);
+                      const hasUnits = Number.isFinite(units) && units > 0;
+                      const fallback = Boolean(product.sample_available);
+                      const sampleOk = hasUnits || fallback;
+                      return sampleOk;
+                    })()
                       ? t(
-                          `Free sample available · Sample ships in ${Number(product.sample_ship_days ?? 0) || 0} days`,
-                          `可申请免费样品 · ${Number(product.sample_ship_days ?? 0) || 0} 天内发货`,
+                          `Samples available · Ships in ${Number(product.sample_ship_days ?? 0) || 0} days`,
+                          `样品可用 · ${Number(product.sample_ship_days ?? 0) || 0} 天内发货`,
                         )
                       : t(
-                          `No free sample · Ships in ${Number(product.ship_time_min_days ?? 0) || 0}–${Number(product.ship_time_max_days ?? 0) || 0} days`,
-                          `暂无免费样品 · ${Number(product.ship_time_min_days ?? 0) || 0}–${Number(product.ship_time_max_days ?? 0) || 0} 天内发货`,
+                          `Samples unavailable · Ships in ${Number(product.ship_time_min_days ?? 0) || 0}–${Number(product.ship_time_max_days ?? 0) || 0} days`,
+                          `暂无样品 · ${Number(product.ship_time_min_days ?? 0) || 0}–${Number(product.ship_time_max_days ?? 0) || 0} 天内发货`,
                         )}
                   </div>
                 </div>

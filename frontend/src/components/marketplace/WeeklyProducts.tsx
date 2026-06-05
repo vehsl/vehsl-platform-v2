@@ -14,6 +14,7 @@ type ApiProductRow = {
     price: string;
     hero_image_url?: string;
     average_rating?: number | null;
+    stock_status?: string;
 };
 
 export function WeeklyProducts() {
@@ -45,6 +46,7 @@ export function WeeklyProducts() {
             price: `${p.currency || "USD"} ${p.price || ""}`.trim(),
             rating: Number(p.average_rating || 0),
             image: p.hero_image_url || "",
+            stockStatus: p.stock_status,
         }));
     }, [products]);
     return (
@@ -62,7 +64,7 @@ export function WeeklyProducts() {
                 {cards.map((product, i) => (
                     <SectionReveal key={`weekly-${product.id}-${i}`} delay={i + 1}>
                         <Link href={`/products/${product.id}`}>
-                            <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i + 4} />
+                            <ProductCard name={product.name} price={product.price} rating={product.rating} image={product.image} index={i + 4} stockStatus={product.stockStatus} />
                         </Link>
                     </SectionReveal>
                 ))}

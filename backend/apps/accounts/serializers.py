@@ -185,6 +185,7 @@ class SellerProfileSerializer(serializers.ModelSerializer):
             "warehouse_location",
             "vehsl_rating",
             "sample_low_threshold",
+            "stock_low_threshold",
         ]
 
 
@@ -892,10 +893,10 @@ class VehslTokenObtainPairSerializer(TokenObtainPairSerializer):
             else None
         )
         if not user:
-            raise serializers.ValidationError("Invalid credentials.")
+            raise serializers.ValidationError({"detail": "Invalid credentials."})
 
         if not user.check_password(password):
-            raise serializers.ValidationError("Invalid credentials.")
+            raise serializers.ValidationError({"detail": "Invalid credentials."})
 
         if not user.is_active:
             raise serializers.ValidationError("User is inactive.")

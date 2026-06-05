@@ -1,9 +1,13 @@
 from decimal import Decimal
 
+from django.db import transaction
+from django.db.models import F, Sum, Value, IntegerField
+from django.db.models.functions import Coalesce
 from rest_framework import serializers
 
-from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price
+from apps.catalog.models import Product, ProductMedia, ProductVariation, resolve_unit_price, WarehouseStock
 from apps.catalog.serializers import ProductMediaSerializer
+from apps.accounts.models import Notification
 
 from .models import (
     Cart,
@@ -185,6 +189,8 @@ class OrderCreateSerializer(serializers.Serializer):
     items = serializers.ListField(child=OrderCreateItemInputSerializer(), allow_empty=False)
     payment_method = serializers.ChoiceField(choices=Order.PaymentMethod.choices, required=False)
     address_id = serializers.IntegerField(required=False)
+    shipping_method = serializers.CharField(required=False, allow_blank=True)
+    shipping_cost = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
 
     def validate_items(self, items):
         seen = set()
@@ -227,60 +233,110 @@ class OrderCreateSerializer(serializers.Serializer):
         }
         payment_status = Order.PaymentStatus.COD_PENDING if payment_method == Order.PaymentMethod.COD else Order.PaymentStatus.UNPAID
 
-        products = Product.objects.filter(
-            id__in=[i["product_id"] for i in items_data],
-            deleted_at__isnull=True,
-            status__in=[Product.Status.APPROVED, Product.Status.ACTIVE],
-        ).select_related("seller")
-        product_map = {p.id: p for p in products}
-        if len(product_map) != len(items_data):
-            raise serializers.ValidationError("One or more products are invalid or not available.")
+        product_ids = [i["product_id"] for i in items_data]
 
-        seller_id = next(iter(product_map.values())).seller_id
-        if any(p.seller_id != seller_id for p in product_map.values()):
-            raise serializers.ValidationError("All items must be from the same seller.")
+        with transaction.atomic():
+            products = (
+                Product.objects.select_for_update()
+                .filter(
+                    id__in=product_ids,
+                    deleted_at__isnull=True,
+                    status__in=[Product.Status.APPROVED, Product.Status.ACTIVE],
+                )
+                .select_related("seller")
+            )
+            product_map = {p.id: p for p in products}
+            if len(product_map) != len(items_data):
+                raise serializers.ValidationError("One or more products are invalid or not available.")
 
-        currency = next(iter(product_map.values())).currency
-        if any(p.currency != currency for p in product_map.values()):
-            raise serializers.ValidationError("All items must have the same currency.")
+            seller_id = next(iter(product_map.values())).seller_id
+            if any(p.seller_id != seller_id for p in product_map.values()):
+                raise serializers.ValidationError("All items must be from the same seller.")
 
-        variation_ids = [i.get("variation_id") for i in items_data if i.get("variation_id")]
-        variation_map = {}
-        if variation_ids:
-            vars = ProductVariation.objects.filter(id__in=variation_ids, deleted_at__isnull=True)
-            variation_map = {v.id: v for v in vars}
-            if len(variation_map) != len(set(variation_ids)):
-                raise serializers.ValidationError("One or more variations are invalid.")
+            currency = next(iter(product_map.values())).currency
+            if any(p.currency != currency for p in product_map.values()):
+                raise serializers.ValidationError("All items must have the same currency.")
 
-        order = Order.objects.create(
-            buyer=buyer,
-            seller_id=seller_id,
-            currency=currency,
-            status=Order.Status.CREATED,
-            payment_method=payment_method,
-            payment_status=payment_status,
-            shipping_address=shipping_address,
-        )
+            variation_ids = [i.get("variation_id") for i in items_data if i.get("variation_id")]
+            variation_map = {}
+            if variation_ids:
+                vars = ProductVariation.objects.filter(id__in=variation_ids, deleted_at__isnull=True)
+                variation_map = {v.id: v for v in vars}
+                if len(variation_map) != len(set(variation_ids)):
+                    raise serializers.ValidationError("One or more variations are invalid.")
 
-        total = Decimal("0")
-        for item in items_data:
-            p = product_map[item["product_id"]]
-            qty = int(item["quantity"])
-            var_id = item.get("variation_id") or None
-            var = variation_map.get(var_id) if var_id else None
-            if var and var.product_id != p.id:
-                raise serializers.ValidationError("Variation does not belong to the product.")
-            unit_price, resolved_currency = resolve_unit_price(p, var, qty)
-            if unit_price is None:
-                raise serializers.ValidationError("Could not resolve unit price.")
-            if resolved_currency and resolved_currency != currency:
-                raise serializers.ValidationError("Pricing tier currency mismatch.")
-            OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=unit_price)
-            total += unit_price * qty
+            order = Order.objects.create(
+                buyer=buyer,
+                seller_id=seller_id,
+                currency=currency,
+                status=Order.Status.CREATED,
+                payment_method=payment_method,
+                payment_status=payment_status,
+                shipping_address=shipping_address,
+                shipping_method=validated_data.get("shipping_method") or "",
+                shipping_cost=validated_data.get("shipping_cost") or Decimal("0"),
+            )
 
-        order.total_amount = total
-        order.save(update_fields=["total_amount"])
-        return order
+            total = Decimal("0")
+            for item in items_data:
+                p = product_map[item["product_id"]]
+                qty = int(item["quantity"])
+                var_id = item.get("variation_id") or None
+                var = variation_map.get(var_id) if var_id else None
+                if var and var.product_id != p.id:
+                    raise serializers.ValidationError("Variation does not belong to the product.")
+                unit_price, resolved_currency = resolve_unit_price(p, var, qty)
+                if unit_price is None:
+                    raise serializers.ValidationError("Could not resolve unit price.")
+
+                mode = (getattr(p, "fulfillment_mode", "") or "").strip().lower()
+                if mode == Product.FulfillmentMode.SELLER_STOCK:
+                    available = int(getattr(p, "seller_stock_units", 0) or 0)
+                    if qty > max(0, available):
+                        raise serializers.ValidationError(f"Not enough stock for {p.name}. Available: {max(0, available)}")
+                    next_qty = max(0, available - qty)
+                    Product.objects.filter(id=p.id).update(seller_stock_units=next_qty)
+                    p.seller_stock_units = next_qty
+                    try:
+                        threshold = 10
+                        if next_qty == 0:
+                            Notification.objects.create(
+                                user=p.seller,
+                                channel=Notification.Channel.IN_APP,
+                                event_type="product_out_of_stock",
+                                payload={
+                                    "title": "Product is out of stock",
+                                    "body": f'Your product "{(p.name or "").strip()}" is out of stock.',
+                                    "product_id": str(getattr(p, "id", "") or ""),
+                                    "seller_stock_units": 0,
+                                },
+                                status=Notification.Status.QUEUED,
+                            )
+                        elif 0 < next_qty < threshold:
+                            Notification.objects.create(
+                                user=p.seller,
+                                channel=Notification.Channel.IN_APP,
+                                event_type="product_low_stock",
+                                payload={
+                                    "title": "Product stock is low",
+                                    "body": f'Your product "{(p.name or "").strip()}" is low on stock ({next_qty}).',
+                                    "product_id": str(getattr(p, "id", "") or ""),
+                                    "seller_stock_units": next_qty,
+                                    "threshold": threshold,
+                                },
+                                status=Notification.Status.QUEUED,
+                            )
+                    except Exception:
+                        pass
+
+                if resolved_currency and resolved_currency != currency:
+                    raise serializers.ValidationError("Pricing tier currency mismatch.")
+                OrderItem.objects.create(order=order, product=p, variation=var, quantity=qty, unit_price=unit_price)
+                total += unit_price * qty
+
+            order.total_amount = total
+            order.save(update_fields=["total_amount"])
+            return order
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -304,9 +360,13 @@ class OrderSerializer(serializers.ModelSerializer):
             "payment_method",
             "payment_status",
             "shipping_address",
+            "shipping_method",
+            "shipping_cost",
             "deadline_at",
             "extension_reason",
             "extension_fee",
+            "delivered_at",
+            "received_at",
             "created_at",
             "updated_at",
             "item_count",

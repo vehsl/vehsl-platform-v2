@@ -21,30 +21,328 @@ from apps.accounts.models import Notification, User
 from .models import (
     Category,
     ComplianceRule,
+    InboundRequest,
+    InboundRequestItem,
     ListingRequest,
     ListingRequestPhoto,
     PricingTier,
     Product,
+    ProductFeedback,
     ProductMedia,
     ProductVariation,
     ShippingRate,
     Trademark,
     Warehouse,
+    WarehouseStock,
 )
 from .serializers import (
     AdminProductListSerializer,
     AdminProductWriteSerializer,
+    AdminListingRequestSerializer,
     CategorySerializer,
     ComplianceRuleSerializer,
+    InboundRequestSerializer,
+    InboundRequestItemSerializer,
     ListingRequestCreateSerializer,
+    ListingRequestUpdateSerializer,
     ListingRequestSerializer,
     PricingTierSerializer,
+    ProductFeedbackSerializer,
     ProductMediaSerializer,
     ProductSerializer,
     ProductVariationSerializer,
     TrademarkSerializer,
     WarehouseSerializer,
+    WarehouseStockSerializer,
 )
+
+def _ensure_seed_categories():
+    try:
+        has_real = Category.objects.filter(deleted_at__isnull=True).exists()
+    except Exception:
+        has_real = True
+    if has_real:
+        return
+
+    defaults: list[tuple[str, list[str]]] = [
+        ("Vehicles", ["SUV", "Electric", "Accessories", "Heavy Vehicles", "Bike", "E Bikes", "Ships", "Helicopters", "Drones"]),
+        ("Industrial", ["Machinery", "Raw Materials", "Industrial Chemicals", "Packaging", "Safety Gear", "Power Tools", "Construction Equipment", "Factory Automation"]),
+        ("Hardware", ["Hand Tools", "Power Tools", "Fasteners", "Plumbing", "Electrical", "Paint", "Adhesives"]),
+        ("Electronics", ["Laptops", "Phones", "Tablets", "Audio", "Wearables", "Components"]),
+        ("Furniture", ["Living Room", "Bedroom", "Office", "Outdoor", "Kitchen"]),
+        ("Energy", ["Solar Systems", "Batteries", "Inverters", "Generators", "EV Charging"]),
+        ("Apparel", ["Men's Wear", "Women's Wear", "Kids", "Footwear", "Sportswear"]),
+        ("Beauty", ["Skincare", "Hair Care", "Makeup", "Fragrance"]),
+        ("Mining", ["Industrial Minerals", "Metals & Ores", "Excavation", "Safety"]),
+        ("Agriculture", ["Farming Equipment", "Seeds", "Fertilizers", "Vegetables", "Fruits"]),
+        ("Sports", ["Gym Equipment", "Outdoor Gear", "Team Sports", "Water Sports"]),
+    ]
+
+    for p_idx, (parent_name, children) in enumerate(defaults, start=1):
+        parent, _ = Category.objects.get_or_create(
+            name=parent_name,
+            parent=None,
+            defaults={"display_order": p_idx, "sort_order": 0},
+        )
+        if parent.display_order != p_idx:
+            Category.objects.filter(id=parent.id).update(display_order=p_idx)
+        for c_idx, child_name in enumerate(children, start=1):
+            Category.objects.get_or_create(
+                name=child_name,
+                parent=parent,
+                defaults={"display_order": c_idx, "sort_order": 0},
+            )
+
+
+def _create_product_from_listing_request(lr: ListingRequest) -> Product:
+    category = lr.category
+    if category is None:
+        category = (
+            Category.objects.filter(deleted_at__isnull=True)
+            .order_by("display_order", "sort_order", "name", "id")
+            .first()
+        )
+    if category is None:
+        raise ValueError("No categories available to assign product.")
+
+    p = Product.objects.create(
+        seller=lr.seller,
+        category=category,
+        name=lr.product_name,
+        title=lr.product_name,
+        description=lr.description or "",
+        currency=(lr.currency or "USD").upper(),
+        price=lr.unit_price,
+        status=Product.Status.ACTIVE,
+        vehsl_rating=lr.rating,
+    )
+    try:
+        meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+        sku = str(meta.get("sku") or "").strip()
+        hs_code = str(meta.get("hs_code") or "").strip()
+        origin_location = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        detail_cfg = meta.get("detail_config") if isinstance(meta.get("detail_config"), dict) else {}
+        ip_level = str(meta.get("ip_protection_level") or "").strip().lower()
+        trademark_reg = str(meta.get("trademark_registration_number") or "").strip()
+        variations_in = meta.get("variations") if isinstance(meta.get("variations"), list) else []
+        tiers_in = meta.get("pricing_tiers") if isinstance(meta.get("pricing_tiers"), list) else []
+
+        if sku:
+            p.sku = sku[:64]
+        if hs_code:
+            p.hs_code = hs_code[:32]
+        if ip_level and ip_level in {c[0] for c in Product.IpProtectionLevel.choices}:
+            p.ip_protection_level = ip_level
+
+        if isinstance(origin_location, dict):
+            p.origin_location = {
+                "country": str(origin_location.get("country") or "").strip(),
+                "region": str(origin_location.get("region") or "").strip(),
+                "city": str(origin_location.get("city") or "").strip(),
+            }
+
+        def as_int(v, default=None):
+            try:
+                if v is None or v == "":
+                    return default
+                return int(v)
+            except Exception:
+                return default
+
+        lead = as_int(meta.get("lead_time_days"), None)
+        if lead is not None and lead >= 0:
+            p.lead_time_days = int(lead)
+
+        w = as_int(meta.get("weight_grams"), None)
+        if w is not None and w > 0:
+            p.weight_grams = int(w)
+
+        mn = as_int(meta.get("ship_time_min_days"), None)
+        mx = as_int(meta.get("ship_time_max_days"), None)
+        if mn is not None and mn >= 0:
+            p.ship_time_min_days = int(mn)
+        if mx is not None and mx >= 0:
+            p.ship_time_max_days = int(mx)
+        if mn is not None and mx is not None and int(mx) < int(mn):
+            p.ship_time_min_days = int(mx)
+            p.ship_time_max_days = int(mn)
+
+        p.sample_available = bool(meta.get("sample_available") is True)
+        ss = as_int(meta.get("sample_ship_days"), None)
+        if ss is not None and ss >= 0:
+            p.sample_ship_days = int(ss)
+
+        merged_cfg = dict(detail_cfg) if isinstance(detail_cfg, dict) else {}
+        try:
+            merged_cfg["moq"] = int(lr.moq or 1)
+        except Exception:
+            merged_cfg["moq"] = 1
+        if (lr.company_name or "").strip():
+            merged_cfg.setdefault("company_name", (lr.company_name or "").strip())
+        if (lr.monthly_capacity or "").strip():
+            merged_cfg.setdefault("monthly_capacity", (lr.monthly_capacity or "").strip())
+        p.detail_config = merged_cfg
+        p.save()
+
+        created_variations: list[ProductVariation] = []
+        if isinstance(variations_in, list) and variations_in:
+            for v in variations_in[:40]:
+                if not isinstance(v, dict):
+                    continue
+                attrs = v.get("attributes") if isinstance(v.get("attributes"), dict) else {}
+                cleaned_attrs = {}
+                for k, val in list(attrs.items())[:30]:
+                    kk = str(k or "").strip()
+                    vv = str(val or "").strip()
+                    if not kk or not vv:
+                        continue
+                    if len(kk) > 40 or len(vv) > 80:
+                        continue
+                    cleaned_attrs[kk] = vv
+                vsku = str(v.get("sku") or "").strip()[:64]
+                created_variations.append(ProductVariation.objects.create(product=p, attributes=cleaned_attrs, sku=vsku))
+
+        created_tiers = 0
+        if isinstance(tiers_in, list) and tiers_in:
+            base_currency = (p.currency or "USD").upper()
+
+            def as_int(v, default=None):
+                try:
+                    if v is None or v == "":
+                        return default
+                    return int(v)
+                except Exception:
+                    return default
+
+            for t in tiers_in[:120]:
+                if not isinstance(t, dict):
+                    continue
+                min_q = as_int(t.get("min_quantity"), 1)
+                max_q = as_int(t.get("max_quantity"), None) if t.get("max_quantity", None) is not None else None
+                if max_q is not None and max_q < min_q:
+                    continue
+                cur = str(t.get("currency") or base_currency).strip().upper()
+                if len(cur) != 3 or cur != base_currency:
+                    continue
+                unit_price_raw = t.get("unit_price")
+                try:
+                    unit_price = Decimal(str(unit_price_raw).strip())
+                except Exception:
+                    continue
+                if unit_price < 0:
+                    continue
+                v_idx = as_int(t.get("variation"), None)
+                variation = None
+                if v_idx is not None and 0 <= v_idx < len(created_variations):
+                    variation = created_variations[v_idx]
+                PricingTier.objects.create(
+                    product=p,
+                    variation=variation,
+                    min_quantity=max(1, int(min_q or 1)),
+                    max_quantity=int(max_q) if max_q is not None else None,
+                    unit_price=unit_price,
+                    currency=base_currency,
+                )
+                created_tiers += 1
+
+        if created_tiers <= 0 and int(lr.moq or 1) > 1:
+            PricingTier.objects.get_or_create(
+                product=p,
+                variation=None,
+                min_quantity=int(lr.moq or 1),
+                max_quantity=None,
+                currency=(p.currency or "USD").upper(),
+                defaults={"unit_price": lr.unit_price},
+            )
+
+        if trademark_reg:
+            Trademark.objects.create(
+                seller=lr.seller,
+                product=p,
+                registration_number=trademark_reg[:128],
+                status=Trademark.Status.PENDING,
+            )
+    except Exception:
+        pass
+
+    photos = list(lr.photos.all())
+    img_pos = 0
+    doc_pos = 0
+    for ph in photos[:25]:
+        try:
+            url = ph.file.url
+        except Exception:
+            continue
+        ct = (getattr(ph, "content_type", "") or "").lower()
+        if ct.startswith("image/"):
+            ProductMedia.objects.create(product=p, media_type=ProductMedia.MediaType.IMAGE, url=url, position=img_pos)
+            img_pos += 1
+        else:
+            ProductMedia.objects.create(
+                product=p,
+                media_type=ProductMedia.MediaType.DOCUMENT,
+                url=url,
+                title=(getattr(ph, "original_name", "") or "").strip()[:160],
+                content_type=(getattr(ph, "content_type", "") or "").strip()[:128],
+                size_bytes=int(getattr(ph, "size_bytes", 0) or 0),
+                position=doc_pos,
+            )
+            doc_pos += 1
+
+    return p
+
+
+def _listing_request_missing_required_product_fields(lr: ListingRequest) -> list[str]:
+    meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+    origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+    missing: list[str] = []
+    if not str(meta.get("sku") or "").strip():
+        missing.append("sku")
+    if not str(meta.get("hs_code") or "").strip():
+        missing.append("hs_code")
+    if not str(origin.get("country") or "").strip():
+        missing.append("origin_country")
+    if meta.get("lead_time_days", None) in (None, ""):
+        missing.append("lead_time_days")
+    if meta.get("weight_grams", None) in (None, ""):
+        missing.append("weight_grams")
+    if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+        missing.append("ship_time_range_days")
+    return missing
+
+
+def _listing_request_required_documents(lr: ListingRequest) -> set[str]:
+    required_documents: set[str] = set()
+    try:
+        rules = list(ComplianceRule.objects.filter(category_id=lr.category_id, deleted_at__isnull=True).order_by("-created_at")[:200])
+        for r in rules:
+            payload = getattr(r, "payload", None) or {}
+            if isinstance(payload, dict):
+                docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
+                if isinstance(docs, list):
+                    for item in docs:
+                        s = str(item or "").strip()
+                        if s:
+                            required_documents.add(s)
+                elif isinstance(docs, str):
+                    s = docs.strip()
+                    if s:
+                        required_documents.add(s)
+    except Exception:
+        required_documents = set()
+    return required_documents
+
+
+def _listing_request_non_image_attachment_count(lr: ListingRequest) -> int:
+    doc_count = 0
+    try:
+        for ph in list(lr.photos.all())[:50]:
+            ct = (getattr(ph, "content_type", "") or "").lower()
+            if ct and not ct.startswith("image/"):
+                doc_count += 1
+    except Exception:
+        doc_count = 0
+    return doc_count
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -79,13 +377,14 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="explore")
     def explore(self, request):
-        base_qs = Category.objects.filter(deleted_at__isnull=True).exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
-        top = list(base_qs.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
+        _ensure_seed_categories()
+        base_all = Category.objects.filter(deleted_at__isnull=True)
+        top = list(base_all.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
         if not top:
             return Response({"categories": [], "total_products": 0})
 
         top_ids = [c.id for c in top]
-        children = list(base_qs.filter(parent_id__in=top_ids).order_by("display_order", "sort_order", "name"))
+        children = list(base_all.filter(parent_id__in=top_ids).order_by("display_order", "sort_order", "name"))
         all_cat_ids = top_ids + [c.id for c in children]
 
         product_qs = Product.objects.filter(
@@ -199,12 +498,63 @@ class ProductViewSet(viewsets.ModelViewSet):
         return out.prefetch_related("variations", "pricing_tiers")
 
     def get_permissions(self):
-        if self.action in {"create", "update", "partial_update", "destroy"}:
+        if self.action in {"create", "update", "partial_update", "destroy", "feedback"}:
             return [permissions.IsAuthenticated(), IsSeller()]
         return [permissions.AllowAny()]
 
     def perform_create(self, serializer):
         serializer.save(seller=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        try:
+            obj.status = Product.Status.ARCHIVED
+            obj.save(update_fields=["status", "updated_at"])
+        except Exception:
+            obj.status = Product.Status.ARCHIVED
+            obj.save(update_fields=["status", "updated_at"])
+        audit(
+            request.user,
+            action="seller_product_deleted",
+            target_type="product",
+            target_id=str(getattr(obj, "id", "") or ""),
+            payload={"status": "archived"},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["get", "post"], url_path="feedback")
+    def feedback(self, request, pk=None, *args, **kwargs):
+        product = self.get_object()
+        if request.method.lower() == "get":
+            qs = (
+                ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True)
+                .select_related("author")
+                .order_by("-created_at", "-id")[:200]
+            )
+            unread = (
+                ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True, read_at__isnull=True)
+                .count()
+            )
+            data = ProductFeedbackSerializer(qs, many=True, context={"request": request}).data
+            return Response({"unread_count": unread, "results": data})
+
+        ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        qs = ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True, read_at__isnull=True)
+        if isinstance(ids, list) and ids:
+            ids_clean = []
+            for x in ids:
+                try:
+                    ids_clean.append(int(x))
+                except Exception:
+                    continue
+            if ids_clean:
+                qs = qs.filter(id__in=ids_clean)
+        updated = qs.update(read_at=timezone.now())
+        unread = (
+            ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True, read_at__isnull=True)
+            .count()
+        )
+        return Response({"updated": updated, "unread_count": unread})
 
     @action(detail=False, methods=["get"], url_path="compare")
     def compare(self, request, *args, **kwargs):
@@ -467,22 +817,129 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        return ListingRequest.objects.filter(seller=self.request.user).select_related("category", "created_product").prefetch_related("photos")
+        return (
+            ListingRequest.objects.filter(seller=self.request.user)
+            .select_related("category", "created_product")
+            .prefetch_related("photos", "created_product__samples")
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        sp = getattr(self.request.user, "seller_profile", None)
+        sample_th = getattr(sp, "sample_low_threshold", 0) if sp else 0
+        stock_th = getattr(sp, "stock_low_threshold", 0) if sp else 0
+        ctx["sample_low_stock_threshold"] = int(sample_th or 50)
+        ctx["product_low_stock_threshold"] = int(stock_th or 10)
+        return ctx
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset().order_by("-created_at")
-        return Response(ListingRequestSerializer(qs, many=True, context={"request": request}).data)
+        ctx = self.get_serializer_context()
+        product_ids = [int(pid) for pid in qs.values_list("created_product_id", flat=True) if pid]
+        unread_by_pid: dict[int, int] = {}
+        latest_by_pid: dict[int, dict] = {}
+        if product_ids:
+            unread_by_pid = {
+                int(row["product_id"]): int(row["c"] or 0)
+                for row in ProductFeedback.objects.filter(
+                    deleted_at__isnull=True,
+                    seller=request.user,
+                    product_id__in=product_ids,
+                    read_at__isnull=True,
+                )
+                .values("product_id")
+                .annotate(c=Count("id"))
+            }
+            rows = (
+                ProductFeedback.objects.filter(deleted_at__isnull=True, seller=request.user, product_id__in=product_ids)
+                .select_related("author")
+                .order_by("product_id", "-created_at", "-id")
+            )
+            seen = set()
+            for fb in rows[:500]:
+                pid = int(getattr(fb, "product_id", 0) or 0)
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                author = getattr(fb, "author", None)
+                full = ""
+                if author:
+                    full = f"{(getattr(author, 'first_name', '') or '').strip()} {(getattr(author, 'last_name', '') or '').strip()}".strip()
+                latest_by_pid[pid] = {
+                    "id": int(getattr(fb, "id", 0) or 0),
+                    "kind": (getattr(fb, "kind", "") or "").strip(),
+                    "message": (getattr(fb, "message", "") or "").strip(),
+                    "created_at": getattr(fb, "created_at", None),
+                    "author_label": full or (getattr(author, "email", "") if author else "") or "",
+                }
+        ctx["product_feedback_unread_by_product_id"] = unread_by_pid
+        ctx["product_feedback_latest_by_product_id"] = latest_by_pid
+        return Response(ListingRequestSerializer(qs, many=True, context=ctx).data)
 
     def retrieve(self, request, pk=None, *args, **kwargs):
         obj = self.get_queryset().filter(pk=pk).first()
         if not obj:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(ListingRequestSerializer(obj, context={"request": request}).data)
+        ctx = self.get_serializer_context()
+        pid = getattr(obj, "created_product_id", None)
+        if pid:
+            unread = (
+                ProductFeedback.objects.filter(
+                    deleted_at__isnull=True,
+                    seller=request.user,
+                    product_id=pid,
+                    read_at__isnull=True,
+                )
+                .count()
+            )
+            latest = (
+                ProductFeedback.objects.filter(deleted_at__isnull=True, seller=request.user, product_id=pid)
+                .select_related("author")
+                .order_by("-created_at", "-id")
+                .first()
+            )
+            latest_by_pid: dict[int, dict] = {}
+            if latest:
+                author = getattr(latest, "author", None)
+                full = ""
+                if author:
+                    full = f"{(getattr(author, 'first_name', '') or '').strip()} {(getattr(author, 'last_name', '') or '').strip()}".strip()
+                latest_by_pid[int(pid)] = {
+                    "id": int(getattr(latest, "id", 0) or 0),
+                    "kind": (getattr(latest, "kind", "") or "").strip(),
+                    "message": (getattr(latest, "message", "") or "").strip(),
+                    "created_at": getattr(latest, "created_at", None),
+                    "author_label": full or (getattr(author, "email", "") if author else "") or "",
+                }
+            ctx["product_feedback_unread_by_product_id"] = {int(pid): int(unread or 0)}
+            ctx["product_feedback_latest_by_product_id"] = latest_by_pid
+        return Response(ListingRequestSerializer(obj, context=ctx).data)
 
     def create(self, request, *args, **kwargs):
         ser = ListingRequestCreateSerializer(data=request.data, context={"request": request})
         ser.is_valid(raise_exception=True)
         lr = ser.save()
+        try:
+            files = []
+            for key in ["photos", "images", "documents", "docs", "files"]:
+                try:
+                    files.extend(list(request.FILES.getlist(key) or []))
+                except Exception:
+                    continue
+            files = files[:20]
+            for f in files:
+                try:
+                    ListingRequestPhoto.objects.create(
+                        listing_request=lr,
+                        file=f,
+                        original_name=getattr(f, "name", "") or "",
+                        content_type=getattr(f, "content_type", "") or "",
+                        size_bytes=int(getattr(f, "size", 0) or 0),
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
         audit(
             request.user,
             action="seller_listing_request_submitted",
@@ -496,6 +953,27 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         )
         out = ListingRequestSerializer(lr, context={"request": request}).data
         return Response(out, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, pk=None, *args, **kwargs):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if lr.created_product_id or lr.stage in {ListingRequest.Stage.DONE, ListingRequest.Stage.LIVE}:
+            return Response({"detail": "This listing request can no longer be edited."}, status=status.HTTP_400_BAD_REQUEST)
+        if lr.stage not in {ListingRequest.Stage.SAMPLES, ListingRequest.Stage.COMPLIANCE}:
+            return Response({"detail": "You can only edit a listing request when it is in Samples or Compliance."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ser = ListingRequestUpdateSerializer(lr, data=request.data, partial=True, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        lr = ser.save()
+        audit(
+            request.user,
+            action="seller_listing_request_updated",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage},
+        )
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="sample")
     def sample(self, request, pk=None):
@@ -511,8 +989,7 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         if len(lr.pickup_address) < 7 or len(lr.pickup_contact_name) < 2:
             return Response({"detail": "Pickup address and contact name are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        lr.stage = ListingRequest.Stage.INSPECTION
-        lr.save()
+        lr.save(update_fields=["pickup_type", "pickup_address", "pickup_contact_name", "pickup_phone", "updated_at"])
         audit(
             request.user,
             action="seller_listing_request_stage_updated",
@@ -524,32 +1001,524 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="advance")
     def advance(self, request, pk=None):
+        return Response({"detail": "Only the review team can advance inspection stages."}, status=status.HTTP_403_FORBIDDEN)
+
+    @action(detail=True, methods=["post"], url_path="publish")
+    def publish(self, request, pk=None):
+        return Response({"detail": "Only the review team can publish listings."}, status=status.HTTP_403_FORBIDDEN)
+
+    @action(detail=True, methods=["post"], url_path="resubmit")
+    def resubmit(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if lr.created_product_id:
+            return Response({"detail": "This listing request has already been published."}, status=status.HTTP_400_BAD_REQUEST)
+        if lr.stage != ListingRequest.Stage.SAMPLES:
+            return Response({"detail": "Only listing requests in Samples can be resubmitted."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.stage = ListingRequest.Stage.COMPLIANCE
+        lr.compliance_verified = False
+        lr.compliance_notes = ""
+        lr.inspected = False
+        lr.inspector = None
+        lr.save(update_fields=["stage", "compliance_verified", "compliance_notes", "inspected", "inspector", "updated_at"])
+        audit(
+            request.user,
+            action="seller_listing_request_resubmitted",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage},
+        )
+        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["get"], url_path="history")
+    def history(self, request, pk=None):
+        from django.db.models import Count, Max, Sum, Value, IntegerField
+        from django.db.models.functions import Coalesce
+        from apps.accounts.models import AuditLog
+
         lr = self.get_queryset().filter(pk=pk).first()
         if not lr:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if lr.stage == ListingRequest.Stage.SAMPLES:
-            return Response({"detail": "Save sample pickup details first."}, status=status.HTTP_400_BAD_REQUEST)
+        audit_qs = (
+            AuditLog.objects.filter(target_type="listing_request", target_id=str(lr.id))
+            .select_related("actor")
+            .order_by("occurred_at")
+        )
+        events = []
+        for row in audit_qs[:300]:
+            actor = getattr(row, "actor", None)
+            actor_label = ""
+            if actor is not None:
+                actor_label = (
+                    f"{(getattr(actor, 'first_name', '') or '').strip()} {(getattr(actor, 'last_name', '') or '').strip()}".strip()
+                    or getattr(actor, "email", "")
+                    or getattr(actor, "phone", "")
+                    or ""
+                )
+            events.append(
+                {
+                    "id": int(getattr(row, "id", 0) or 0),
+                    "occurred_at": getattr(row, "occurred_at", None),
+                    "action": str(getattr(row, "action", "") or ""),
+                    "actor_role": str(getattr(row, "actor_role", "") or ""),
+                    "actor": actor_label,
+                    "payload": getattr(row, "payload", {}) if isinstance(getattr(row, "payload", None), dict) else {},
+                }
+            )
 
-        if lr.stage == ListingRequest.Stage.INSPECTION:
+        orders = {"order_count": 0, "units": 0, "last_order_at": None}
+        sample = None
+        product_id = getattr(lr, "created_product_id", None)
+        if product_id:
             try:
-                rating = float(request.data.get("rating") or 4.8)
+                from apps.orders.models import OrderItem
+
+                o = OrderItem.objects.filter(product_id=product_id, order__deleted_at__isnull=True).aggregate(
+                    order_count=Count("order_id", distinct=True),
+                    units=Coalesce(Sum("quantity"), Value(0), output_field=IntegerField()),
+                    last_order_at=Max("order__created_at"),
+                )
+                orders = {
+                    "order_count": int(o.get("order_count") or 0),
+                    "units": int(o.get("units") or 0),
+                    "last_order_at": o.get("last_order_at"),
+                }
+            except Exception:
+                pass
+            try:
+                from apps.inventory.models import Sample
+
+                s = Sample.objects.filter(product_id=product_id, deleted_at__isnull=True).order_by("-last_updated").first()
+                if s:
+                    sample = {
+                        "available_quantity": int(getattr(s, "available_quantity", 0) or 0),
+                        "low_stock_flag": bool(getattr(s, "low_stock_flag", False)),
+                        "last_updated": getattr(s, "last_updated", None),
+                    }
+            except Exception:
+                pass
+
+        return Response(
+            {
+                "listing_request": ListingRequestSerializer(lr, context=self.get_serializer_context()).data,
+                "events": events,
+                "orders": orders,
+                "sample": sample,
+            }
+        )
+
+    @action(detail=True, methods=["patch"], url_path="sample-stock")
+    def sample_stock(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(lr, "created_product_id", None):
+            return Response({"detail": "This listing is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw = request.data.get("stock_units", None)
+        if raw is None:
+            raw = request.data.get("sample_units", None)
+        try:
+            qty = int(raw)
+        except Exception:
+            return Response({"stock_units": "stock_units must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if qty < 0:
+            return Response({"stock_units": "stock_units must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            sp = getattr(request.user, "seller_profile", None)
+            default_th = int(getattr(sp, "sample_low_threshold", 0) or 50) if sp else 50
+            threshold = int(request.data.get("low_stock_threshold") or default_th)
+        except Exception:
+            threshold = 50
+        threshold = max(1, min(100000, threshold))
+
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            Sample = None
+        if Sample is None:
+            return Response({"detail": "Inventory not available."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            product = lr.created_product
+        except Exception:
+            product = None
+        if not product:
+            return Response({"detail": "Product not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        sample, _ = Sample.objects.get_or_create(product=product, defaults={"seller": request.user})
+        Sample.objects.filter(id=sample.id).update(
+            seller=request.user,
+            available_quantity=qty,
+            low_stock_flag=(0 < qty < threshold),
+        )
+
+        if qty == 0:
+            try:
+                Notification.objects.create(
+                    user=request.user,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="sample_stock_out",
+                    payload={
+                        "title": "Sample stock is empty",
+                        "body": f'Your product "{(product.name or "").strip()}" has 0 samples available.',
+                        "product_id": str(getattr(product, "id", "") or ""),
+                        "listing_request_id": str(lr.id),
+                        "stock_units": 0,
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+        elif 0 < qty < threshold:
+            try:
+                Notification.objects.create(
+                    user=request.user,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="sample_stock_low",
+                    payload={
+                        "title": "Sample stock is low",
+                        "body": f'Your product "{(product.name or "").strip()}" is low on samples ({qty}).',
+                        "product_id": str(getattr(product, "id", "") or ""),
+                        "listing_request_id": str(lr.id),
+                        "stock_units": qty,
+                        "threshold": threshold,
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+
+        audit(
+            request.user,
+            action="seller_product_sample_stock_set",
+            target_type="product",
+            target_id=str(getattr(product, "id", "") or ""),
+            payload={"stock_units": qty, "listing_request_id": str(lr.id)},
+        )
+        lr.refresh_from_db()
+        return Response(ListingRequestSerializer(lr, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["patch"], url_path="stock")
+    def stock(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(lr, "created_product_id", None):
+            return Response({"detail": "This listing is not published yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+        product = getattr(lr, "created_product", None)
+        if not product:
+            return Response({"detail": "Product not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        mode_in = (request.data.get("fulfillment_mode") or request.data.get("mode") or "").strip().lower()
+        if mode_in and mode_in not in {Product.FulfillmentMode.MADE_TO_ORDER, Product.FulfillmentMode.SELLER_STOCK}:
+            return Response({"fulfillment_mode": "Invalid fulfillment_mode."}, status=status.HTTP_400_BAD_REQUEST)
+        mode = mode_in or (getattr(product, "fulfillment_mode", "") or Product.FulfillmentMode.MADE_TO_ORDER)
+
+        raw_qty = request.data.get("seller_stock_units", None)
+        if raw_qty is None:
+            raw_qty = request.data.get("stock_units", None)
+        qty = None
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            try:
+                qty = int(raw_qty)
+            except Exception:
+                return Response({"seller_stock_units": "seller_stock_units must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if qty < 0:
+                return Response({"seller_stock_units": "seller_stock_units must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            qty = 0
+
+        try:
+            sp = getattr(request.user, "seller_profile", None)
+            default_th = int(getattr(sp, "stock_low_threshold", 0) or 10) if sp else 10
+            threshold = int(request.data.get("low_stock_threshold") or default_th)
+        except Exception:
+            threshold = 10
+        threshold = max(1, min(100000, threshold))
+
+        Product.objects.filter(id=product.id).update(fulfillment_mode=mode, seller_stock_units=qty)
+
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            if qty == 0:
+                try:
+                    Notification.objects.create(
+                        user=request.user,
+                        channel=Notification.Channel.IN_APP,
+                        event_type="product_out_of_stock",
+                        payload={
+                            "title": "Product is out of stock",
+                            "body": f'Your product "{(product.name or "").strip()}" is out of stock.',
+                            "product_id": str(getattr(product, "id", "") or ""),
+                            "listing_request_id": str(lr.id),
+                            "seller_stock_units": 0,
+                        },
+                        status=Notification.Status.QUEUED,
+                    )
+                except Exception:
+                    pass
+            elif 0 < qty < threshold:
+                try:
+                    Notification.objects.create(
+                        user=request.user,
+                        channel=Notification.Channel.IN_APP,
+                        event_type="product_low_stock",
+                        payload={
+                            "title": "Product stock is low",
+                            "body": f'Your product "{(product.name or "").strip()}" is low on stock ({qty}).',
+                            "product_id": str(getattr(product, "id", "") or ""),
+                            "listing_request_id": str(lr.id),
+                            "seller_stock_units": qty,
+                            "threshold": threshold,
+                        },
+                        status=Notification.Status.QUEUED,
+                    )
+                except Exception:
+                    pass
+
+        audit(
+            request.user,
+            action="seller_product_stock_set",
+            target_type="product",
+            target_id=str(getattr(product, "id", "") or ""),
+            payload={"fulfillment_mode": mode, "seller_stock_units": qty, "listing_request_id": str(lr.id)},
+        )
+        lr.refresh_from_db()
+        return Response(ListingRequestSerializer(lr, context=self.get_serializer_context()).data)
+
+
+class AdminListingRequestViewSet(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    serializer_class = AdminListingRequestSerializer
+    pagination_class = AdminPageNumberPagination
+    parser_classes = [JSONParser]
+
+    def get_queryset(self):
+        return (
+            ListingRequest.objects.select_related("seller", "category", "created_product")
+            .prefetch_related("photos")
+            .order_by("-created_at")
+        )
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        stage = (request.query_params.get("stage") or "").strip().lower()
+        q = (request.query_params.get("q") or "").strip()
+        seller = (request.query_params.get("seller") or "").strip()
+        if stage and stage != "all":
+            qs = qs.filter(stage=stage)
+        if seller:
+            qs = qs.filter(Q(seller__email__icontains=seller) | Q(seller__first_name__icontains=seller) | Q(seller__last_name__icontains=seller))
+        if q:
+            qs = qs.filter(Q(product_name__icontains=q) | Q(company_name__icontains=q) | Q(description__icontains=q))
+        page = self.paginate_queryset(qs)
+        items = list(page) if page is not None else []
+        category_ids = {int(x.category_id) for x in items if getattr(x, "category_id", None)}
+        required_documents_by_category: dict[int, list[str]] = {}
+        if category_ids:
+            cat_map: dict[int, set[str]] = {cid: set() for cid in category_ids}
+            try:
+                rules = list(ComplianceRule.objects.filter(category_id__in=list(category_ids), deleted_at__isnull=True).order_by("-created_at")[:400])
+                for r in rules:
+                    payload = getattr(r, "payload", None) or {}
+                    if not isinstance(payload, dict):
+                        continue
+                    docs = payload.get("required_documents") or payload.get("required_certifications") or payload.get("certifications")
+                    if docs is None:
+                        continue
+                    if isinstance(docs, str):
+                        s = docs.strip()
+                        if s:
+                            cat_map.get(int(r.category_id), set()).add(s)
+                    elif isinstance(docs, list):
+                        for item in docs:
+                            s = str(item or "").strip()
+                            if s:
+                                cat_map.get(int(r.category_id), set()).add(s)
+            except Exception:
+                cat_map = {cid: set() for cid in category_ids}
+            required_documents_by_category = {cid: sorted(list(vals))[:80] for cid, vals in cat_map.items() if vals}
+
+        missing_fields_by_id: dict[int, list[str]] = {}
+        documents_attached_by_id: dict[int, int] = {}
+        for lr in items:
+            lrid = int(getattr(lr, "id", 0) or 0)
+            if not lrid:
+                continue
+            meta = lr.product_meta if isinstance(getattr(lr, "product_meta", None), dict) else {}
+            origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+            missing: list[str] = []
+            if not str(meta.get("sku") or "").strip():
+                missing.append("sku")
+            if not str(meta.get("hs_code") or "").strip():
+                missing.append("hs_code")
+            if not str(origin.get("country") or "").strip():
+                missing.append("origin_country")
+            if meta.get("lead_time_days", None) in (None, ""):
+                missing.append("lead_time_days")
+            if meta.get("weight_grams", None) in (None, ""):
+                missing.append("weight_grams")
+            if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+                missing.append("ship_time_range_days")
+            missing_fields_by_id[lrid] = missing
+
+            doc_count = 0
+            try:
+                for ph in list(lr.photos.all())[:50]:
+                    ct = (getattr(ph, "content_type", "") or "").lower()
+                    if ct and not ct.startswith("image/"):
+                        doc_count += 1
+            except Exception:
+                doc_count = 0
+            documents_attached_by_id[lrid] = doc_count
+
+        ser = AdminListingRequestSerializer(
+            items,
+            many=True,
+            context={
+                "request": request,
+                "required_documents_by_category": required_documents_by_category,
+                "missing_fields_by_id": missing_fields_by_id,
+                "documents_attached_by_id": documents_attached_by_id,
+            },
+        )
+        return self.get_paginated_response(ser.data)
+
+    def retrieve(self, request, pk=None, *args, **kwargs):
+        obj = self.get_queryset().filter(pk=pk).first()
+        if not obj:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        cid = getattr(obj, "category_id", None)
+        required_documents_by_category: dict[int, list[str]] = {}
+        if cid:
+            required_documents_by_category = {int(cid): sorted(list(_listing_request_required_documents(obj)))[:80]}
+        missing_fields_by_id = {int(obj.id): _listing_request_missing_required_product_fields(obj)}
+        documents_attached_by_id = {int(obj.id): _listing_request_non_image_attachment_count(obj)}
+        return Response(
+            AdminListingRequestSerializer(
+                obj,
+                context={
+                    "request": request,
+                    "required_documents_by_category": required_documents_by_category,
+                    "missing_fields_by_id": missing_fields_by_id,
+                    "documents_attached_by_id": documents_attached_by_id,
+                },
+            ).data
+        )
+
+    @action(detail=True, methods=["post"], url_path="review")
+    def review(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        decision = (request.data.get("decision") or "").strip().lower()
+        message = (request.data.get("message") or "").strip()
+        rating_in = request.data.get("rating", None)
+
+        if decision not in {"approve", "needs_changes", "reject"}:
+            return Response({"detail": "Invalid decision."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if decision == "approve":
+            if not lr.compliance_verified:
+                return Response({"detail": "Compliance must be verified before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            if lr.inspector and not lr.inspected:
+                return Response({"detail": "Inspection must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            if lr.stage not in {ListingRequest.Stage.INSPECTION, ListingRequest.Stage.INBOUND}:
+                return Response({"detail": "Listing must be in Inspection stage before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            missing = _listing_request_missing_required_product_fields(lr)
+            if missing:
+                return Response(
+                    {"detail": "Listing request is missing required product fields.", "missing": missing},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            required_documents = _listing_request_required_documents(lr)
+            if required_documents and _listing_request_non_image_attachment_count(lr) <= 0:
+                return Response(
+                    {"detail": "Compliance documents required before approval.", "required_documents": sorted(list(required_documents))[:80]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                rating = float(rating_in) if rating_in is not None else float(lr.rating or 4.8)
             except Exception:
                 rating = 4.8
             rating = max(0.0, min(5.0, rating))
             lr.rating = rating
             lr.stage = ListingRequest.Stage.LIVE
-            lr.save()
+            lr.save(update_fields=["rating", "stage", "updated_at"])
+            try:
+                Notification.objects.create(
+                    user=lr.seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="listing_request_approved",
+                    payload={
+                        "title": "Listing approved",
+                        "body": f'Your listing "{(lr.product_name or "").strip()}" was approved and is pending publish.',
+                        "listing_request_id": str(lr.id),
+                        "stage": lr.stage,
+                        "rating": float(rating),
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
             audit(
                 request.user,
-                action="seller_listing_request_stage_updated",
+                action="admin_listing_request_reviewed",
                 target_type="listing_request",
                 target_id=str(lr.id),
-                payload={"stage": lr.stage, "from": "inspection", "rating": float(rating)},
+                payload={"decision": "approve", "rating": float(rating)},
             )
-            return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 
-        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+        meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+        if message:
+            meta = {**meta, "review_message": message}
+            lr.product_meta = meta
+
+        if decision == "needs_changes":
+            lr.rating = None
+            lr.stage = ListingRequest.Stage.SAMPLES
+            lr.compliance_verified = False
+            lr.compliance_notes = ""
+            lr.inspected = False
+            lr.inspector = None
+            lr.save(update_fields=["product_meta", "rating", "stage", "compliance_verified", "compliance_notes", "inspected", "inspector", "updated_at"])
+            try:
+                Notification.objects.create(
+                    user=lr.seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="listing_request_changes_requested",
+                    payload={"listing_request_id": str(lr.id), "message": message, "stage": lr.stage},
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+            audit(
+                request.user,
+                action="admin_listing_request_reviewed",
+                target_type="listing_request",
+                target_id=str(lr.id),
+                payload={"decision": "needs_changes"},
+            )
+            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+        lr.rating = None
+        lr.stage = ListingRequest.Stage.DONE
+        lr.save(update_fields=["product_meta", "rating", "stage", "updated_at"])
+        audit(
+            request.user,
+            action="admin_listing_request_reviewed",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"decision": "reject"},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="publish")
     def publish(self, request, pk=None):
@@ -557,66 +1526,192 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
         if not lr:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if lr.stage not in {ListingRequest.Stage.LIVE, ListingRequest.Stage.DONE}:
-            return Response({"detail": "Listing is not ready to publish."}, status=status.HTTP_400_BAD_REQUEST)
-
         if lr.created_product_id:
             lr.stage = ListingRequest.Stage.DONE
             lr.save(update_fields=["stage", "updated_at"])
-            audit(
-                request.user,
-                action="seller_listing_request_published",
-                target_type="listing_request",
-                target_id=str(lr.id),
-                payload={"stage": lr.stage, "created_product_id": str(lr.created_product_id)},
+            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+        if lr.stage != ListingRequest.Stage.LIVE:
+            return Response({"detail": "Listing must be approved (Live stage) before publish."}, status=status.HTTP_400_BAD_REQUEST)
+
+        missing = _listing_request_missing_required_product_fields(lr)
+        if missing:
+            return Response(
+                {"detail": "Listing request is missing required product fields.", "missing": missing},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-            return Response(ListingRequestSerializer(lr, context={"request": request}).data)
 
-        category = lr.category
-        if category is None:
-            category = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
-        if category is None:
-            category = Category.objects.first()
-        if category is None:
-            category, _ = Category.objects.get_or_create(name="Other")
+        required_documents = _listing_request_required_documents(lr)
 
-        p = Product.objects.create(
-            seller=request.user,
-            category=category,
-            name=lr.product_name,
-            title=lr.product_name,
-            description=lr.description or "",
-            currency=(lr.currency or "USD").upper(),
-            price=lr.unit_price,
-            status=Product.Status.ACTIVE,
-            vehsl_rating=lr.rating,
-        )
+        if required_documents:
+            if _listing_request_non_image_attachment_count(lr) <= 0:
+                return Response(
+                    {"detail": "Compliance documents required before publish.", "required_documents": sorted(list(required_documents))[:80]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if not lr.compliance_verified:
+            return Response({"detail": "Compliance must be verified before publish."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if lr.inspector and not lr.inspected:
+            return Response({"detail": "Inspection must be completed before publish."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            rating = float(request.data.get("rating")) if request.data.get("rating") is not None else float(lr.rating or 4.8)
+        except Exception:
+            rating = 4.8
+        rating = max(0.0, min(5.0, rating))
+        lr.rating = rating
+        lr.stage = ListingRequest.Stage.LIVE
+        lr.save(update_fields=["rating", "stage", "updated_at"])
+
+        p = _create_product_from_listing_request(lr)
         audit(
             request.user,
-            action="seller_product_created",
+            action="admin_product_created",
             target_type="product",
             target_id=str(p.id),
             payload={"product_name": (p.name or "").strip(), "source": "listing_request", "listing_request_id": str(lr.id)},
         )
-        photos = list(lr.photos.all())
-        for idx, ph in enumerate(photos[:10]):
-            try:
-                url = ph.file.url
-            except Exception:
-                continue
-            ProductMedia.objects.create(product=p, media_type=ProductMedia.MediaType.IMAGE, url=url, position=idx)
 
         lr.created_product = p
         lr.stage = ListingRequest.Stage.DONE
         lr.save(update_fields=["created_product", "stage", "updated_at"])
+        try:
+            Notification.objects.create(
+                user=lr.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="listing_request_published",
+                payload={
+                    "title": "Listing published",
+                    "body": f'Your product "{(p.name or "").strip()}" is now live on the marketplace.',
+                    "listing_request_id": str(lr.id),
+                    "product_id": str(p.id),
+                    "stage": lr.stage,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
         audit(
             request.user,
-            action="seller_listing_request_published",
+            action="admin_listing_request_published",
             target_type="listing_request",
             target_id=str(lr.id),
-            payload={"stage": lr.stage, "created_product_id": str(p.id)},
+            payload={"stage": lr.stage, "created_product_id": str(p.id), "seller_id": str(lr.seller_id)},
         )
-        return Response(ListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="verify_compliance")
+    def verify_compliance(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        verified = request.data.get("verified", False)
+        notes = (request.data.get("notes") or "").strip()
+
+        if verified:
+            stage_key = (getattr(lr, "stage", "") or "").strip().lower()
+            meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
+            review_message = (meta.get("review_message") or "").strip() if isinstance(meta, dict) else ""
+            allowed = stage_key in {ListingRequest.Stage.COMPLIANCE, ListingRequest.Stage.INSPECTION} or (
+                stage_key == ListingRequest.Stage.SAMPLES and not review_message
+            )
+            if not allowed:
+                return Response({"detail": "Listing must be in Compliance stage to verify."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.compliance_verified = verified
+        lr.compliance_notes = notes
+        if verified:
+            lr.stage = ListingRequest.Stage.INSPECTION
+        lr.save(update_fields=["compliance_verified", "compliance_notes", "stage", "updated_at"])
+
+        inbound_created = False
+        inbound_id = None
+        if verified:
+            inbound_created = False
+            inbound_id = None
+
+        if verified:
+            try:
+                Notification.objects.create(
+                    user=lr.seller,
+                    channel=Notification.Channel.IN_APP,
+                    event_type="listing_request_compliance_verified",
+                    payload={
+                        "title": "Compliance verified",
+                        "body": f'Compliance was verified for "{(lr.product_name or "").strip()}".',
+                        "listing_request_id": str(lr.id),
+                        "stage": lr.stage,
+                        "inbound_request_id": "",
+                    },
+                    status=Notification.Status.QUEUED,
+                )
+            except Exception:
+                pass
+
+        audit(
+            request.user,
+            action="admin_listing_request_compliance_verified",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"verified": verified, "inbound_created": inbound_created, "inbound_id": str(inbound_id or "")},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="assign_inspector")
+    def assign_inspector(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        inspector_id = request.data.get("inspector_id")
+        if not inspector_id:
+            return Response({"detail": "inspector_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        inspector = User.objects.filter(id=inspector_id, role=User.Role.ADMIN).first()
+        if not inspector:
+            return Response({"detail": "Invalid inspector."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.inspector = inspector
+        lr.save(update_fields=["inspector", "updated_at"])
+
+        audit(
+            request.user,
+            action="admin_listing_request_inspector_assigned",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"inspector_id": str(inspector.id)},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="complete_inspection")
+    def complete_inspection(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        inspected = request.data.get("inspected", False)
+        lr.inspected = inspected
+        update_fields = ["inspected", "updated_at"]
+        if inspected and lr.stage != ListingRequest.Stage.INSPECTION:
+            lr.stage = ListingRequest.Stage.INSPECTION
+            update_fields.append("stage")
+        lr.save(update_fields=update_fields)
+
+        audit(
+            request.user,
+            action="admin_listing_request_inspected",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"inspected": inspected},
+        )
+        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="complete_inbound")
+    def complete_inbound(self, request, pk=None):
+        return Response({"detail": "Inbound step has been removed from the listing flow."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ProductVariationViewSet(viewsets.ModelViewSet):
@@ -859,6 +1954,51 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
             position=position,
         )
         return Response(self._serialize(obj, request), status=status.HTTP_201_CREATED)
+
+
+class WarehouseStockViewSet(viewsets.ModelViewSet):
+    serializer_class = WarehouseStockSerializer
+
+    def get_queryset(self):
+        qs = WarehouseStock.objects.select_related("warehouse", "product", "variation", "seller").filter(deleted_at__isnull=True)
+        product_id = (self.request.query_params.get("product") or "").strip()
+        warehouse_id = (self.request.query_params.get("warehouse") or "").strip()
+        if product_id:
+            try:
+                qs = qs.filter(product_id=int(product_id))
+            except Exception:
+                qs = qs.none()
+        if warehouse_id:
+            try:
+                qs = qs.filter(warehouse_id=int(warehouse_id))
+            except Exception:
+                qs = qs.none()
+        user = self.request.user
+        if user.is_authenticated and (user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin"):
+            return qs
+        if user.is_authenticated and getattr(user, "account_type", "") == "seller":
+            return qs.filter(seller=user)
+        return qs.none()
+
+    def get_permissions(self):
+        if self.action in {"list", "retrieve"}:
+            return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), IsSeller()]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        product = serializer.validated_data["product"]
+        if product.seller_id != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        serializer.save(seller=user)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        obj = serializer.instance
+        product = serializer.validated_data.get("product") or getattr(obj, "product", None)
+        if not product or getattr(product, "seller_id", None) != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        serializer.save()
 
 
 class TrademarkViewSet(viewsets.ModelViewSet):
@@ -1322,6 +2462,15 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         except Exception:
             pricing_tiers = []
 
+        warehouse_stocks = []
+        try:
+            warehouse_stocks = WarehouseStockSerializer(
+                WarehouseStock.objects.filter(product_id=obj.id, deleted_at__isnull=True).select_related("warehouse", "variation", "seller").order_by("warehouse_id", "variation_id", "id")[:500],
+                many=True,
+            ).data
+        except Exception:
+            warehouse_stocks = []
+
         compliance_rules = []
         try:
             compliance_rules = ComplianceRuleSerializer(ComplianceRule.objects.filter(category_id=obj.category_id, deleted_at__isnull=True).order_by("-created_at")[:50], many=True).data
@@ -1467,6 +2616,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             "media": media,
             "variations": variations,
             "pricing_tiers": pricing_tiers,
+            "warehouse_stocks": warehouse_stocks,
             "compliance_rules": compliance_rules,
             "sample": sample,
             "sample_requests": sample_requests,
@@ -1516,6 +2666,64 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             pass
         audit(request.user, action="admin_product_media_requested", target_type="product", target_id=str(product.id), payload={})
         return Response({"ok": True})
+
+    @action(detail=True, methods=["get", "post"], url_path="feedback")
+    def feedback(self, request, pk=None):
+        product = Product.objects.filter(id=pk, deleted_at__isnull=True).select_related("seller").first()
+        if not product:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method.lower() == "get":
+            qs = (
+                ProductFeedback.objects.filter(product=product, deleted_at__isnull=True)
+                .select_related("author")
+                .order_by("-created_at", "-id")[:200]
+            )
+            unread = ProductFeedback.objects.filter(product=product, deleted_at__isnull=True, read_at__isnull=True).count()
+            data = ProductFeedbackSerializer(qs, many=True, context={"request": request}).data
+            return Response({"unread_count": unread, "results": data})
+
+        msg = (request.data.get("message") or "").strip()
+        if not msg:
+            return Response({"detail": "message is required."}, status=status.HTTP_400_BAD_REQUEST)
+        kind = (request.data.get("kind") or ProductFeedback.Kind.INFO).strip()
+        allowed = {k for (k, _) in ProductFeedback.Kind.choices}
+        if kind not in allowed:
+            return Response({"detail": "Invalid kind."}, status=status.HTTP_400_BAD_REQUEST)
+
+        fb = ProductFeedback.objects.create(
+            product=product,
+            seller=product.seller,
+            author=request.user,
+            kind=kind,
+            message=msg,
+        )
+
+        try:
+            Notification.objects.create(
+                user=product.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="product_feedback",
+                payload={
+                    "title": f"Product feedback: {(product.name or '').strip() or f'#{product.id}'}",
+                    "body": msg,
+                    "product_id": product.id,
+                    "feedback_id": fb.id,
+                    "kind": kind,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        audit(
+            request.user,
+            action="admin_product_feedback_created",
+            target_type="product",
+            target_id=str(product.id),
+            payload={"feedback_id": str(fb.id), "kind": kind},
+        )
+        return Response(ProductFeedbackSerializer(fb, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
@@ -1652,6 +2860,72 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         audit(request.user, action="admin_product_activated", target_type="product", target_id=str(product.id), payload={})
         return self.retrieve(request, pk=pk)
 
+    @action(detail=True, methods=["post"], url_path="delete")
+    def delete(self, request, pk=None):
+        product = Product.objects.filter(id=pk, deleted_at__isnull=True).select_related("seller").first()
+        if not product:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+
+        ProductMedia.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        ProductVariation.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        PricingTier.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        Trademark.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        ProductFeedback.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+
+        try:
+            from apps.inventory.models import Sample, SampleRequest, QualityInspection
+        except Exception:
+            Sample = None
+            SampleRequest = None
+            QualityInspection = None
+
+        if Sample is not None:
+            Sample.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if SampleRequest is not None:
+            SampleRequest.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if QualityInspection is not None:
+            QualityInspection.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+
+        try:
+            from apps.orders.models import CartItem, WishlistItem, Review
+        except Exception:
+            CartItem = None
+            WishlistItem = None
+            Review = None
+
+        if CartItem is not None:
+            CartItem.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if WishlistItem is not None:
+            WishlistItem.objects.filter(product_id=product.id, deleted_at__isnull=True).update(deleted_at=now)
+        if Review is not None:
+            Review.objects.filter(target_type=Review.TargetType.PRODUCT, target_product_id=product.id, deleted_at__isnull=True).update(
+                deleted_at=now
+            )
+
+        product.status = Product.Status.ARCHIVED
+        product.deleted_at = now
+        product.save(update_fields=["status", "deleted_at", "updated_at"])
+
+        try:
+            Notification.objects.create(
+                user=product.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="product_deleted",
+                payload={
+                    "title": f"Product deleted: {(product.name or '').strip() or f'#{product.id}'}",
+                    "body": "Vehsl admin removed this product from the marketplace.",
+                    "product_id": product.id,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        audit(request.user, action="admin_product_deleted", target_type="product", target_id=str(product.id), payload={})
+        return Response({"ok": True})
+
     @action(detail=True, methods=["post"], url_path="stock")
     def set_stock(self, request, pk=None):
         threshold = self._low_stock_threshold()
@@ -1728,14 +3002,27 @@ class AdminProductViewSet(viewsets.GenericViewSet):
     def bulk_status(self, request):
         ids = request.data.get("ids") or []
         next_status = (request.data.get("status") or "").strip().lower()
-        allowed = {Product.Status.DRAFT, Product.Status.PENDING, Product.Status.APPROVED, Product.Status.REJECTED, Product.Status.ACTIVE, Product.Status.ARCHIVED}
+        allowed = {
+            Product.Status.DRAFT,
+            Product.Status.PENDING,
+            Product.Status.APPROVED,
+            Product.Status.REJECTED,
+            Product.Status.ACTIVE,
+            Product.Status.ARCHIVED,
+        }
         if next_status not in allowed:
             return Response({"status": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         qs = Product.objects.filter(deleted_at__isnull=True, id__in=ids)
         updated = qs.update(status=next_status)
-        audit(request.user, action="admin_products_bulk_status", target_type="product_bulk", target_id="", payload={"count": updated, "status": next_status})
+        audit(
+            request.user,
+            action="admin_products_bulk_status",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "status": next_status},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/category")
@@ -1750,7 +3037,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         updated = Product.objects.filter(deleted_at__isnull=True, id__in=ids).update(category_id=category_id)
-        audit(request.user, action="admin_products_bulk_category", target_type="product_bulk", target_id="", payload={"count": updated, "category_id": category_id})
+        audit(
+            request.user,
+            action="admin_products_bulk_category",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "category_id": category_id},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/hs-code")
@@ -1760,7 +3053,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         updated = Product.objects.filter(deleted_at__isnull=True, id__in=ids).update(hs_code=hs_code)
-        audit(request.user, action="admin_products_bulk_hs_code", target_type="product_bulk", target_id="", payload={"count": updated, "hs_code": hs_code})
+        audit(
+            request.user,
+            action="admin_products_bulk_hs_code",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "hs_code": hs_code},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/stock")
@@ -1791,7 +3090,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                 low_stock_flag=(0 < qty < threshold),
             )
             updated += 1
-        audit(request.user, action="admin_products_bulk_stock", target_type="product_bulk", target_id="", payload={"count": updated, "stock_units": qty})
+        audit(
+            request.user,
+            action="admin_products_bulk_stock",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": updated, "stock_units": qty},
+        )
         return Response({"updated": updated})
 
     @action(detail=False, methods=["post"], url_path="bulk/export")
@@ -1801,7 +3106,13 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not isinstance(ids, list) or not ids:
             return Response({"ids": "ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
         qs = self.get_queryset().filter(id__in=ids)
-        audit(request.user, action="admin_products_bulk_exported", target_type="product_bulk", target_id="", payload={"count": qs.count()})
+        audit(
+            request.user,
+            action="admin_products_bulk_exported",
+            target_type="product_bulk",
+            target_id="",
+            payload={"count": qs.count()},
+        )
         resp = HttpResponse(content_type="text/csv")
         resp["Content-Disposition"] = 'attachment; filename="admin_products_selected.csv"'
         w = csv.writer(resp)
@@ -1926,3 +3237,91 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                 ]
             )
         return resp
+
+
+class InboundRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = InboundRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = InboundRequest.objects.select_related("seller", "warehouse").prefetch_related("items", "items__product")
+        if user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin":
+            return qs
+        if getattr(user, "account_type", "") == "seller":
+            return qs.filter(seller=user)
+        return qs.none()
+
+    def perform_create(self, serializer):
+        serializer.save(seller=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        data = request.data
+        items_data = data.pop("items", []) if "items" in data else []
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        inbound = serializer.save(seller=request.user)
+
+        for item_data in items_data:
+            try:
+                InboundRequestItem.objects.create(
+                    inbound_request=inbound,
+                    product_id=item_data.get("product"),
+                    variation_id=item_data.get("variation"),
+                    quantity_expected=int(item_data.get("quantity_expected") or 0),
+                )
+            except Exception:
+                continue
+
+        return Response(self.get_serializer(inbound).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="ship")
+    def ship(self, request, pk=None):
+        obj = self.get_object()
+        if obj.seller_id != request.user.id:
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if obj.status != InboundRequest.Status.PENDING:
+            return Response({"detail": "Only pending requests can be shipped."}, status=status.HTTP_400_BAD_REQUEST)
+
+        obj.tracking_number = (request.data.get("tracking_number") or "").strip()
+        obj.status = InboundRequest.Status.SHIPPED
+        obj.save(update_fields=["status", "tracking_number", "updated_at"])
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], url_path="receive")
+    def receive(self, request, pk=None):
+        user_role = getattr(request.user, "role", None)
+        if not (request.user.is_staff or user_role in ["admin", "logistics"]):
+            return Response({"detail": "Only admins or logistics staff can mark as received."}, status=status.HTTP_403_FORBIDDEN)
+
+        obj = self.get_object()
+        if obj.status != InboundRequest.Status.SHIPPED:
+            return Response({"detail": "Only shipped requests can be received."}, status=status.HTTP_400_BAD_REQUEST)
+
+        items_data = request.data.get("items") or []
+        if not isinstance(items_data, list):
+            return Response({"detail": "items must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update received quantities and actual stock
+        for item_update in items_data:
+            item_id = item_update.get("id")
+            received = int(item_update.get("quantity_received") or 0)
+            item = obj.items.filter(id=item_id).first()
+            if item:
+                item.quantity_received = received
+                item.save(update_fields=["quantity_received"])
+
+                # Update WarehouseStock
+                stock, _ = WarehouseStock.objects.get_or_create(
+                    warehouse=obj.warehouse,
+                    seller=obj.seller,
+                    product=item.product,
+                    variation=item.variation,
+                )
+                stock.quantity_units = (stock.quantity_units or 0) + received
+                stock.save()
+
+        obj.status = InboundRequest.Status.RECEIVED
+        obj.save(update_fields=["status", "updated_at"])
+        return Response(self.get_serializer(obj).data)

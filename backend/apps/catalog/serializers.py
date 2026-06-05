@@ -1,9 +1,12 @@
 from rest_framework import serializers
 
+import json
+
 from django.db.models import Q
+from django.core.exceptions import ObjectDoesNotExist
 from django.core.files.storage import default_storage
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark, Warehouse
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductFeedback, ProductMedia, ProductVariation, Trademark, Warehouse, WarehouseStock, InboundRequest, InboundRequestItem
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -132,6 +135,22 @@ class ProductMediaSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class ProductFeedbackSerializer(serializers.ModelSerializer):
+    author_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductFeedback
+        fields = ["id", "product", "seller", "author", "author_label", "kind", "message", "read_at", "created_at"]
+        read_only_fields = ["seller", "author", "created_at", "read_at"]
+
+    def get_author_label(self, obj: ProductFeedback):
+        u = getattr(obj, "author", None)
+        if not u:
+            return ""
+        full = f"{(getattr(u, 'first_name', '') or '').strip()} {(getattr(u, 'last_name', '') or '').strip()}".strip()
+        return full or getattr(u, "email", "") or getattr(u, "phone", "") or f"user:{getattr(u, 'id', '')}"
+
+
 class TrademarkSerializer(serializers.ModelSerializer):
     class Meta:
         model = Trademark
@@ -162,6 +181,68 @@ class WarehouseSerializer(serializers.ModelSerializer):
         ]
 
 
+class WarehouseStockSerializer(serializers.ModelSerializer):
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    warehouse_code = serializers.CharField(source="warehouse.code", read_only=True)
+    variation_attributes = serializers.SerializerMethodField()
+    available_units = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WarehouseStock
+        fields = [
+            "id",
+            "warehouse",
+            "warehouse_name",
+            "warehouse_code",
+            "seller",
+            "product",
+            "variation",
+            "variation_attributes",
+            "quantity_units",
+            "reserved_units",
+            "available_units",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["seller", "created_at", "updated_at"]
+
+    def get_variation_attributes(self, obj: WarehouseStock):
+        v = getattr(obj, "variation", None)
+        if not v:
+            return {}
+        a = getattr(v, "attributes", None)
+        return a if isinstance(a, dict) else {}
+
+    def get_available_units(self, obj: WarehouseStock):
+        try:
+            q = int(getattr(obj, "quantity_units", 0) or 0)
+        except Exception:
+            q = 0
+        try:
+            r = int(getattr(obj, "reserved_units", 0) or 0)
+        except Exception:
+            r = 0
+        return max(0, q - r)
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        q = data.get("quantity_units") if "quantity_units" in data else getattr(self.instance, "quantity_units", 0)
+        r = data.get("reserved_units") if "reserved_units" in data else getattr(self.instance, "reserved_units", 0)
+        try:
+            qv = int(q or 0)
+        except Exception:
+            qv = 0
+        try:
+            rv = int(r or 0)
+        except Exception:
+            rv = 0
+        if rv < 0 or qv < 0:
+            raise serializers.ValidationError("quantity_units and reserved_units must be >= 0.")
+        if rv > qv:
+            raise serializers.ValidationError({"reserved_units": "reserved_units must be <= quantity_units."})
+        return data
+
+
 class ProductSerializer(serializers.ModelSerializer):
     seller_id = serializers.IntegerField(read_only=True)
     seller_name = serializers.SerializerMethodField()
@@ -174,6 +255,9 @@ class ProductSerializer(serializers.ModelSerializer):
     variations = ProductVariationSerializer(many=True, read_only=True)
     pricing_tiers = PricingTierSerializer(many=True, read_only=True)
     detail_config = serializers.JSONField(required=False)
+    quantity_available = serializers.SerializerMethodField()
+    stock_status = serializers.SerializerMethodField()
+    sample_units = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -198,6 +282,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "variations",
             "pricing_tiers",
             "detail_config",
+            "fulfillment_mode",
+            "seller_stock_units",
             "status",
             "origin_location",
             "lead_time_days",
@@ -206,12 +292,53 @@ class ProductSerializer(serializers.ModelSerializer):
             "ship_time_max_days",
             "sample_available",
             "sample_ship_days",
+            "sample_units",
             "vehsl_rating",
             "seller_rating",
             "ip_protection_level",
+            "quantity_available",
+            "stock_status",
             "created_at",
             "updated_at",
         ]
+
+    def get_quantity_available(self, obj: Product):
+        from django.db.models import Sum, F, Value, IntegerField
+        from django.db.models.functions import Coalesce
+
+        mode = (getattr(obj, "fulfillment_mode", "") or "").strip().lower()
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            try:
+                return max(0, int(getattr(obj, "seller_stock_units", 0) or 0))
+            except Exception:
+                return 0
+        return 999999
+
+    def get_stock_status(self, obj: Product):
+        mode = (getattr(obj, "fulfillment_mode", "") or "").strip().lower()
+        if mode == Product.FulfillmentMode.SELLER_STOCK:
+            avail = self.get_quantity_available(obj)
+            return "in_stock" if avail > 0 else "out_of_stock"
+        return "in_stock"
+
+    def get_sample_units(self, obj: Product):
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            return 0
+        try:
+            from django.db.models import Sum
+            from django.db.models.functions import Coalesce
+        except Exception:
+            return 0
+        try:
+            qs = Sample.objects.filter(product_id=obj.id, deleted_at__isnull=True)
+            if getattr(obj, "seller_id", None):
+                qs = qs.filter(seller_id=obj.seller_id)
+            total = qs.aggregate(v=Coalesce(Sum("available_quantity"), 0)).get("v") or 0
+            return max(0, int(total))
+        except Exception:
+            return 0
 
     def get_seller_name(self, obj: Product):
         s = getattr(obj, "seller", None)
@@ -222,20 +349,14 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def get_hero_image_url(self, obj: Product):
         try:
-            media = list(getattr(obj, "media", []).all()) if hasattr(obj, "media") else []
+            qs = obj.media.filter(deleted_at__isnull=True, media_type=ProductMedia.MediaType.IMAGE).order_by("position", "id")
         except Exception:
-            media = []
-        for m in media:
-            try:
-                if (getattr(m, "deleted_at", None) is not None) or (getattr(m, "media_type", "") or "") != "image":
-                    continue
-                ser = ProductMediaSerializer(m, context=self.context).data
-                u = (ser.get("public_url") or "").strip()
-                if u:
-                    return u
-            except Exception:
-                continue
-        return ""
+            return ""
+        m = qs.first()
+        if not m:
+            return ""
+        u = (ProductMediaSerializer(m, context=self.context).data.get("public_url") or "").strip()
+        return u
 
     def get_images(self, obj: Product):
         try:
@@ -410,12 +531,31 @@ class ListingRequestPhotoSerializer(serializers.ModelSerializer):
 
 class ListingRequestSerializer(serializers.ModelSerializer):
     photos = ListingRequestPhotoSerializer(many=True, read_only=True)
+    inspector_name = serializers.SerializerMethodField()
+    inbound_request_id = serializers.SerializerMethodField()
+    inbound_request_status = serializers.SerializerMethodField()
+    inbound_request_warehouse_name = serializers.SerializerMethodField()
+    sample_units = serializers.SerializerMethodField()
+    sample_low_stock = serializers.SerializerMethodField()
+    product_fulfillment_mode = serializers.SerializerMethodField()
+    product_stock_units = serializers.SerializerMethodField()
+    product_low_stock = serializers.SerializerMethodField()
+    product_feedback_unread = serializers.SerializerMethodField()
+    product_feedback_latest = serializers.SerializerMethodField()
 
     class Meta:
         model = ListingRequest
         fields = [
             "id",
             "stage",
+            "compliance_verified",
+            "compliance_notes",
+            "inspected",
+            "inspector",
+            "inspector_name",
+            "inbound_request_id",
+            "inbound_request_status",
+            "inbound_request_warehouse_name",
             "rating",
             "product_name",
             "company_name",
@@ -430,23 +570,219 @@ class ListingRequestSerializer(serializers.ModelSerializer):
             "pickup_address",
             "pickup_contact_name",
             "pickup_phone",
+            "product_meta",
             "created_product",
+            "sample_units",
+            "sample_low_stock",
+            "product_fulfillment_mode",
+            "product_stock_units",
+            "product_low_stock",
+            "product_feedback_unread",
+            "product_feedback_latest",
             "created_at",
             "updated_at",
             "photos",
         ]
+
+    def get_inspector_name(self, obj: ListingRequest):
+        inspector = getattr(obj, "inspector", None)
+        if not inspector:
+            return ""
+        full_name = f"{(getattr(inspector, 'first_name', '') or '').strip()} {(getattr(inspector, 'last_name', '') or '').strip()}".strip()
+        return full_name or (getattr(inspector, "email", "") or "")
+
+    def get_inbound_request_id(self, obj: ListingRequest):
+        try:
+            inbound = getattr(obj, "inbound_request", None)
+        except ObjectDoesNotExist:
+            inbound = None
+        return getattr(inbound, "id", None) if inbound else None
+
+    def get_inbound_request_status(self, obj: ListingRequest):
+        try:
+            inbound = getattr(obj, "inbound_request", None)
+        except ObjectDoesNotExist:
+            inbound = None
+        return getattr(inbound, "status", "") if inbound else ""
+
+    def get_inbound_request_warehouse_name(self, obj: ListingRequest):
+        try:
+            inbound = getattr(obj, "inbound_request", None)
+        except ObjectDoesNotExist:
+            inbound = None
+        wh = getattr(inbound, "warehouse", None) if inbound else None
+        return getattr(wh, "name", "") if wh else ""
+
+    def get_sample_units(self, obj: ListingRequest):
+        product_id = getattr(obj, "created_product_id", None)
+        if not product_id:
+            return 0
+        try:
+            from apps.inventory.models import Sample
+        except Exception:
+            return 0
+        seller_id = getattr(obj, "seller_id", None)
+        try:
+            qs = Sample.objects.filter(product_id=product_id, deleted_at__isnull=True)
+            if seller_id:
+                qs = qs.filter(seller_id=seller_id)
+            return max(0, int(sum(int(getattr(s, "available_quantity", 0) or 0) for s in qs[:20])))
+        except Exception:
+            return 0
+
+    def get_sample_low_stock(self, obj: ListingRequest):
+        units = self.get_sample_units(obj)
+        try:
+            threshold = int(self.context.get("sample_low_stock_threshold") or 50)
+        except Exception:
+            threshold = 50
+        return bool(0 < units < threshold)
+
+    def get_product_fulfillment_mode(self, obj: ListingRequest):
+        p = getattr(obj, "created_product", None)
+        if not p:
+            return ""
+        return (getattr(p, "fulfillment_mode", "") or "").strip()
+
+    def get_product_stock_units(self, obj: ListingRequest):
+        p = getattr(obj, "created_product", None)
+        if not p:
+            return 0
+        try:
+            return max(0, int(getattr(p, "seller_stock_units", 0) or 0))
+        except Exception:
+            return 0
+
+    def get_product_low_stock(self, obj: ListingRequest):
+        mode = (self.get_product_fulfillment_mode(obj) or "").strip().lower()
+        if mode != Product.FulfillmentMode.SELLER_STOCK:
+            return False
+        units = self.get_product_stock_units(obj)
+        try:
+            threshold = int(self.context.get("product_low_stock_threshold") or 10)
+        except Exception:
+            threshold = 10
+        return bool(0 < units < threshold)
+
+    def get_product_feedback_unread(self, obj: ListingRequest):
+        product_id = getattr(obj, "created_product_id", None)
+        if not product_id:
+            return 0
+        m = self.context.get("product_feedback_unread_by_product_id")
+        if not isinstance(m, dict):
+            return 0
+        try:
+            return int(m.get(int(product_id), 0) or 0)
+        except Exception:
+            return 0
+
+    def get_product_feedback_latest(self, obj: ListingRequest):
+        product_id = getattr(obj, "created_product_id", None)
+        if not product_id:
+            return None
+        m = self.context.get("product_feedback_latest_by_product_id")
+        if not isinstance(m, dict):
+            return None
+        row = m.get(int(product_id))
+        return row if isinstance(row, dict) else None
+
+
+class AdminListingRequestSerializer(ListingRequestSerializer):
+    seller_id = serializers.IntegerField(read_only=True)
+    seller_email = serializers.CharField(source="seller.email", read_only=True)
+    seller_label = serializers.SerializerMethodField()
+    missing_fields = serializers.SerializerMethodField()
+    required_documents = serializers.SerializerMethodField()
+    documents_attached = serializers.SerializerMethodField()
+
+    class Meta(ListingRequestSerializer.Meta):
+        fields = ["seller_id", "seller_email", "seller_label", "missing_fields", "required_documents", "documents_attached"] + list(
+            ListingRequestSerializer.Meta.fields
+        )
+
+    def get_seller_label(self, obj: ListingRequest):
+        seller = getattr(obj, "seller", None)
+        if not seller:
+            return ""
+        full_name = f"{(getattr(seller, 'first_name', '') or '').strip()} {(getattr(seller, 'last_name', '') or '').strip()}".strip()
+        return full_name or (getattr(seller, "email", "") or "")
+
+    def get_missing_fields(self, obj: ListingRequest):
+        m = self.context.get("missing_fields_by_id")
+        if isinstance(m, dict) and obj.id in m:
+            v = m.get(obj.id)
+            return v if isinstance(v, list) else []
+        meta = obj.product_meta if isinstance(getattr(obj, "product_meta", None), dict) else {}
+        origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        missing = []
+        if not str(meta.get("sku") or "").strip():
+            missing.append("sku")
+        if not str(meta.get("hs_code") or "").strip():
+            missing.append("hs_code")
+        if not str(origin.get("country") or "").strip():
+            missing.append("origin_country")
+        if meta.get("lead_time_days", None) in (None, ""):
+            missing.append("lead_time_days")
+        if meta.get("weight_grams", None) in (None, ""):
+            missing.append("weight_grams")
+        if meta.get("ship_time_min_days", None) in (None, "") or meta.get("ship_time_max_days", None) in (None, ""):
+            missing.append("ship_time_range_days")
+        return missing
+
+    def get_required_documents(self, obj: ListingRequest):
+        m = self.context.get("required_documents_by_category")
+        cid = getattr(obj, "category_id", None)
+        if isinstance(m, dict) and cid in m:
+            v = m.get(cid)
+            return v if isinstance(v, list) else []
+        return []
+
+    def get_documents_attached(self, obj: ListingRequest):
+        m = self.context.get("documents_attached_by_id")
+        if isinstance(m, dict) and obj.id in m:
+            try:
+                return int(m.get(obj.id) or 0)
+            except Exception:
+                return 0
+        count = 0
+        try:
+            for ph in list(getattr(obj, "photos", []).all())[:50]:
+                ct = (getattr(ph, "content_type", "") or "").lower()
+                if ct and not ct.startswith("image/"):
+                    count += 1
+        except Exception:
+            count = 0
+        return count
 
 
 class ListingRequestCreateSerializer(serializers.Serializer):
     product_name = serializers.CharField(required=True, allow_blank=False)
     company_name = serializers.CharField(required=False, allow_blank=True)
     category = serializers.CharField(required=False, allow_blank=True)
+    category_id = serializers.IntegerField(required=True)
     description = serializers.CharField(required=False, allow_blank=True)
     monthly_capacity = serializers.CharField(required=False, allow_blank=True)
     currency = serializers.CharField(required=False, allow_blank=True)
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=True)
     moq = serializers.IntegerField(required=False, min_value=1)
     photo = serializers.FileField(required=False, allow_null=True)
+
+    sku = serializers.CharField(required=False, allow_blank=True)
+    hs_code = serializers.CharField(required=False, allow_blank=True)
+    origin_country = serializers.CharField(required=False, allow_blank=True)
+    origin_region = serializers.CharField(required=False, allow_blank=True)
+    origin_city = serializers.CharField(required=False, allow_blank=True)
+    lead_time_days = serializers.IntegerField(required=False, allow_null=True)
+    weight_grams = serializers.IntegerField(required=False, allow_null=True)
+    ship_time_min_days = serializers.IntegerField(required=False, allow_null=True)
+    ship_time_max_days = serializers.IntegerField(required=False, allow_null=True)
+    sample_available = serializers.BooleanField(required=False)
+    sample_ship_days = serializers.IntegerField(required=False, allow_null=True)
+    detail_config = serializers.JSONField(required=False)
+    variations = serializers.CharField(required=False, allow_blank=True)
+    pricing_tiers = serializers.CharField(required=False, allow_blank=True)
+    ip_protection_level = serializers.CharField(required=False, allow_blank=True)
+    trademark_registration_number = serializers.CharField(required=False, allow_blank=True)
 
     def validate_currency(self, value: str):
         val = (value or "").strip()
@@ -456,23 +792,199 @@ class ListingRequestCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Currency must be a 3-letter code.")
         return val.upper()
 
+    def _parse_json_payload(self, raw: object):
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, (list, dict)):
+            return raw
+        if not isinstance(raw, str):
+            return None
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except Exception:
+            return None
+
+    def _clean_variations(self, raw: object):
+        data = self._parse_json_payload(raw)
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise serializers.ValidationError({"variations": "variations must be a JSON array."})
+        if len(data) > 40:
+            raise serializers.ValidationError({"variations": "variations can have at most 40 entries."})
+        out = []
+        for v in data:
+            if not isinstance(v, dict):
+                raise serializers.ValidationError({"variations": "Each variation must be an object."})
+            attrs = v.get("attributes")
+            if attrs is None:
+                attrs = {}
+            if not isinstance(attrs, dict):
+                raise serializers.ValidationError({"variations": "variation.attributes must be an object."})
+            cleaned_attrs = {}
+            for k, val in list(attrs.items())[:30]:
+                kk = str(k or "").strip()
+                if not kk:
+                    continue
+                vv = str(val or "").strip()
+                if not vv:
+                    continue
+                if len(kk) > 40 or len(vv) > 80:
+                    continue
+                cleaned_attrs[kk] = vv
+            sku = str(v.get("sku") or "").strip()
+            out.append({"attributes": cleaned_attrs, "sku": sku[:64]})
+        return out
+
+    def _clean_pricing_tiers(self, raw: object, default_currency: str):
+        data = self._parse_json_payload(raw)
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise serializers.ValidationError({"pricing_tiers": "pricing_tiers must be a JSON array."})
+        if len(data) > 120:
+            raise serializers.ValidationError({"pricing_tiers": "pricing_tiers can have at most 120 entries."})
+        out = []
+        for t in data:
+            if not isinstance(t, dict):
+                raise serializers.ValidationError({"pricing_tiers": "Each pricing tier must be an object."})
+            try:
+                min_q = int(t.get("min_quantity") or 1)
+            except Exception:
+                min_q = 1
+            try:
+                mx = t.get("max_quantity", None)
+                max_q = int(mx) if mx is not None and str(mx).strip() != "" else None
+            except Exception:
+                max_q = None
+            if max_q is not None and max_q < min_q:
+                raise serializers.ValidationError({"pricing_tiers": "max_quantity must be >= min_quantity or null."})
+            cur = str(t.get("currency") or default_currency or "USD").strip().upper()
+            if len(cur) != 3:
+                raise serializers.ValidationError({"pricing_tiers": "currency must be a 3-letter code."})
+            try:
+                unit_price = str(t.get("unit_price") or "").strip()
+                if unit_price == "":
+                    raise Exception()
+                _ = float(unit_price)
+            except Exception:
+                raise serializers.ValidationError({"pricing_tiers": "unit_price is required and must be numeric."})
+            var = t.get("variation", None)
+            if var is None or var == "":
+                var_idx = None
+            else:
+                try:
+                    var_idx = int(var)
+                except Exception:
+                    raise serializers.ValidationError({"pricing_tiers": "variation must be an integer index or null."})
+                if var_idx < 0:
+                    raise serializers.ValidationError({"pricing_tiers": "variation index must be >= 0."})
+            out.append(
+                {
+                    "variation": var_idx,
+                    "min_quantity": max(1, min_q),
+                    "max_quantity": max_q,
+                    "unit_price": unit_price,
+                    "currency": cur,
+                }
+            )
+        out.sort(key=lambda x: (x["variation"] is None, x["variation"] if x["variation"] is not None else -1, x["min_quantity"]))
+        return out
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        category_text = (data.get("category") or "").strip()
+        category_id = data.get("category_id")
+        try:
+            category_id = int(category_id) if category_id is not None else None
+        except Exception:
+            category_id = None
+        if not category_id:
+            raise serializers.ValidationError({"category_id": "category_id is required."})
+
+        ip_level = (data.get("ip_protection_level") or "").strip().lower()
+        if ip_level:
+            allowed = {c[0] for c in Product.IpProtectionLevel.choices}
+            if ip_level not in allowed:
+                raise serializers.ValidationError({"ip_protection_level": "Invalid ip_protection_level."})
+
+        currency = (data.get("currency") or "USD").strip().upper()
+        self._clean_variations(data.get("variations"))
+        self._clean_pricing_tiers(data.get("pricing_tiers"), currency)
+
+        if not Category.objects.filter(id=category_id, deleted_at__isnull=True).exists():
+            raise serializers.ValidationError({"category_id": "Category not found."})
+        return data
+
     def create(self, validated_data):
         user = self.context["request"].user
 
-        category_text = (validated_data.pop("category", "") or "").strip()
         category_obj = None
-        if category_text:
-            category_obj = Category.objects.filter(Q(name__iexact=category_text) | Q(slug__iexact=category_text)).first()
+        category_text = (validated_data.pop("category", "") or "").strip()
+        category_id = validated_data.pop("category_id", None)
+        try:
+            category_id = int(category_id) if category_id is not None else None
+        except Exception:
+            category_id = None
+
+        if category_id:
+            category_obj = Category.objects.filter(id=category_id, deleted_at__isnull=True).first()
         if category_obj is None:
-            category_obj = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
+            raise serializers.ValidationError({"category_id": "Category not found."})
 
         photo_file = validated_data.pop("photo", None)
         moq = validated_data.pop("moq", None)
 
+        detail_cfg = validated_data.pop("detail_config", None)
+        if isinstance(detail_cfg, str) and detail_cfg.strip():
+            try:
+                detail_cfg = json.loads(detail_cfg)
+            except Exception:
+                detail_cfg = None
+        if not isinstance(detail_cfg, dict):
+            detail_cfg = None
+        if isinstance(detail_cfg, dict):
+            detail_cfg = ProductSerializer().validate_detail_config(detail_cfg)
+
+        currency = (validated_data.get("currency") or "USD").strip().upper()
+        variations_clean = self._clean_variations(validated_data.pop("variations", None))
+        pricing_tiers_clean = self._clean_pricing_tiers(validated_data.pop("pricing_tiers", None), currency)
+        ip_level = (validated_data.pop("ip_protection_level", "") or "").strip().lower()
+        trademark_reg = (validated_data.pop("trademark_registration_number", "") or "").strip()
+
+        meta = {
+            "sku": (validated_data.pop("sku", "") or "").strip(),
+            "hs_code": (validated_data.pop("hs_code", "") or "").strip(),
+            "origin_location": {
+                "country": (validated_data.pop("origin_country", "") or "").strip(),
+                "region": (validated_data.pop("origin_region", "") or "").strip(),
+                "city": (validated_data.pop("origin_city", "") or "").strip(),
+            },
+            "lead_time_days": validated_data.pop("lead_time_days", None),
+            "weight_grams": validated_data.pop("weight_grams", None),
+            "ship_time_min_days": validated_data.pop("ship_time_min_days", None),
+            "ship_time_max_days": validated_data.pop("ship_time_max_days", None),
+            "sample_available": bool(validated_data.pop("sample_available", False)),
+            "sample_ship_days": validated_data.pop("sample_ship_days", None),
+        }
+        if detail_cfg is not None:
+            meta["detail_config"] = detail_cfg
+        if variations_clean:
+            meta["variations"] = variations_clean
+        if pricing_tiers_clean:
+            meta["pricing_tiers"] = pricing_tiers_clean
+        if ip_level:
+            meta["ip_protection_level"] = ip_level
+        if trademark_reg:
+            meta["trademark_registration_number"] = trademark_reg[:128]
+
         lr = ListingRequest.objects.create(
             seller=user,
             category=category_obj,
-            category_label=category_text if not category_obj else "",
+            category_label=(getattr(category_obj, "name", "") or "").strip() or category_text,
             product_name=(validated_data.get("product_name") or "").strip(),
             company_name=(validated_data.get("company_name") or "").strip(),
             description=(validated_data.get("description") or "").strip(),
@@ -480,7 +992,8 @@ class ListingRequestCreateSerializer(serializers.Serializer):
             currency=validated_data.get("currency") or "USD",
             unit_price=validated_data.get("unit_price"),
             moq=int(moq or 1),
-            stage=ListingRequest.Stage.SAMPLES,
+            product_meta=meta,
+            stage=ListingRequest.Stage.COMPLIANCE,
         )
 
         if photo_file:
@@ -493,6 +1006,123 @@ class ListingRequestCreateSerializer(serializers.Serializer):
             )
 
         return lr
+
+
+class ListingRequestUpdateSerializer(ListingRequestCreateSerializer):
+    product_name = serializers.CharField(required=False, allow_blank=False)
+    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    photo = serializers.FileField(required=False, allow_null=True)
+
+    def update(self, instance: ListingRequest, validated_data):
+        category_obj = None
+        category_text = (validated_data.pop("category", None) or "").strip() if "category" in validated_data else None
+        category_id = validated_data.pop("category_id", None) if "category_id" in validated_data else None
+        try:
+            category_id = int(category_id) if category_id is not None else None
+        except Exception:
+            category_id = None
+
+        if category_id:
+            category_obj = Category.objects.filter(id=category_id, deleted_at__isnull=True).first()
+        if category_obj is None and category_text:
+            category_obj = Category.objects.filter(Q(name__iexact=category_text) | Q(slug__iexact=category_text), deleted_at__isnull=True).first()
+
+        if category_obj is not None:
+            instance.category = category_obj
+            instance.category_label = ""
+        elif category_text is not None:
+            instance.category = None
+            instance.category_label = category_text
+
+        if "product_name" in validated_data:
+            instance.product_name = (validated_data.get("product_name") or "").strip()
+        if "company_name" in validated_data:
+            instance.company_name = (validated_data.get("company_name") or "").strip()
+        if "description" in validated_data:
+            instance.description = (validated_data.get("description") or "").strip()
+        if "monthly_capacity" in validated_data:
+            instance.monthly_capacity = (validated_data.get("monthly_capacity") or "").strip()
+        if "currency" in validated_data:
+            instance.currency = (validated_data.get("currency") or "USD").strip().upper()
+        if "unit_price" in validated_data:
+            instance.unit_price = validated_data.get("unit_price")
+        if "moq" in validated_data:
+            try:
+                instance.moq = int(validated_data.get("moq") or 1)
+            except Exception:
+                instance.moq = 1
+
+        meta = instance.product_meta if isinstance(instance.product_meta, dict) else {}
+        meta = dict(meta)
+
+        detail_cfg = validated_data.pop("detail_config", None) if "detail_config" in validated_data else None
+        if isinstance(detail_cfg, str) and detail_cfg.strip():
+            try:
+                detail_cfg = json.loads(detail_cfg)
+            except Exception:
+                detail_cfg = None
+        if isinstance(detail_cfg, dict):
+            detail_cfg = ProductSerializer().validate_detail_config(detail_cfg)
+            meta["detail_config"] = detail_cfg
+
+        currency = (instance.currency or "USD").strip().upper()
+        if "variations" in validated_data:
+            variations_clean = self._clean_variations(validated_data.pop("variations", None))
+            if variations_clean:
+                meta["variations"] = variations_clean
+            else:
+                meta.pop("variations", None)
+        if "pricing_tiers" in validated_data:
+            pricing_tiers_clean = self._clean_pricing_tiers(validated_data.pop("pricing_tiers", None), currency)
+            if pricing_tiers_clean:
+                meta["pricing_tiers"] = pricing_tiers_clean
+            else:
+                meta.pop("pricing_tiers", None)
+
+        if "sku" in validated_data:
+            meta["sku"] = (validated_data.pop("sku", "") or "").strip()
+        if "hs_code" in validated_data:
+            meta["hs_code"] = (validated_data.pop("hs_code", "") or "").strip()
+
+        origin = meta.get("origin_location") if isinstance(meta.get("origin_location"), dict) else {}
+        origin = dict(origin)
+        if "origin_country" in validated_data:
+            origin["country"] = (validated_data.pop("origin_country", "") or "").strip()
+        if "origin_region" in validated_data:
+            origin["region"] = (validated_data.pop("origin_region", "") or "").strip()
+        if "origin_city" in validated_data:
+            origin["city"] = (validated_data.pop("origin_city", "") or "").strip()
+        if origin:
+            meta["origin_location"] = origin
+
+        for k in [
+            "lead_time_days",
+            "weight_grams",
+            "ship_time_min_days",
+            "ship_time_max_days",
+            "sample_ship_days",
+        ]:
+            if k in validated_data:
+                meta[k] = validated_data.pop(k, None)
+        if "sample_available" in validated_data:
+            meta["sample_available"] = bool(validated_data.pop("sample_available", False))
+
+        if "ip_protection_level" in validated_data:
+            ip_level = (validated_data.pop("ip_protection_level", "") or "").strip().lower()
+            if ip_level:
+                meta["ip_protection_level"] = ip_level
+            else:
+                meta.pop("ip_protection_level", None)
+        if "trademark_registration_number" in validated_data:
+            trademark_reg = (validated_data.pop("trademark_registration_number", "") or "").strip()
+            if trademark_reg:
+                meta["trademark_registration_number"] = trademark_reg[:128]
+            else:
+                meta.pop("trademark_registration_number", None)
+
+        instance.product_meta = meta
+        instance.save()
+        return instance
 
 
 class AdminProductListSerializer(serializers.ModelSerializer):
@@ -512,6 +1142,8 @@ class AdminProductListSerializer(serializers.ModelSerializer):
     compliance_docs_required_count = serializers.IntegerField(read_only=True)
     compliance_destination_rules_count = serializers.IntegerField(read_only=True)
     legal_review_status = serializers.SerializerMethodField()
+    fulfillment_mode = serializers.CharField(read_only=True)
+    seller_stock_units = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Product
@@ -531,6 +1163,8 @@ class AdminProductListSerializer(serializers.ModelSerializer):
             "category_display",
             "stock_units",
             "admin_status",
+            "fulfillment_mode",
+            "seller_stock_units",
             "images_count",
             "missing_hs_code",
             "missing_media",
@@ -615,7 +1249,60 @@ class AdminProductWriteSerializer(serializers.Serializer):
             category_id = attrs.get("category_id")
             if not Category.objects.filter(id=category_id).exists():
                 raise serializers.ValidationError({"category_id": "Category not found."})
-
-        attrs["hs_code"] = (attrs.get("hs_code") or "").strip()
-
         return attrs
+
+
+class InboundRequestItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source="product.name", read_only=True)
+    variation_attributes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InboundRequestItem
+        fields = [
+            "id",
+            "product",
+            "product_name",
+            "variation",
+            "variation_attributes",
+            "quantity_expected",
+            "quantity_received",
+        ]
+
+    def get_variation_attributes(self, obj: InboundRequestItem):
+        v = getattr(obj, "variation", None)
+        if not v:
+            return {}
+        a = getattr(v, "attributes", None)
+        return a if isinstance(a, dict) else {}
+
+
+class InboundRequestSerializer(serializers.ModelSerializer):
+    items = InboundRequestItemSerializer(many=True, read_only=True)
+    seller_name = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    listing_request_product_name = serializers.CharField(source="listing_request.product_name", read_only=True)
+
+    class Meta:
+        model = InboundRequest
+        fields = [
+            "id",
+            "listing_request",
+            "listing_request_product_name",
+            "seller",
+            "seller_name",
+            "warehouse",
+            "warehouse_name",
+            "status",
+            "tracking_number",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["seller", "status", "created_at", "updated_at"]
+
+    def get_seller_name(self, obj: InboundRequest):
+        s = getattr(obj, "seller", None)
+        if not s:
+            return ""
+        full = f"{(getattr(s, 'first_name', '') or '').strip()} {(getattr(s, 'last_name', '') or '').strip()}".strip()
+        return full or getattr(s, "email", "") or getattr(s, "phone", "")

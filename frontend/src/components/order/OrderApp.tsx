@@ -85,6 +85,19 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
 
   const selectedOrder = selectedOrderId ? orders.find((o) => o.id === selectedOrderId) || null : null;
 
+  const refreshOrders = async () => {
+    const next = await fetchJsonAuthed("/api/v1/orders/?page_size=50");
+    const rows: ApiOrder[] = Array.isArray((next as any)?.results)
+      ? (next as any).results
+      : Array.isArray(next)
+        ? (next as any)
+        : [];
+    setOrders(rows);
+    if (selectedOrderId && rows.length && !rows.some((o) => o.id === selectedOrderId)) {
+      setSelectedOrderId(rows[0]?.id ?? null);
+    }
+  };
+
   const handleCancelOrder = async (id: number) => {
     toast.promise(
       (async () => {
@@ -94,19 +107,50 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
           const msg = (data && (data.detail || data.error)) || `Could not cancel order (${res.status})`;
           throw new Error(typeof msg === "string" ? msg : "Could not cancel order");
         }
-        const next = await fetchJsonAuthed("/api/v1/orders/?page_size=50");
-        const rows: ApiOrder[] = Array.isArray((next as any)?.results)
-          ? (next as any).results
-          : Array.isArray(next)
-            ? (next as any)
-            : [];
-        setOrders(rows);
-        if (selectedOrderId && !rows.some((o) => o.id === selectedOrderId)) setSelectedOrderId(rows[0]?.id ?? null);
+        await refreshOrders();
       })(),
       {
         loading: "Processing cancellation...",
         success: "Order has been cancelled",
         error: (e) => (e instanceof Error ? e.message : "Could not cancel order"),
+      },
+    );
+  };
+
+  const handleConfirmDelivered = async (id: number) => {
+    toast.promise(
+      (async () => {
+        const res = await authedFetch(`/api/v1/orders/${id}/confirm-delivered/`, { method: "POST" });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const msg = (data && (data.detail || data.error)) || `Could not confirm delivery (${res.status})`;
+          throw new Error(typeof msg === "string" ? msg : "Could not confirm delivery");
+        }
+        await refreshOrders();
+      })(),
+      {
+        loading: "Confirming delivery...",
+        success: "Marked as delivered",
+        error: (e) => (e instanceof Error ? e.message : "Could not confirm delivery"),
+      },
+    );
+  };
+
+  const handleConfirmReceived = async (id: number) => {
+    toast.promise(
+      (async () => {
+        const res = await authedFetch(`/api/v1/orders/${id}/confirm-received/`, { method: "POST" });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const msg = (data && (data.detail || data.error)) || `Could not confirm receipt (${res.status})`;
+          throw new Error(typeof msg === "string" ? msg : "Could not confirm receipt");
+        }
+        await refreshOrders();
+      })(),
+      {
+        loading: "Confirming receipt...",
+        success: "Order completed",
+        error: (e) => (e instanceof Error ? e.message : "Could not confirm receipt"),
       },
     );
   };
@@ -214,6 +258,8 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
                         order={selectedOrder}
                         onCancelOrder={handleCancelOrder}
                         onRequestSample={handleRequestSample}
+                        onConfirmDelivered={handleConfirmDelivered}
+                        onConfirmReceived={handleConfirmReceived}
                       />
                       <OrderHistoryList
                         orders={orders}

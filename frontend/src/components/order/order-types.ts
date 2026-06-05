@@ -15,6 +15,8 @@ export type ApiOrder = {
   status: string;
   currency: string;
   total_amount: string;
+  shipping_method?: string | null;
+  shipping_cost?: string;
   payment_method: string;
   payment_status: string;
   shipping_address: Record<string, any>;
@@ -29,4 +31,3 @@ export type ApiOrder = {
     actual_delivery_at: string | null;
   };
 };
-

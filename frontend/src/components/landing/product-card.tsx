@@ -12,6 +12,7 @@ interface ProductCardProps {
   image: string;
   index: number;
   productId?: string;
+  stockStatus?: string;
 }
 
 export function ProductCard({
@@ -20,17 +21,27 @@ export function ProductCard({
   rating,
   image,
   index,
+  stockStatus,
 }: ProductCardProps) {
+  const isOutOfStock = stockStatus === "out_of_stock";
+
   return (
     <AliveElement delay={index} sensitivity={0.6}>
       <motion.div
-        whileHover={{ y: -6, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } }}
-        className="group relative cursor-pointer"
+        whileHover={!isOutOfStock ? { y: -6, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } } : {}}
+        className={`group relative cursor-pointer ${isOutOfStock ? 'opacity-70' : ''}`}
       >
         {/* Card body */}
         <div className="relative bg-white/70 backdrop-blur-sm rounded-[28px] overflow-hidden border border-white/80 shadow-[0_2px_20px_rgba(0,0,0,0.03)] transition-shadow duration-500 group-hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]">
+          {/* Out of stock badge */}
+          {isOutOfStock && (
+            <div className="absolute top-4 left-4 z-20 px-3 py-1 bg-black/60 backdrop-blur-md rounded-full">
+              <span className="text-[10px] font-bold text-white uppercase tracking-wider">Out of Stock</span>
+            </div>
+          )}
+
           {/* Image area */}
-          <div className="relative aspect-square p-6 flex items-center justify-center bg-gradient-to-b from-[#f8fafe] to-white/40">
+          <div className={`relative aspect-square p-6 flex items-center justify-center bg-gradient-to-b from-[#f8fafe] to-white/40 ${isOutOfStock ? 'grayscale' : ''}`}>
             <ImageWithFallback
               src={image}
               alt={name}

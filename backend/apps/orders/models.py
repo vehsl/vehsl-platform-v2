@@ -85,12 +85,16 @@ class Order(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.CREATED)
     currency = models.CharField(max_length=3, default="USD")
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+    shipping_cost = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)], default=0)
+    shipping_method = models.CharField(max_length=32, blank=True, null=True)
     payment_method = models.CharField(max_length=16, choices=PaymentMethod.choices, default=PaymentMethod.CARD)
     payment_status = models.CharField(max_length=16, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)
     shipping_address = models.JSONField(default=dict, blank=True)
     deadline_at = models.DateTimeField(null=True, blank=True)
     extension_reason = models.TextField(blank=True, default="")
     extension_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(null=True, blank=True)
     release_authorized_at = models.DateTimeField(null=True, blank=True)
     release_authorized_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -384,3 +388,29 @@ class WarehouseRelease(models.Model):
 
     def __str__(self):
         return f"warehouse_release:{self.pk}"
+
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        old_status = None
+        if not is_new:
+            try:
+                old_status = WarehouseRelease.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+            except Exception:
+                old_status = None
+
+        super().save(*args, **kwargs)
+
+        if self.status == self.Status.COMPLETED and old_status != self.Status.COMPLETED:
+            try:
+                addr = self.order.shipping_address or {}
+                dest = f"{addr.get('city', '')}, {addr.get('country', '')}".strip(", ")
+                Shipment.objects.get_or_create(
+                    order=self.order,
+                    defaults={
+                        "status": Shipment.Status.LABEL_CREATED,
+                        "origin": f"Warehouse: {self.warehouse.name}",
+                        "destination": dest or "Unknown",
+                    },
+                )
+            except Exception:
+                pass

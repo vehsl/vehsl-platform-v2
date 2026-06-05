@@ -1291,6 +1291,58 @@ export function AdminUsers() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {deleteOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setDeleteOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Delete product</h2>
+                  <p className="text-muted-foreground text-[0.8125rem] truncate">
+                    #{deleteProductId || "—"} · {deleteProductName || "Product"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setDeleteOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[0.8125rem] text-[#E5484D]/80">
+                This removes the product from the marketplace and hides it across the system. This action cannot be undone.
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={() => setDeleteOpen(false)}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={deleteSaving ? undefined : submitDelete}
+                  className={deleteSaving ? "opacity-70 pointer-events-none bg-[#E5484D]/80" : "bg-[#E5484D] hover:bg-[#D63E44]"}
+                  icon={deleteSaving ? <Clock size={14} /> : <Trash2 size={14} />}
+                >
+                  {deleteSaving ? "Deleting…" : "Delete"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {detailOpen && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -1406,6 +1458,7 @@ export function AdminUsers() {
 export function AdminProducts() {
   const fetchJson = fetchJsonAuthed;
   const location = useLocation();
+  const navigate = useNavigate();
 
   const formatNumber = (v: any) => {
     const n = Number(v);
@@ -1424,8 +1477,8 @@ export function AdminProducts() {
   const productStatusToPill = (s: string) => {
     const x = (s || "").toString().toLowerCase();
     if (x === "active") return { status: "success", label: "Active" };
-    if (x === "low_stock") return { status: "warning", label: "Low Stock" };
-    if (x === "out") return { status: "error", label: "Out" };
+    if (x === "low_stock") return { status: "warning", label: "Low Samples" };
+    if (x === "out") return { status: "error", label: "No Samples" };
     if (x === "review") return { status: "pending", label: "Review" };
     return { status: "pending", label: x || "Review" };
   };
@@ -1441,7 +1494,35 @@ export function AdminProducts() {
   const [stats, setStats] = useState<any>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [actionError, setActionError] = useState<string>("");
+  const [actionSuccess, setActionSuccess] = useState<string>("");
   const [requestingMedia, setRequestingMedia] = useState(false);
+  const [changesOpen, setChangesOpen] = useState(false);
+  const [changesId, setChangesId] = useState<number | null>(null);
+  const [changesMessage, setChangesMessage] = useState<string>("");
+  const [changesSaving, setChangesSaving] = useState(false);
+
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [verifyId, setVerifyId] = useState<number | null>(null);
+  const [verifyNotes, setVerifyNotes] = useState<string>("");
+  const [verifySaving, setVerifySaving] = useState(false);
+
+  const [approveOpen, setApproveOpen] = useState(false);
+  const [approveId, setApproveId] = useState<number | null>(null);
+  const [approveRating, setApproveRating] = useState<string>("");
+  const [approveSaving, setApproveSaving] = useState(false);
+
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishId, setPublishId] = useState<number | null>(null);
+  const [publishRating, setPublishRating] = useState<string>("");
+  const [publishSaving, setPublishSaving] = useState(false);
+
+  const [readinessOpen, setReadinessOpen] = useState(false);
+  const [readinessId, setReadinessId] = useState<number | null>(null);
+  const [readinessTitle, setReadinessTitle] = useState<string>("");
+  const [readinessMissing, setReadinessMissing] = useState<string[]>([]);
+  const [readinessRequiredDocs, setReadinessRequiredDocs] = useState<string[]>([]);
+  const [readinessDocsAttached, setReadinessDocsAttached] = useState<number>(0);
+  const [readinessSuggestedMessage, setReadinessSuggestedMessage] = useState<string>("");
 
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [categoryQuery, setCategoryQuery] = useState("");
@@ -1523,8 +1604,66 @@ export function AdminProducts() {
     debounceMs: 250,
   });
 
+  const [lrSearch, setLrSearch] = useState("");
+  const [lrStage, setLrStage] = useState<string>("all");
+
+  const setListingRequestStageFilter = useCallback(
+    (v: string) => {
+      const next = (v || "").toString();
+      setLrStage(next);
+      const params = new URLSearchParams(location.search);
+      if (next && next !== "all") params.set("rs", next);
+      else params.delete("rs");
+      navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+    },
+    [location.search, navigate]
+  );
+
+  const lrFilters = useMemo(() => {
+    const f: any = {};
+    const q = lrSearch.trim();
+    if (q) f.q = q;
+    if (lrStage && lrStage !== "all") f.stage = lrStage;
+    return f;
+  }, [lrSearch, lrStage]);
+
+  const {
+    rows: listingRequests,
+    count: listingRequestsCount,
+    loading: listingRequestsLoading,
+    error: listingRequestsError,
+    page: lrPage,
+    pageSize: lrPageSize,
+    setPage: setLrPage,
+    setPageSize: setLrPageSize,
+    refresh: refreshListingRequests,
+    totalPages: lrTotalPages,
+  } = usePaginatedList<any>({
+    endpoint: "/api/v1/admin/listing-requests/",
+    filters: lrFilters,
+    initialOrdering: "-created_at",
+    initialPageSize: 20,
+    debounceMs: 250,
+  });
+
+  const didRelaxListingRequestFilterRef = useRef(false);
+  useEffect(() => {
+    if (didRelaxListingRequestFilterRef.current) return;
+    const modeFromUrl = (new URLSearchParams(location.search).get("mode") || "").trim().toLowerCase();
+    if (modeFromUrl !== "requests") return;
+    if (listingRequestsLoading) return;
+    if (lrSearch.trim()) return;
+    const params = new URLSearchParams(location.search);
+    if (!params.has("rs")) return;
+    if (listingRequestsCount !== 0) return;
+    didRelaxListingRequestFilterRef.current = true;
+    params.delete("rs");
+    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+  }, [listingRequestsCount, listingRequestsLoading, location.search, lrSearch, navigate]);
+
   useEffect(() => {
     const params = new URLSearchParams(location.search);
+    const mode = (params.get("mode") || "").trim().toLowerCase();
     const q = (params.get("q") || "").trim();
     const category = (params.get("category") || "").trim();
     const adminStatus = (params.get("admin_status") || "").trim().toLowerCase();
@@ -1553,7 +1692,302 @@ export function AdminProducts() {
     setRejectedWithReasonFilter(rejectedWithReason === "1" || rejectedWithReason === "true" || rejectedWithReason === "yes");
 
     setPage(1);
+    if (mode === "requests") {
+      const rq = (params.get("rq") || "").trim();
+      const rs = (params.get("rs") || "").trim().toLowerCase();
+      setLrSearch(rq);
+      setLrStage(rs || "all");
+      setLrPage(1);
+    }
   }, [location.search, setPage]);
+
+  const mode = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const m = (params.get("mode") || "").trim().toLowerCase();
+    return m === "requests" ? "requests" : "products";
+  }, [location.search]);
+
+  const setMode = (nextMode: "products" | "requests") => {
+    const params = new URLSearchParams(location.search);
+    if (nextMode === "requests") {
+      params.set("mode", "requests");
+      params.delete("rs");
+      params.delete("rq");
+      params.delete("page");
+    } else {
+      params.delete("mode");
+      params.delete("rs");
+      params.delete("rq");
+      params.delete("page");
+    }
+    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+  };
+
+  const publishListingRequest = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+
+    const requiredDocs = Array.isArray(lr?.required_documents) ? lr.required_documents.filter((x: any) => typeof x === "string") : [];
+    const docsAttached = Number(lr?.documents_attached || 0) || 0;
+    const needsDocs = requiredDocs.length > 0;
+
+    const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+    const origin = meta?.origin_location && typeof meta.origin_location === "object" ? meta.origin_location : {};
+    const missing: string[] = [];
+    if (!String(meta?.sku || "").trim()) missing.push("sku");
+    if (!String(meta?.hs_code || "").trim()) missing.push("hs_code");
+    if (!String(origin?.country || "").trim()) missing.push("origin_country");
+    if (meta?.lead_time_days == null || meta?.lead_time_days === "") missing.push("lead_time_days");
+    if (meta?.weight_grams == null || meta?.weight_grams === "") missing.push("weight_grams");
+    if (meta?.ship_time_min_days == null || meta?.ship_time_min_days === "" || meta?.ship_time_max_days == null || meta?.ship_time_max_days === "") {
+      missing.push("ship_time_range_days");
+    }
+
+    const needsInspection = !!lr?.inspector;
+    const canPublish =
+      !lr?.created_product_id &&
+      String(lr?.stage || "").toLowerCase() === "live" &&
+      !!lr?.compliance_verified &&
+      (!needsInspection || !!lr?.inspected) &&
+      missing.length === 0 &&
+      (!needsDocs || docsAttached > 0);
+
+    if (!canPublish) {
+      setActionError("Cannot publish: resolve readiness requirements first (use “Why disabled?”).");
+      return;
+    }
+
+    setActionError("");
+    setActionSuccess("");
+    setPublishId(id);
+    setPublishRating("");
+    setPublishOpen(true);
+  };
+
+  const computeMissingFields = (lr: any): string[] => {
+    if (Array.isArray(lr?.missing_fields)) return lr.missing_fields.filter((x: any) => typeof x === "string");
+    const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+    const origin = meta?.origin_location && typeof meta.origin_location === "object" ? meta.origin_location : {};
+    const missing: string[] = [];
+    if (!String(meta?.sku || "").trim()) missing.push("sku");
+    if (!String(meta?.hs_code || "").trim()) missing.push("hs_code");
+    if (!String(origin?.country || "").trim()) missing.push("origin_country");
+    if (meta?.lead_time_days == null || meta?.lead_time_days === "") missing.push("lead_time_days");
+    if (meta?.weight_grams == null || meta?.weight_grams === "") missing.push("weight_grams");
+    if (meta?.ship_time_min_days == null || meta?.ship_time_min_days === "" || meta?.ship_time_max_days == null || meta?.ship_time_max_days === "") {
+      missing.push("ship_time_range_days");
+    }
+    return missing;
+  };
+
+  const openReadinessModal = (lr: any, title: string) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    const missing = computeMissingFields(lr);
+    const requiredDocs = Array.isArray(lr?.required_documents) ? lr.required_documents.filter((x: any) => typeof x === "string") : [];
+    const docsAttached = Number(lr?.documents_attached || 0) || 0;
+
+    const msgParts: string[] = [];
+    if (missing.length) msgParts.push(`Missing required fields: ${missing.join(", ")}`);
+    if (requiredDocs.length && docsAttached <= 0) msgParts.push(`Missing required documents: ${requiredDocs.join(", ")}`);
+    const suggested =
+      msgParts.length === 0
+        ? ""
+        : `Please fix the following before we can approve/publish:\n- ${msgParts.join("\n- ")}`;
+
+    setReadinessId(id);
+    setReadinessTitle(title);
+    setReadinessMissing(missing);
+    setReadinessRequiredDocs(requiredDocs);
+    setReadinessDocsAttached(docsAttached);
+    setReadinessSuggestedMessage(suggested);
+    setReadinessOpen(true);
+  };
+
+  const verifyCompliance = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setVerifyId(id);
+    setVerifyNotes((lr?.compliance_notes || "").toString());
+    setVerifyOpen(true);
+  };
+
+  const approveListingRequest = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setApproveId(id);
+    setApproveRating("");
+    setApproveOpen(true);
+  };
+
+  const submitVerifyModal = async () => {
+    const id = Number(verifyId || 0);
+    if (!id) return;
+    if (verifySaving) return;
+    setVerifySaving(true);
+    try {
+      const notes = (verifyNotes || "").trim();
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/verify_compliance/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verified: true, notes }),
+      });
+      setVerifyOpen(false);
+      setVerifyId(null);
+      setVerifyNotes("");
+      setActionSuccess("Compliance verified. Listing moved to Inspection stage.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      if (lrStage === "compliance") setListingRequestStageFilter("inspection");
+    } catch (e: any) {
+      setActionError(e?.message || "Compliance verification failed.");
+    } finally {
+      setVerifySaving(false);
+    }
+  };
+
+  const submitApproveModal = async () => {
+    const id = Number(approveId || 0);
+    if (!id) return;
+    if (approveSaving) return;
+    setApproveSaving(true);
+    try {
+      const raw = (approveRating || "").trim();
+      const body: any = { decision: "approve" };
+      if (raw) {
+        const rating = Number(raw);
+        if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
+          setActionError("Rating must be between 0 and 5.");
+          return;
+        }
+        body.rating = rating;
+      }
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/review/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setApproveOpen(false);
+      setApproveId(null);
+      setApproveRating("");
+      setActionSuccess("Approved. Listing moved to Approved stage (ready for publish).");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      if (lrStage === "inspection" || lrStage === "inbound") setListingRequestStageFilter("live");
+    } catch (e: any) {
+      setActionError(e?.message || "Approval failed.");
+    } finally {
+      setApproveSaving(false);
+    }
+  };
+
+  const submitPublishModal = async () => {
+    const id = Number(publishId || 0);
+    if (!id) return;
+    if (publishSaving) return;
+    setPublishSaving(true);
+    try {
+      const raw = (publishRating || "").trim();
+      const body: any = {};
+      if (raw) {
+        const rating = Number(raw);
+        if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
+          setActionError("Rating must be between 0 and 5.");
+          return;
+        }
+        body.rating = rating;
+      }
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setPublishOpen(false);
+      setPublishId(null);
+      setPublishRating("");
+      setActionSuccess("Published. Product created and listing request moved to Done.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      refreshProducts();
+    } catch (e: any) {
+      setActionError(e?.message || "Publish failed.");
+    } finally {
+      setPublishSaving(false);
+    }
+  };
+
+  const completeInspection = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/complete_inspection/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inspected: true }),
+      });
+      setActionSuccess("Inspection marked complete.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to complete inspection.");
+    }
+  };
+
+  const requestChangesForListing = async (id: number, msg: string) => {
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/review/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "needs_changes", message: (msg || "").trim() }),
+      });
+      setActionSuccess("Changes requested. Listing moved to Samples stage.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      if (lrStage !== "all" && lrStage !== "samples") setListingRequestStageFilter("samples");
+    } catch (e: any) {
+      setActionError(e?.message || "Request changes failed.");
+    }
+  };
+
+  const openChangesModal = useCallback((lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+    const existing = (meta?.review_message || "").toString();
+    setChangesId(id);
+    setChangesMessage(existing);
+    setChangesOpen(true);
+  }, []);
+
+  const submitChangesModal = useCallback(async () => {
+    const id = Number(changesId || 0);
+    const msg = (changesMessage || "").trim();
+    if (!id) return;
+    if (!msg) {
+      setActionError("Please enter a message for the seller.");
+      return;
+    }
+    if (changesSaving) return;
+    setChangesSaving(true);
+    try {
+      await requestChangesForListing(id, msg);
+      setChangesOpen(false);
+      setChangesId(null);
+      setChangesMessage("");
+    } finally {
+      setChangesSaving(false);
+    }
+  }, [changesId, changesMessage, changesSaving, requestChangesForListing]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -1591,6 +2025,20 @@ export function AdminProducts() {
   const [stockSaving, setStockSaving] = useState(false);
   const [stockProductId, setStockProductId] = useState<number | null>(null);
   const [stockValue, setStockValue] = useState<string>("");
+
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackProductId, setFeedbackProductId] = useState<number | null>(null);
+  const [feedbackProductName, setFeedbackProductName] = useState<string>("");
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [feedbackItems, setFeedbackItems] = useState<any[]>([]);
+  const [feedbackKind, setFeedbackKind] = useState<string>("info");
+  const [feedbackMessage, setFeedbackMessage] = useState<string>("");
+
+  const [productDeleteOpen, setProductDeleteOpen] = useState(false);
+  const [productDeleteId, setProductDeleteId] = useState<number | null>(null);
+  const [productDeleteName, setProductDeleteName] = useState<string>("");
+  const [productDeleteSaving, setProductDeleteSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1684,6 +2132,97 @@ export function AdminProducts() {
     setStockValue(p?.stock_units != null ? String(p.stock_units) : "");
     setStockOpen(true);
     setMenuProductId(null);
+  };
+
+  const openFeedbackModal = async (p: any) => {
+    const id = Number(p?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setMenuProductId(null);
+    setFeedbackOpen(true);
+    setFeedbackProductId(id);
+    setFeedbackProductName((p?.name || "").toString());
+    setFeedbackItems([]);
+    setFeedbackMessage("");
+    setFeedbackKind("info");
+    setFeedbackLoading(true);
+    try {
+      const data = await fetchJson(`/api/v1/admin/products/${id}/feedback/`);
+      setFeedbackItems(Array.isArray(data?.results) ? data.results : []);
+    } catch (e: any) {
+      setFeedbackItems([]);
+      setActionError(e?.message || "Failed to load feedback.");
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
+  const submitFeedback = async () => {
+    const id = Number(feedbackProductId || 0);
+    const msg = (feedbackMessage || "").trim();
+    if (!id) return;
+    if (!msg) {
+      setActionError("Please write a feedback message.");
+      return;
+    }
+    if (feedbackSaving) return;
+    setFeedbackSaving(true);
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/products/${id}/feedback/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg, kind: feedbackKind }),
+      });
+      setActionSuccess("Feedback sent to seller.");
+      setFeedbackMessage("");
+      const data = await fetchJson(`/api/v1/admin/products/${id}/feedback/`);
+      setFeedbackItems(Array.isArray(data?.results) ? data.results : []);
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to send feedback.");
+    } finally {
+      setFeedbackSaving(false);
+    }
+  };
+
+  const openProductDeleteModal = (p: any) => {
+    const id = Number(p?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setMenuProductId(null);
+    setProductDeleteId(id);
+    setProductDeleteName((p?.name || "").toString());
+    setProductDeleteOpen(true);
+  };
+
+  const closeProductDeleteModal = () => {
+    setProductDeleteOpen(false);
+    setProductDeleteId(null);
+    setProductDeleteName("");
+    setProductDeleteSaving(false);
+  };
+
+  const submitProductDelete = async () => {
+    const id = Number(productDeleteId || 0);
+    if (!id) return;
+    if (productDeleteSaving) return;
+    setProductDeleteSaving(true);
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/products/${id}/delete/`, { method: "POST" });
+      setActionSuccess("Product deleted.");
+      closeProductDeleteModal();
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to delete product.");
+    } finally {
+      setProductDeleteSaving(false);
+    }
   };
 
   const requestMedia = async () => {
@@ -1915,6 +2454,461 @@ export function AdminProducts() {
 
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
+      <AnimatePresence>
+        {changesOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !changesSaving) {
+                setChangesOpen(false);
+                setChangesId(null);
+                setChangesMessage("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[640px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Request Changes</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Tell the seller exactly what to fix.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (changesSaving) return;
+                    setChangesOpen(false);
+                    setChangesId(null);
+                    setChangesMessage("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <textarea
+                  value={changesMessage}
+                  onChange={(e) => setChangesMessage(e.target.value)}
+                  placeholder="Example: Please add HS code, upload compliance documents, and correct the origin country."
+                  rows={6}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 resize-none"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (changesSaving) return;
+                      setChangesOpen(false);
+                      setChangesId(null);
+                      setChangesMessage("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitChangesModal()}
+                    disabled={changesSaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      changesSaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {changesSaving ? "Sending…" : "Send to Seller"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {verifyOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !verifySaving) {
+                setVerifyOpen(false);
+                setVerifyId(null);
+                setVerifyNotes("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[640px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Verify Compliance</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Confirm compliance and move the listing to Inspection.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (verifySaving) return;
+                    setVerifyOpen(false);
+                    setVerifyId(null);
+                    setVerifyNotes("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <textarea
+                  value={verifyNotes}
+                  onChange={(e) => setVerifyNotes(e.target.value)}
+                  placeholder="Optional notes (e.g., documents reviewed, exceptions, requirements)."
+                  rows={5}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 resize-none"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (verifySaving) return;
+                      setVerifyOpen(false);
+                      setVerifyId(null);
+                      setVerifyNotes("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitVerifyModal()}
+                    disabled={verifySaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      verifySaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {verifySaving ? "Verifying…" : "Verify"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {approveOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !approveSaving) {
+                setApproveOpen(false);
+                setApproveId(null);
+                setApproveRating("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Approve Listing</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Set rating and move the listing to Approved stage.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (approveSaving) return;
+                    setApproveOpen(false);
+                    setApproveId(null);
+                    setApproveRating("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <div className="text-[0.75rem] uppercase tracking-wide text-muted-foreground/60 mb-2">Rating (0–5)</div>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    value={approveRating}
+                    onChange={(e) => setApproveRating(e.target.value)}
+                    placeholder="Leave blank for default 4.8"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (approveSaving) return;
+                      setApproveOpen(false);
+                      setApproveId(null);
+                      setApproveRating("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitApproveModal()}
+                    disabled={approveSaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      approveSaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {approveSaving ? "Approving…" : "Approve"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {publishOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !publishSaving) {
+                setPublishOpen(false);
+                setPublishId(null);
+                setPublishRating("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Publish Listing</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Create the marketplace product and finalize this request.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (publishSaving) return;
+                    setPublishOpen(false);
+                    setPublishId(null);
+                    setPublishRating("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <div className="text-[0.75rem] uppercase tracking-wide text-muted-foreground/60 mb-2">Rating (0–5)</div>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    value={publishRating}
+                    onChange={(e) => setPublishRating(e.target.value)}
+                    placeholder="Leave blank for default 4.8"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (publishSaving) return;
+                      setPublishOpen(false);
+                      setPublishId(null);
+                      setPublishRating("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitPublishModal()}
+                    disabled={publishSaving}
+                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
+                      publishSaving
+                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
+                    }`}
+                  >
+                    {publishSaving ? "Publishing…" : "Publish"}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {readinessOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setReadinessOpen(false);
+                setReadinessId(null);
+                setReadinessTitle("");
+                setReadinessMissing([]);
+                setReadinessRequiredDocs([]);
+                setReadinessDocsAttached(0);
+                setReadinessSuggestedMessage("");
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 5 }}
+              transition={{ duration: 0.25 }}
+              className="w-full max-w-[680px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+            >
+              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[0.9375rem] font-bold text-foreground/85">Publish readiness</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">{readinessTitle || "Review what’s missing before publish."}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReadinessOpen(false);
+                    setReadinessId(null);
+                    setReadinessTitle("");
+                    setReadinessMissing([]);
+                    setReadinessRequiredDocs([]);
+                    setReadinessDocsAttached(0);
+                    setReadinessSuggestedMessage("");
+                  }}
+                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
+                >
+                  <X size={16} className="text-muted-foreground/70" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
+                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Missing fields</div>
+                    <div className="mt-2 text-[0.8125rem] text-foreground/80">
+                      {readinessMissing.length ? readinessMissing.join(", ") : "None"}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
+                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Documents</div>
+                    <div className="mt-2 text-[0.8125rem] text-foreground/80">
+                      {readinessRequiredDocs.length ? `${readinessDocsAttached > 0 ? "Attached" : "Missing"} (${readinessRequiredDocs.length} required)` : "Not required"}
+                    </div>
+                  </div>
+                </div>
+
+                {readinessRequiredDocs.length > 0 && (
+                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
+                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Required documents</div>
+                    <div className="mt-2 text-[0.8125rem] text-foreground/80 break-words">
+                      {readinessRequiredDocs.join(", ")}
+                    </div>
+                  </div>
+                )}
+
+                {readinessSuggestedMessage && (
+                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
+                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Suggested message to seller</div>
+                    <div className="mt-2 text-[0.8125rem] text-foreground/80 whitespace-pre-wrap">
+                      {readinessSuggestedMessage}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReadinessOpen(false);
+                      setReadinessId(null);
+                      setReadinessTitle("");
+                      setReadinessMissing([]);
+                      setReadinessRequiredDocs([]);
+                      setReadinessDocsAttached(0);
+                      setReadinessSuggestedMessage("");
+                    }}
+                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
+                  >
+                    Close
+                  </button>
+                  {!!readinessSuggestedMessage && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReadinessOpen(false);
+                        setReadinessId(null);
+                        setChangesId(readinessId);
+                        setChangesMessage(readinessSuggestedMessage);
+                        setChangesOpen(true);
+                      }}
+                      className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15"
+                    >
+                      Request changes
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-foreground tracking-tight mb-1.5">Products</h1>
@@ -1926,6 +2920,356 @@ export function AdminProducts() {
         </div>
       </motion.div>
 
+      <motion.div variants={stagger.item} className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode("products")}
+          className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border transition-all ${
+            mode === "products" ? "bg-primary/8 text-primary border-primary/20" : "bg-muted/20 text-muted-foreground border-border/30 hover:text-foreground"
+          }`}
+        >
+          Products
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("requests")}
+          className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border transition-all ${
+            mode === "requests" ? "bg-primary/8 text-primary border-primary/20" : "bg-muted/20 text-muted-foreground border-border/30 hover:text-foreground"
+          }`}
+        >
+          Listing Requests
+        </button>
+      </motion.div>
+
+      {mode === "requests" ? (
+        <motion.div variants={stagger.item}>
+          <SectionCard>
+            <div className="flex flex-col sm:flex-row gap-3 mb-5">
+              <div className="flex-1 relative">
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
+                <input
+                  type="text"
+                  placeholder="Search listing requests..."
+                  value={lrSearch}
+                  onChange={(e) => {
+                    setLrSearch(e.target.value);
+                    const params = new URLSearchParams(location.search);
+                    if (e.target.value.trim()) params.set("rq", e.target.value.trim());
+                    else params.delete("rq");
+                    navigate({ search: params.toString() ? `?${params.toString()}` : "" });
+                  }}
+                  className="w-full pl-11 pr-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                />
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <select
+                  value={lrStage}
+                  onChange={(e) => {
+                    const v = (e.target.value || "").toString();
+                    setListingRequestStageFilter(v);
+                  }}
+                  className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+                >
+                  <option value="all">All stages</option>
+                  <option value="samples">Samples</option>
+                  <option value="compliance">Compliance</option>
+                  <option value="inspection">Inspection</option>
+                  <option value="live">Approved</option>
+                  <option value="done">Published</option>
+                </select>
+                <select
+                  value={String(lrPageSize)}
+                  onChange={(e) => setLrPageSize(Number(e.target.value) || 20)}
+                  className="px-4 py-3 rounded-2xl text-[0.8125rem] bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all cursor-pointer"
+                >
+                  <option value="20">20 / page</option>
+                  <option value="50">50 / page</option>
+                  <option value="100">100 / page</option>
+                </select>
+              </div>
+            </div>
+
+            {listingRequestsError && (
+              <div className="rounded-2xl border border-border/30 bg-muted/10 p-4 text-[0.8125rem] text-muted-foreground">
+                Failed to load listing requests.
+              </div>
+            )}
+
+            {!listingRequestsLoading && (!listingRequests || listingRequests.length === 0) ? (
+              <div className="rounded-2xl border border-border/30 bg-muted/10 p-6">
+                <div className="text-[0.875rem] text-foreground/80 font-semibold">No listing requests found.</div>
+                <div className="text-[0.8125rem] text-muted-foreground/70 mt-1">Try changing stage filter or search.</div>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-2xl border border-border/30">
+                <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-muted/10 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                  <div className="col-span-3">Product</div>
+                  <div className="col-span-3">Seller</div>
+                  <div className="col-span-2">Stage</div>
+                  <div className="col-span-1">Created</div>
+                  <div className="col-span-1 text-right">Changes</div>
+                  <div className="col-span-1 text-right">Review</div>
+                  <div className="col-span-1 text-right">Publish</div>
+                </div>
+                <div className="divide-y divide-border/20">
+                  {(listingRequests || []).map((lr: any) => (
+                    <div key={lr.id} className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
+                      <div className="col-span-3">
+                        <div className="text-[0.875rem] font-semibold text-foreground/85">{lr.product_name || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.company_name || "—"}</div>
+                      </div>
+                      <div className="col-span-3">
+                        <div className="text-[0.8125rem] text-foreground/80">{lr.seller_label || lr.seller_email || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.seller_email || "—"}</div>
+                      </div>
+                      <div className="col-span-2 flex items-center gap-2">
+                        <StatusPill 
+                          status={
+                            lr.stage === "done" ? "success" : 
+                            lr.stage === "live" ? "success" :
+                            lr.stage === "inbound" ? "info" :
+                            lr.stage === "inspection" ? "info" :
+                            lr.stage === "compliance" ? "warning" :
+                            "pending"
+                          } 
+                          label={String(lr.stage || "—").toLowerCase() === "live" ? "approved" : (lr.stage || "—").toString()} 
+                        />
+                        <div className="flex gap-1">
+                          {lr.compliance_verified ? (
+                            <div className="w-5 h-5 rounded-full bg-emerald-500/10 flex items-center justify-center" title="Compliance Verified">
+                              <ShieldCheck size={12} className="text-emerald-500" />
+                            </div>
+                          ) : (
+                            <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center" title="Compliance Pending">
+                              <Shield size={12} className="text-amber-500" />
+                            </div>
+                          )}
+                          {lr.inspected ? (
+                            <div className="w-5 h-5 rounded-full bg-emerald-500/10 flex items-center justify-center" title="Inspected">
+                              <CheckCircle2 size={12} className="text-emerald-500" />
+                            </div>
+                          ) : (
+                            <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center" title={lr.inspector_name ? `Inspector Assigned: ${lr.inspector_name}` : "Inspection Pending"}>
+                              <Search size={12} className="text-amber-500" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="col-span-1 text-[0.8125rem] text-muted-foreground/70 tabular-nums whitespace-nowrap">
+                        {(lr.created_at || "").toString().slice(0, 10) || "—"}
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => openChangesModal(lr)}
+                          className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          Changes
+                        </button>
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        {(() => {
+                          const rawStageKey = String(lr?.stage || "").toLowerCase();
+                          const stageKey = rawStageKey === "inbound" ? "inspection" : rawStageKey;
+                          const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
+                          const reviewMessage = (meta?.review_message || "").toString().trim();
+                          const needsInspection = !!lr?.inspector;
+                          const isDone = stageKey === "done" || !!lr?.created_product_id;
+                          const missingForApproval = computeMissingFields(lr);
+                          const requiredDocs = Array.isArray(lr?.required_documents)
+                            ? lr.required_documents.filter((x: any) => typeof x === "string")
+                            : [];
+                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+                          const needsDocs = requiredDocs.length > 0;
+                          const canApprove =
+                            !!lr?.compliance_verified &&
+                            (!needsInspection || !!lr?.inspected) &&
+                            stageKey === "inspection" &&
+                            missingForApproval.length === 0 &&
+                            (!needsDocs || docsAttached > 0);
+
+                          if (!isDone && stageKey === "samples" && !!reviewMessage) {
+                            return (
+                              <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap" title={reviewMessage}>
+                                Awaiting seller
+                              </div>
+                            );
+                          }
+
+                          if (
+                            !isDone &&
+                            !lr?.compliance_verified &&
+                            (stageKey === "compliance" || stageKey === "inspection" || (stageKey === "samples" && !reviewMessage))
+                          ) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => verifyCompliance(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                                title="Verify Compliance (moves listing to Inspection stage)"
+                              >
+                                Verify
+                              </button>
+                            );
+                          }
+
+                          if (!isDone && stageKey === "inspection" && !!lr?.compliance_verified && !lr?.inspected) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => completeInspection(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                                title="Mark inspection complete"
+                              >
+                                Mark inspected
+                              </button>
+                            );
+                          }
+
+                          if (!isDone && canApprove) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => approveListingRequest(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
+                                title="Approve (sets rating and moves listing to Approved stage)"
+                              >
+                                Approve
+                              </button>
+                            );
+                          }
+
+                          if (!isDone && stageKey === "inspection") {
+                            const blocked =
+                              (!!lr?.compliance_verified && (!needsInspection || !!lr?.inspected)) &&
+                              (missingForApproval.length > 0 || (needsDocs && docsAttached <= 0));
+                            if (blocked) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => openReadinessModal(lr, "Needs seller fixes before approval")}
+                                  className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                                  title="See what is missing and request changes"
+                                >
+                                  Needs fixes
+                                </button>
+                              );
+                            }
+                          }
+
+                          if (stageKey === "live") {
+                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Approved</div>;
+                          }
+                          if (isDone) {
+                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Done</div>;
+                          }
+                          return <div className="text-[0.75rem] text-muted-foreground/50">—</div>;
+                        })()}
+                      </div>
+                      <div className="col-span-1 flex justify-end items-end flex-col">
+                        {(() => {
+                          const missing = computeMissingFields(lr);
+                          const requiredDocs = Array.isArray(lr?.required_documents)
+                            ? lr.required_documents.filter((x: any) => typeof x === "string")
+                            : [];
+                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+
+                          const needsInspection = !!lr?.inspector;
+                          const needsDocs = requiredDocs.length > 0;
+                          const canPublish =
+                            !lr?.created_product_id &&
+                            String(lr?.stage || "").toLowerCase() === "live" &&
+                            !!lr?.compliance_verified &&
+                            (!needsInspection || !!lr?.inspected) &&
+                            missing.length === 0 &&
+                            (!needsDocs || docsAttached > 0);
+
+                          const showPublish = !lr?.created_product_id && String(lr?.stage || "").toLowerCase() !== "done";
+                          const title = lr?.created_product_id
+                            ? "Already published"
+                            : String(lr?.stage || "").toLowerCase() !== "live"
+                              ? "Needs approval (Live stage) before publish"
+                              : !lr?.compliance_verified
+                                ? "Needs Compliance Verification"
+                                : needsInspection && !lr?.inspected
+                                  ? "Needs Inspection Completion"
+                                : needsDocs && docsAttached <= 0
+                                  ? `Missing required documents (${requiredDocs.join(", ")})`
+                                  : missing.length
+                                    ? `Missing required fields (${missing.join(", ")})`
+                                    : "Publish to Marketplace";
+
+                          return showPublish ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => publishListingRequest(lr)}
+                                disabled={!canPublish}
+                                className={`px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold transition-all ${
+                                  canPublish
+                                    ? "bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15"
+                                    : "bg-muted/10 border border-border/20 text-muted-foreground/40 cursor-not-allowed"
+                                }`}
+                                title={title}
+                              >
+                                Publish
+                              </button>
+                              {!canPublish && (
+                                <button
+                                  type="button"
+                                  onClick={() => openReadinessModal(lr, title)}
+                                  className="mt-1 text-[0.6875rem] font-semibold text-primary/70 hover:text-primary underline underline-offset-4"
+                                >
+                                  Why disabled?
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => openReadinessModal(lr, "Already published")}
+                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              View
+                            </button>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between mt-5 text-[0.8125rem] text-muted-foreground/70">
+              <div>
+                {typeof listingRequestsCount === "number" ? `Total: ${listingRequestsCount.toLocaleString()}` : ""}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLrPage(Math.max(1, lrPage - 1))}
+                  disabled={lrPage <= 1}
+                  className="px-3 py-2 rounded-xl border border-border/30 bg-muted/20 disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLrPage(lrTotalPages != null ? Math.min(lrTotalPages, lrPage + 1) : lrPage + 1)}
+                  disabled={lrTotalPages != null ? lrPage >= lrTotalPages : (listingRequests || []).length < lrPageSize}
+                  className="px-3 py-2 rounded-xl border border-border/30 bg-muted/20 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </SectionCard>
+        </motion.div>
+      ) : null}
+
+      {mode === "requests" ? null : (
+      <>
       <motion.div variants={stagger.item} className="grid grid-cols-2 sm:grid-cols-5 gap-5">
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "all" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter("all")}>
           <StatCard label="Total Products" value={formatNumber(stats?.total_products)} icon={<Package size={20} className="text-[#0171E3]" />} iconBg="bg-[#0171E3]/8" index={0} accentColor="#0171E3" />
@@ -1934,10 +3278,10 @@ export function AdminProducts() {
           <StatCard label="Active Listings" value={formatNumber(stats?.active_listings)} icon={<CheckCircle2 size={20} className="text-[#30A46C]" />} iconBg="bg-[#30A46C]/8" index={1} accentColor="#30A46C" />
         </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "low_stock" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "low_stock" ? "all" : "low_stock"))}>
-          <StatCard label="Low Stock" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
+          <StatCard label="Low Samples" value={formatNumber(stats?.low_stock)} icon={<AlertTriangle size={20} className="text-[#FFB224]" />} iconBg="bg-[#FFB224]/8" index={2} accentColor="#FFB224" />
         </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "out" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "out" ? "all" : "out"))}>
-          <StatCard label="Out of Stock" value={formatNumber(stats?.out_of_stock)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
+          <StatCard label="No Samples" value={formatNumber(stats?.out_of_stock)} icon={<XCircle size={20} className="text-[#E5484D]" />} iconBg="bg-[#E5484D]/8" index={3} accentColor="#E5484D" />
         </button>
         <button type="button" className={`rounded-[1.25rem] ring-2 transition-all ${statusFilter === "review" ? "ring-primary/30" : "ring-transparent"}`} onClick={() => setStatusFilter(v => (v === "review" ? "all" : "review"))}>
           <StatCard label="Pending Review" value={formatNumber(stats?.pending_review)} icon={<Eye size={20} className="text-[#8B5CF6]" />} iconBg="bg-[#8B5CF6]/8" index={4} accentColor="#8B5CF6" />
@@ -2064,6 +3408,12 @@ export function AdminProducts() {
               </button>
             </div>
           </div>
+
+          {actionSuccess && (
+            <div className="mb-4 px-4 py-3 rounded-2xl bg-emerald-500/10 text-emerald-600 text-[0.8125rem]">
+              {actionSuccess}
+            </div>
+          )}
 
           {(actionError || error) && (
             <div className="mb-4 px-4 py-3 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
@@ -2201,8 +3551,13 @@ export function AdminProducts() {
                 </div>
                 <div className="hidden sm:flex items-center gap-6 text-[0.8125rem]">
                   <span className="text-foreground/70">{formatMoney(p.currency, p.price)}</span>
-                  <span className={`${Number(p.stock_units) === 0 ? "text-[#E5484D]/80" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
-                    {Number(p.stock_units) === 0 ? "Out of stock" : `${formatNumber(p.stock_units)} units`}
+                  <span className={`${Number(p.stock_units) === 0 ? "text-muted-foreground/40" : Number(p.stock_units) < 50 ? "text-[#FFB224]/80" : "text-muted-foreground/50"}`}>
+                    {`Samples: ${formatNumber(p.stock_units)}`}
+                  </span>
+                  <span className={`${String(p.fulfillment_mode || "").toLowerCase() === "seller_stock" ? (Number(p.seller_stock_units) <= 0 ? "text-[#E5484D]/80" : Number(p.seller_stock_units) < 10 ? "text-[#FFB224]/80" : "text-muted-foreground/50") : "text-primary/50"}`}>
+                    {String(p.fulfillment_mode || "").toLowerCase() === "seller_stock"
+                      ? `Bulk: ${formatNumber(p.seller_stock_units)}`
+                      : "Bulk: MTO"}
                   </span>
                   {Number(p.vehsl_rating) > 0 && (
                     <span className="flex items-center gap-1 text-[#FFB224]/80">
@@ -2257,6 +3612,13 @@ export function AdminProducts() {
                         </button>
                         <button
                           className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => void openFeedbackModal(p)}
+                        >
+                          <Bell size={14} className="text-muted-foreground/60" />
+                          Feedback
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
                           onClick={() => openStockModal(p)}
                         >
                           <Hash size={14} className="text-muted-foreground/60" />
@@ -2294,6 +3656,13 @@ export function AdminProducts() {
                             Archive
                           </button>
                         )}
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => openProductDeleteModal(p)}
+                        >
+                          <Trash2 size={14} className="text-[#E5484D]/80" />
+                          <span className="text-[#E5484D]/80">Delete</span>
+                        </button>
                         <div className="h-px bg-border/30" />
                         {/*
                         <button
@@ -2350,6 +3719,8 @@ export function AdminProducts() {
           )}
         </SectionCard>
       </motion.div>
+      </>
+      )}
 
       <AnimatePresence>
         {formOpen && (
@@ -2523,6 +3894,148 @@ export function AdminProducts() {
                   icon={stockSaving ? <Clock size={14} /> : <CheckCircle2 size={14} />}
                 >
                   {stockSaving ? "Saving…" : "Save"}
+                </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {feedbackOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setFeedbackOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[720px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Feedback</h2>
+                  <p className="text-muted-foreground text-[0.8125rem] truncate">
+                    #{feedbackProductId || "—"} · {feedbackProductName || "Product"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setFeedbackOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                <select
+                  value={feedbackKind}
+                  onChange={e => setFeedbackKind(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="info">Info</option>
+                  <option value="warning">Warning</option>
+                  <option value="action_required">Action required</option>
+                </select>
+                <div className="sm:col-span-2 flex gap-2">
+                  <input
+                    value={feedbackMessage}
+                    onChange={e => setFeedbackMessage(e.target.value)}
+                    placeholder="Write feedback for the seller…"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                  <BounceButton
+                    variant="primary"
+                    size="sm"
+                    onClick={feedbackSaving ? undefined : submitFeedback}
+                    className={feedbackSaving ? "opacity-70 pointer-events-none" : ""}
+                    icon={feedbackSaving ? <Clock size={14} /> : <CheckCircle2 size={14} />}
+                  >
+                    {feedbackSaving ? "Sending…" : "Send"}
+                  </BounceButton>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border/30 overflow-hidden">
+                <div className="px-4 py-3 bg-muted/10 border-b border-border/20 flex items-center justify-between">
+                  <div className="text-[0.75rem] text-muted-foreground/60">History</div>
+                  <div className="text-[0.75rem] text-muted-foreground/50">{Array.isArray(feedbackItems) ? feedbackItems.length : 0}</div>
+                </div>
+                {feedbackLoading ? (
+                  <div className="px-4 py-10 text-center text-[0.8125rem] text-muted-foreground/60">Loading…</div>
+                ) : !feedbackItems?.length ? (
+                  <div className="px-4 py-10 text-center text-[0.8125rem] text-muted-foreground/60">No feedback yet.</div>
+                ) : (
+                  <div className="divide-y divide-border/20">
+                    {feedbackItems.map((fb: any) => (
+                      <div key={fb.id} className="px-4 py-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[0.6875rem] text-muted-foreground/60 uppercase tracking-wide">
+                            {(fb.kind || "info").toString().replaceAll("_", " ")}
+                          </span>
+                          <span className="text-[0.75rem] text-muted-foreground/50">
+                            {(fb.author_label || "").toString() || "Admin"} · {fb.created_at ? new Date(fb.created_at).toLocaleString() : ""}
+                          </span>
+                        </div>
+                        <div className="text-[0.875rem] text-foreground/80 whitespace-pre-wrap break-words">{fb.message || "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {productDeleteOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={closeProductDeleteModal}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Delete product</h2>
+                  <p className="text-muted-foreground text-[0.8125rem] truncate">
+                    #{productDeleteId || "—"} · {productDeleteName || "Product"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={closeProductDeleteModal}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[0.8125rem] text-[#E5484D]/80">
+                This will remove the product from the marketplace and hide it across the system.
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                <BounceButton variant="ghost" size="sm" onClick={closeProductDeleteModal}>
+                  Cancel
+                </BounceButton>
+                <BounceButton
+                  variant="primary"
+                  size="sm"
+                  onClick={productDeleteSaving ? undefined : submitProductDelete}
+                  className={productDeleteSaving ? "opacity-70 pointer-events-none bg-[#E5484D]/80" : "bg-[#E5484D] hover:bg-[#D63E44]"}
+                  icon={productDeleteSaving ? <Clock size={14} /> : <Trash2 size={14} />}
+                >
+                  {productDeleteSaving ? "Deleting…" : "Delete"}
                 </BounceButton>
               </div>
             </motion.div>
