@@ -81,6 +81,7 @@ export function ExplorePage() {
             label: String(c?.name || "").trim(),
             icon: String(c?.icon || "circle"),
             count: Number(c?.product_count || 0),
+            products: [],
             subcategories: (Array.isArray(c?.children) ? c.children : [])
               .map((ch: any) => ({
                 id: String(ch?.slug || ch?.id || ""),
@@ -103,6 +104,36 @@ export function ExplorePage() {
     };
   }, []);
 
+  const ensureCategoryProducts = useCallback(
+    (catId: string) => {
+      if (!catId) return;
+      const cat = categories.find((c) => c.id === catId);
+      if (!cat) return;
+      if (Array.isArray(cat.products) && cat.products.length > 0) return;
+      if (!Number(cat.count || 0)) return;
+      const params = new URLSearchParams();
+      params.set("category", catId);
+      params.set("page", "1");
+      params.set("page_size", "24");
+      params.set("ordering", "-created_at");
+      fetchJsonAuthed(`/api/v1/products/?${params.toString()}`)
+        .then((data) => {
+          const rows = Array.isArray((data as any)?.results) ? (data as any).results : Array.isArray(data) ? data : [];
+          const items = rows
+            .map((r: any) => ({
+              id: String(r?.id || ""),
+              name: String(r?.name || r?.title || "").trim(),
+              icon: "tag",
+              price: "",
+            }))
+            .filter((p: any) => p.id && p.name);
+          setCategories((prev) => prev.map((c: any) => (c.id === catId ? { ...c, products: items } : c)));
+        })
+        .catch(() => {});
+    },
+    [categories],
+  );
+
   // ── Sticky nav logic ──
   useMotionValueEvent(scrollY, "change", (y) => {
     setStickyVisible(y > 480);
@@ -117,12 +148,13 @@ export function ExplorePage() {
   // ── URL param navigation ──
   useEffect(() => {
     if (categoryId) {
+      ensureCategoryProducts(categoryId);
       setTimeout(() => {
         refs.current[categoryId]?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 350);
       if (subcategoryId) setOpenSub(`${categoryId}/${subcategoryId}`);
     }
-  }, [categoryId, subcategoryId]);
+  }, [categoryId, ensureCategoryProducts, subcategoryId]);
 
   // ── Search: instant results ──
   const searchResults = useMemo(() => {
@@ -178,12 +210,13 @@ export function ExplorePage() {
     (catId: string, subId?: string) => {
       triggerBounce();
       if (subId) setOpenSub(`${catId}/${subId}`);
+      ensureCategoryProducts(catId);
       setSearch("");
       setTimeout(() => {
         refs.current[catId]?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 50);
     },
-    [triggerBounce]
+    [ensureCategoryProducts, triggerBounce]
   );
 
   const toggleSub = useCallback(
@@ -644,9 +677,46 @@ export function ExplorePage() {
                   </div>
                   <p className="text-[13px] text-[#b4b4b4] ml-[56px]">
                     {cat.subcategories.length} subcategories ·{" "}
-                    {cat.subcategories.reduce((s, sub) => s + sub.products.length, 0)} products
+                    {Number(cat.count || 0)} products
                   </p>
                 </motion.div>
+
+                {Number(cat.count || 0) > 0 ? (
+                  <div className="mb-8 ml-[56px]">
+                    <div className="flex items-center justify-between gap-4 mb-3">
+                      <div className="text-[12px] text-[#b4b4b4]" style={{ fontWeight: 520 }}>
+                        Products in {cat.label}
+                      </div>
+                      <button
+                        onClick={() => ensureCategoryProducts(cat.id)}
+                        className="text-[12px] text-[#b4b4b4] hover:text-[#1d1d1f] transition-colors"
+                        style={{ fontWeight: 560 }}
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                    {Array.isArray(cat.products) && cat.products.length > 0 ? (
+                      <div className="flex flex-wrap gap-[7px]">
+                        {cat.products.slice(0, 24).map((p: any, pi: number) => (
+                          <motion.div
+                            key={p.id}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.25, delay: Math.min(pi * 0.01, 0.2) }}
+                            className="px-3 py-1.5 rounded-full bg-white/75 border border-white/40 text-[12px] text-[#1d1d1f] shadow-[0_1px_4px_rgba(0,0,0,0.04)]"
+                            style={{ fontWeight: 560 }}
+                          >
+                            {p.name}
+                          </motion.div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[12px] text-[#b4b4b4]" style={{ fontWeight: 520 }}>
+                        No products loaded yet. Click Refresh to load.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
 
                 {/* ── Subcategory Cards ── */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -705,16 +775,20 @@ export function ExplorePage() {
                                         color: theme.accent,
                                       }}
                                     >
-                                      {sub.products.length}
+                                      {Number(sub.count || 0)}
                                     </span>
                                   </div>
                                   {/* Product preview — reads like natural language */}
                                   <p className="text-[12px] text-[#b4b4b4] leading-[1.65]">
-                                    {sub.products
-                                      .slice(0, isOpen ? 0 : 4)
-                                      .map((p) => p.name)
-                                      .join(", ")}
-                                    {!isOpen && sub.products.length > 4 && (
+                                    {Array.isArray(sub.products) && sub.products.length > 0
+                                      ? sub.products
+                                          .slice(0, isOpen ? 0 : 4)
+                                          .map((p) => p.name)
+                                          .join(", ")
+                                      : Number(sub.count || 0) > 0
+                                        ? "Tap to view products"
+                                        : "No products yet"}
+                                    {!isOpen && Array.isArray(sub.products) && sub.products.length > 4 && (
                                       <span className="text-[#d2d2d7]">
                                         {" "}+{sub.products.length - 4} more
                                       </span>

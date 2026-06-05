@@ -5183,7 +5183,7 @@ class SellerDashboardViewSet(viewsets.ViewSet):
             iso = self._country_to_iso(raw_country)
             if not iso or iso not in by_country:
                 continue
-            cat_name = getattr(getattr(it.product, "category", None), "name", "") or "Other"
+            cat_name = getattr(getattr(it.product, "category", None), "name", "") or "Uncategorized"
             try:
                 v = float(it.unit_price) * int(it.quantity or 0)
             except Exception:

@@ -1974,6 +1974,15 @@ export function AdminProducts() {
   const [stockProductId, setStockProductId] = useState<number | null>(null);
   const [stockValue, setStockValue] = useState<string>("");
 
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackProductId, setFeedbackProductId] = useState<number | null>(null);
+  const [feedbackProductName, setFeedbackProductName] = useState<string>("");
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [feedbackItems, setFeedbackItems] = useState<any[]>([]);
+  const [feedbackKind, setFeedbackKind] = useState<string>("info");
+  const [feedbackMessage, setFeedbackMessage] = useState<string>("");
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2066,6 +2075,59 @@ export function AdminProducts() {
     setStockValue(p?.stock_units != null ? String(p.stock_units) : "");
     setStockOpen(true);
     setMenuProductId(null);
+  };
+
+  const openFeedbackModal = async (p: any) => {
+    const id = Number(p?.id || 0);
+    if (!id) return;
+    setActionError("");
+    setActionSuccess("");
+    setMenuProductId(null);
+    setFeedbackOpen(true);
+    setFeedbackProductId(id);
+    setFeedbackProductName((p?.name || "").toString());
+    setFeedbackItems([]);
+    setFeedbackMessage("");
+    setFeedbackKind("info");
+    setFeedbackLoading(true);
+    try {
+      const data = await fetchJson(`/api/v1/admin/products/${id}/feedback/`);
+      setFeedbackItems(Array.isArray(data?.results) ? data.results : []);
+    } catch (e: any) {
+      setFeedbackItems([]);
+      setActionError(e?.message || "Failed to load feedback.");
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
+  const submitFeedback = async () => {
+    const id = Number(feedbackProductId || 0);
+    const msg = (feedbackMessage || "").trim();
+    if (!id) return;
+    if (!msg) {
+      setActionError("Please write a feedback message.");
+      return;
+    }
+    if (feedbackSaving) return;
+    setFeedbackSaving(true);
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/products/${id}/feedback/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg, kind: feedbackKind }),
+      });
+      setActionSuccess("Feedback sent to seller.");
+      setFeedbackMessage("");
+      const data = await fetchJson(`/api/v1/admin/products/${id}/feedback/`);
+      setFeedbackItems(Array.isArray(data?.results) ? data.results : []);
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to send feedback.");
+    } finally {
+      setFeedbackSaving(false);
+    }
   };
 
   const requestMedia = async () => {
@@ -3455,6 +3517,13 @@ export function AdminProducts() {
                         </button>
                         <button
                           className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
+                          onClick={() => void openFeedbackModal(p)}
+                        >
+                          <Bell size={14} className="text-muted-foreground/60" />
+                          Feedback
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-3 text-[0.8125rem] hover:bg-muted/20 flex items-center gap-2"
                           onClick={() => openStockModal(p)}
                         >
                           <Hash size={14} className="text-muted-foreground/60" />
@@ -3724,6 +3793,96 @@ export function AdminProducts() {
                 >
                   {stockSaving ? "Saving…" : "Save"}
                 </BounceButton>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {feedbackOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
+            onClick={() => setFeedbackOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-[720px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div className="min-w-0">
+                  <h2 className="text-foreground tracking-tight mb-1 truncate">Feedback</h2>
+                  <p className="text-muted-foreground text-[0.8125rem] truncate">
+                    #{feedbackProductId || "—"} · {feedbackProductName || "Product"}
+                  </p>
+                </div>
+                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setFeedbackOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                <select
+                  value={feedbackKind}
+                  onChange={e => setFeedbackKind(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                >
+                  <option value="info">Info</option>
+                  <option value="warning">Warning</option>
+                  <option value="action_required">Action required</option>
+                </select>
+                <div className="sm:col-span-2 flex gap-2">
+                  <input
+                    value={feedbackMessage}
+                    onChange={e => setFeedbackMessage(e.target.value)}
+                    placeholder="Write feedback for the seller…"
+                    className="w-full px-4 py-3 rounded-2xl bg-muted/30 border border-border/30 text-[0.8125rem] text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+                  />
+                  <BounceButton
+                    variant="primary"
+                    size="sm"
+                    onClick={feedbackSaving ? undefined : submitFeedback}
+                    className={feedbackSaving ? "opacity-70 pointer-events-none" : ""}
+                    icon={feedbackSaving ? <Clock size={14} /> : <CheckCircle2 size={14} />}
+                  >
+                    {feedbackSaving ? "Sending…" : "Send"}
+                  </BounceButton>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border/30 overflow-hidden">
+                <div className="px-4 py-3 bg-muted/10 border-b border-border/20 flex items-center justify-between">
+                  <div className="text-[0.75rem] text-muted-foreground/60">History</div>
+                  <div className="text-[0.75rem] text-muted-foreground/50">{Array.isArray(feedbackItems) ? feedbackItems.length : 0}</div>
+                </div>
+                {feedbackLoading ? (
+                  <div className="px-4 py-10 text-center text-[0.8125rem] text-muted-foreground/60">Loading…</div>
+                ) : !feedbackItems?.length ? (
+                  <div className="px-4 py-10 text-center text-[0.8125rem] text-muted-foreground/60">No feedback yet.</div>
+                ) : (
+                  <div className="divide-y divide-border/20">
+                    {feedbackItems.map((fb: any) => (
+                      <div key={fb.id} className="px-4 py-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[0.6875rem] text-muted-foreground/60 uppercase tracking-wide">
+                            {(fb.kind || "info").toString().replaceAll("_", " ")}
+                          </span>
+                          <span className="text-[0.75rem] text-muted-foreground/50">
+                            {(fb.author_label || "").toString() || "Admin"} · {fb.created_at ? new Date(fb.created_at).toLocaleString() : ""}
+                          </span>
+                        </div>
+                        <div className="text-[0.875rem] text-foreground/80 whitespace-pre-wrap break-words">{fb.message || "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </motion.div>
           </motion.div>

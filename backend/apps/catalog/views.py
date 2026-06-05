@@ -27,6 +27,7 @@ from .models import (
     ListingRequestPhoto,
     PricingTier,
     Product,
+    ProductFeedback,
     ProductMedia,
     ProductVariation,
     ShippingRate,
@@ -46,6 +47,7 @@ from .serializers import (
     ListingRequestUpdateSerializer,
     ListingRequestSerializer,
     PricingTierSerializer,
+    ProductFeedbackSerializer,
     ProductMediaSerializer,
     ProductSerializer,
     ProductVariationSerializer,
@@ -56,11 +58,7 @@ from .serializers import (
 
 def _ensure_seed_categories():
     try:
-        has_real = (
-            Category.objects.filter(deleted_at__isnull=True)
-            .exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
-            .exists()
-        )
+        has_real = Category.objects.filter(deleted_at__isnull=True).exists()
     except Exception:
         has_real = True
     if has_real:
@@ -99,11 +97,13 @@ def _ensure_seed_categories():
 def _create_product_from_listing_request(lr: ListingRequest) -> Product:
     category = lr.category
     if category is None:
-        category = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other")).first()
+        category = (
+            Category.objects.filter(deleted_at__isnull=True)
+            .order_by("display_order", "sort_order", "name", "id")
+            .first()
+        )
     if category is None:
-        category = Category.objects.first()
-    if category is None:
-        category, _ = Category.objects.get_or_create(name="Other")
+        raise ValueError("No categories available to assign product.")
 
     p = Product.objects.create(
         seller=lr.seller,
@@ -379,10 +379,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
     def explore(self, request):
         _ensure_seed_categories()
         base_all = Category.objects.filter(deleted_at__isnull=True)
-        base_qs = base_all.exclude(Q(slug__iexact="other") | Q(name__iexact="other"))
-        top = list(base_qs.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
-        if not top:
-            top = list(base_all.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
+        top = list(base_all.filter(parent__isnull=True).order_by("display_order", "sort_order", "name"))
         if not top:
             return Response({"categories": [], "total_products": 0})
 
@@ -501,7 +498,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         return out.prefetch_related("variations", "pricing_tiers")
 
     def get_permissions(self):
-        if self.action in {"create", "update", "partial_update", "destroy"}:
+        if self.action in {"create", "update", "partial_update", "destroy", "feedback"}:
             return [permissions.IsAuthenticated(), IsSeller()]
         return [permissions.AllowAny()]
 
@@ -524,6 +521,40 @@ class ProductViewSet(viewsets.ModelViewSet):
             payload={"status": "archived"},
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["get", "post"], url_path="feedback")
+    def feedback(self, request, pk=None, *args, **kwargs):
+        product = self.get_object()
+        if request.method.lower() == "get":
+            qs = (
+                ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True)
+                .select_related("author")
+                .order_by("-created_at", "-id")[:200]
+            )
+            unread = (
+                ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True, read_at__isnull=True)
+                .count()
+            )
+            data = ProductFeedbackSerializer(qs, many=True, context={"request": request}).data
+            return Response({"unread_count": unread, "results": data})
+
+        ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        qs = ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True, read_at__isnull=True)
+        if isinstance(ids, list) and ids:
+            ids_clean = []
+            for x in ids:
+                try:
+                    ids_clean.append(int(x))
+                except Exception:
+                    continue
+            if ids_clean:
+                qs = qs.filter(id__in=ids_clean)
+        updated = qs.update(read_at=timezone.now())
+        unread = (
+            ProductFeedback.objects.filter(product=product, seller=request.user, deleted_at__isnull=True, read_at__isnull=True)
+            .count()
+        )
+        return Response({"updated": updated, "unread_count": unread})
 
     @action(detail=False, methods=["get"], url_path="compare")
     def compare(self, request, *args, **kwargs):
@@ -803,13 +834,86 @@ class SellerListingRequestViewSet(viewsets.GenericViewSet):
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset().order_by("-created_at")
-        return Response(ListingRequestSerializer(qs, many=True, context={"request": request}).data)
+        ctx = self.get_serializer_context()
+        product_ids = [int(pid) for pid in qs.values_list("created_product_id", flat=True) if pid]
+        unread_by_pid: dict[int, int] = {}
+        latest_by_pid: dict[int, dict] = {}
+        if product_ids:
+            unread_by_pid = {
+                int(row["product_id"]): int(row["c"] or 0)
+                for row in ProductFeedback.objects.filter(
+                    deleted_at__isnull=True,
+                    seller=request.user,
+                    product_id__in=product_ids,
+                    read_at__isnull=True,
+                )
+                .values("product_id")
+                .annotate(c=Count("id"))
+            }
+            rows = (
+                ProductFeedback.objects.filter(deleted_at__isnull=True, seller=request.user, product_id__in=product_ids)
+                .select_related("author")
+                .order_by("product_id", "-created_at", "-id")
+            )
+            seen = set()
+            for fb in rows[:500]:
+                pid = int(getattr(fb, "product_id", 0) or 0)
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                author = getattr(fb, "author", None)
+                full = ""
+                if author:
+                    full = f"{(getattr(author, 'first_name', '') or '').strip()} {(getattr(author, 'last_name', '') or '').strip()}".strip()
+                latest_by_pid[pid] = {
+                    "id": int(getattr(fb, "id", 0) or 0),
+                    "kind": (getattr(fb, "kind", "") or "").strip(),
+                    "message": (getattr(fb, "message", "") or "").strip(),
+                    "created_at": getattr(fb, "created_at", None),
+                    "author_label": full or (getattr(author, "email", "") if author else "") or "",
+                }
+        ctx["product_feedback_unread_by_product_id"] = unread_by_pid
+        ctx["product_feedback_latest_by_product_id"] = latest_by_pid
+        return Response(ListingRequestSerializer(qs, many=True, context=ctx).data)
 
     def retrieve(self, request, pk=None, *args, **kwargs):
         obj = self.get_queryset().filter(pk=pk).first()
         if not obj:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(ListingRequestSerializer(obj, context={"request": request}).data)
+        ctx = self.get_serializer_context()
+        pid = getattr(obj, "created_product_id", None)
+        if pid:
+            unread = (
+                ProductFeedback.objects.filter(
+                    deleted_at__isnull=True,
+                    seller=request.user,
+                    product_id=pid,
+                    read_at__isnull=True,
+                )
+                .count()
+            )
+            latest = (
+                ProductFeedback.objects.filter(deleted_at__isnull=True, seller=request.user, product_id=pid)
+                .select_related("author")
+                .order_by("-created_at", "-id")
+                .first()
+            )
+            latest_by_pid: dict[int, dict] = {}
+            if latest:
+                author = getattr(latest, "author", None)
+                full = ""
+                if author:
+                    full = f"{(getattr(author, 'first_name', '') or '').strip()} {(getattr(author, 'last_name', '') or '').strip()}".strip()
+                latest_by_pid[int(pid)] = {
+                    "id": int(getattr(latest, "id", 0) or 0),
+                    "kind": (getattr(latest, "kind", "") or "").strip(),
+                    "message": (getattr(latest, "message", "") or "").strip(),
+                    "created_at": getattr(latest, "created_at", None),
+                    "author_label": full or (getattr(author, "email", "") if author else "") or "",
+                }
+            ctx["product_feedback_unread_by_product_id"] = {int(pid): int(unread or 0)}
+            ctx["product_feedback_latest_by_product_id"] = latest_by_pid
+        return Response(ListingRequestSerializer(obj, context=ctx).data)
 
     def create(self, request, *args, **kwargs):
         ser = ListingRequestCreateSerializer(data=request.data, context={"request": request})
@@ -2562,6 +2666,64 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             pass
         audit(request.user, action="admin_product_media_requested", target_type="product", target_id=str(product.id), payload={})
         return Response({"ok": True})
+
+    @action(detail=True, methods=["get", "post"], url_path="feedback")
+    def feedback(self, request, pk=None):
+        product = Product.objects.filter(id=pk, deleted_at__isnull=True).select_related("seller").first()
+        if not product:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method.lower() == "get":
+            qs = (
+                ProductFeedback.objects.filter(product=product, deleted_at__isnull=True)
+                .select_related("author")
+                .order_by("-created_at", "-id")[:200]
+            )
+            unread = ProductFeedback.objects.filter(product=product, deleted_at__isnull=True, read_at__isnull=True).count()
+            data = ProductFeedbackSerializer(qs, many=True, context={"request": request}).data
+            return Response({"unread_count": unread, "results": data})
+
+        msg = (request.data.get("message") or "").strip()
+        if not msg:
+            return Response({"detail": "message is required."}, status=status.HTTP_400_BAD_REQUEST)
+        kind = (request.data.get("kind") or ProductFeedback.Kind.INFO).strip()
+        allowed = {k for (k, _) in ProductFeedback.Kind.choices}
+        if kind not in allowed:
+            return Response({"detail": "Invalid kind."}, status=status.HTTP_400_BAD_REQUEST)
+
+        fb = ProductFeedback.objects.create(
+            product=product,
+            seller=product.seller,
+            author=request.user,
+            kind=kind,
+            message=msg,
+        )
+
+        try:
+            Notification.objects.create(
+                user=product.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="product_feedback",
+                payload={
+                    "title": f"Product feedback: {(product.name or '').strip() or f'#{product.id}'}",
+                    "body": msg,
+                    "product_id": product.id,
+                    "feedback_id": fb.id,
+                    "kind": kind,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        audit(
+            request.user,
+            action="admin_product_feedback_created",
+            target_type="product",
+            target_id=str(product.id),
+            payload={"feedback_id": str(fb.id), "kind": kind},
+        )
+        return Response(ProductFeedbackSerializer(fb, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):

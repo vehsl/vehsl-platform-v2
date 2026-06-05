@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.files.storage import default_storage
 
-from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductMedia, ProductVariation, Trademark, Warehouse, WarehouseStock, InboundRequest, InboundRequestItem
+from .models import Category, ComplianceRule, ListingRequest, ListingRequestPhoto, PricingTier, Product, ProductFeedback, ProductMedia, ProductVariation, Trademark, Warehouse, WarehouseStock, InboundRequest, InboundRequestItem
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -133,6 +133,22 @@ class ProductMediaSerializer(serializers.ModelSerializer):
                 validated_data["position"] = 0
 
         return super().create(validated_data)
+
+
+class ProductFeedbackSerializer(serializers.ModelSerializer):
+    author_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductFeedback
+        fields = ["id", "product", "seller", "author", "author_label", "kind", "message", "read_at", "created_at"]
+        read_only_fields = ["seller", "author", "created_at", "read_at"]
+
+    def get_author_label(self, obj: ProductFeedback):
+        u = getattr(obj, "author", None)
+        if not u:
+            return ""
+        full = f"{(getattr(u, 'first_name', '') or '').strip()} {(getattr(u, 'last_name', '') or '').strip()}".strip()
+        return full or getattr(u, "email", "") or getattr(u, "phone", "") or f"user:{getattr(u, 'id', '')}"
 
 
 class TrademarkSerializer(serializers.ModelSerializer):
@@ -503,6 +519,8 @@ class ListingRequestSerializer(serializers.ModelSerializer):
     product_fulfillment_mode = serializers.SerializerMethodField()
     product_stock_units = serializers.SerializerMethodField()
     product_low_stock = serializers.SerializerMethodField()
+    product_feedback_unread = serializers.SerializerMethodField()
+    product_feedback_latest = serializers.SerializerMethodField()
 
     class Meta:
         model = ListingRequest
@@ -538,6 +556,8 @@ class ListingRequestSerializer(serializers.ModelSerializer):
             "product_fulfillment_mode",
             "product_stock_units",
             "product_low_stock",
+            "product_feedback_unread",
+            "product_feedback_latest",
             "created_at",
             "updated_at",
             "photos",
@@ -623,6 +643,28 @@ class ListingRequestSerializer(serializers.ModelSerializer):
             threshold = 10
         return bool(0 < units < threshold)
 
+    def get_product_feedback_unread(self, obj: ListingRequest):
+        product_id = getattr(obj, "created_product_id", None)
+        if not product_id:
+            return 0
+        m = self.context.get("product_feedback_unread_by_product_id")
+        if not isinstance(m, dict):
+            return 0
+        try:
+            return int(m.get(int(product_id), 0) or 0)
+        except Exception:
+            return 0
+
+    def get_product_feedback_latest(self, obj: ListingRequest):
+        product_id = getattr(obj, "created_product_id", None)
+        if not product_id:
+            return None
+        m = self.context.get("product_feedback_latest_by_product_id")
+        if not isinstance(m, dict):
+            return None
+        row = m.get(int(product_id))
+        return row if isinstance(row, dict) else None
+
 
 class AdminListingRequestSerializer(ListingRequestSerializer):
     seller_id = serializers.IntegerField(read_only=True)
@@ -696,7 +738,7 @@ class ListingRequestCreateSerializer(serializers.Serializer):
     product_name = serializers.CharField(required=True, allow_blank=False)
     company_name = serializers.CharField(required=False, allow_blank=True)
     category = serializers.CharField(required=False, allow_blank=True)
-    category_id = serializers.IntegerField(required=False, allow_null=True)
+    category_id = serializers.IntegerField(required=True)
     description = serializers.CharField(required=False, allow_blank=True)
     monthly_capacity = serializers.CharField(required=False, allow_blank=True)
     currency = serializers.CharField(required=False, allow_blank=True)
@@ -839,6 +881,8 @@ class ListingRequestCreateSerializer(serializers.Serializer):
             category_id = int(category_id) if category_id is not None else None
         except Exception:
             category_id = None
+        if not category_id:
+            raise serializers.ValidationError({"category_id": "category_id is required."})
 
         ip_level = (data.get("ip_protection_level") or "").strip().lower()
         if ip_level:
@@ -850,19 +894,8 @@ class ListingRequestCreateSerializer(serializers.Serializer):
         self._clean_variations(data.get("variations"))
         self._clean_pricing_tiers(data.get("pricing_tiers"), currency)
 
-        if category_id:
-            if not Category.objects.filter(id=category_id, deleted_at__isnull=True).exists():
-                raise serializers.ValidationError({"category_id": "Category not found."})
-            return data
-
-        if category_text and category_text.lower() not in {"other"}:
-            exists = Category.objects.filter(
-                Q(name__iexact=category_text) | Q(slug__iexact=category_text),
-                deleted_at__isnull=True,
-            ).exists()
-            if not exists:
-                raise serializers.ValidationError({"category": "Invalid category. Please choose from the list."})
-
+        if not Category.objects.filter(id=category_id, deleted_at__isnull=True).exists():
+            raise serializers.ValidationError({"category_id": "Category not found."})
         return data
 
     def create(self, validated_data):
@@ -878,10 +911,8 @@ class ListingRequestCreateSerializer(serializers.Serializer):
 
         if category_id:
             category_obj = Category.objects.filter(id=category_id, deleted_at__isnull=True).first()
-        if category_obj is None and category_text:
-            category_obj = Category.objects.filter(Q(name__iexact=category_text) | Q(slug__iexact=category_text), deleted_at__isnull=True).first()
         if category_obj is None:
-            category_obj = Category.objects.filter(Q(name__iexact="Other") | Q(slug__iexact="other"), deleted_at__isnull=True).first()
+            raise serializers.ValidationError({"category_id": "Category not found."})
 
         photo_file = validated_data.pop("photo", None)
         moq = validated_data.pop("moq", None)
@@ -932,7 +963,7 @@ class ListingRequestCreateSerializer(serializers.Serializer):
         lr = ListingRequest.objects.create(
             seller=user,
             category=category_obj,
-            category_label=category_text if not category_obj else "",
+            category_label=(getattr(category_obj, "name", "") or "").strip() or category_text,
             product_name=(validated_data.get("product_name") or "").strip(),
             company_name=(validated_data.get("company_name") or "").strip(),
             description=(validated_data.get("description") or "").strip(),

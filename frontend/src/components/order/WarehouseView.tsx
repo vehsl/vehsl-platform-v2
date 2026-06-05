@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { createPortal } from 'react-dom';
 import { authedFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import { ImageWithFallback } from '@/components/order/figma/ImageWithFallback';
@@ -31,6 +32,28 @@ function asString(v: unknown, fallback = ''): string {
 function asNumber(v: unknown, fallback = 0): number {
     const n = typeof v === 'number' ? v : Number(v);
     return Number.isFinite(n) ? n : fallback;
+}
+
+function ClientPortal({ children }: { children: React.ReactNode }) {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+    if (!mounted) return null;
+    return createPortal(children, document.body);
+}
+
+function getCreatedProductId(lr: any): number | null {
+    const raw = lr?.created_product;
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw === 'string') {
+        const n = Number(raw);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    if (typeof raw === 'object') {
+        const n = Number((raw as any)?.id);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    return null;
 }
 
 function isWarehouseFeature(v: unknown): v is Warehouse['features'][number] {
@@ -1760,6 +1783,8 @@ export function WarehouseView() {
     const [historyTarget, setHistoryTarget] = useState<any | null>(null);
     const [listQuery, setListQuery] = useState('');
     const [rowMenuId, setRowMenuId] = useState<string | number | null>(null);
+    const [rowMenuTarget, setRowMenuTarget] = useState<any | null>(null);
+    const [rowMenuPos, setRowMenuPos] = useState<{ top: number; right: number } | null>(null);
     const rowMenuRef = useRef<HTMLDivElement | null>(null);
     const [sampleEditOpen, setSampleEditOpen] = useState(false);
     const [sampleEditTarget, setSampleEditTarget] = useState<any | null>(null);
@@ -1788,7 +1813,41 @@ export function WarehouseView() {
     const [quickSamplesQty, setQuickSamplesQty] = useState('');
     const [quickSavingStock, setQuickSavingStock] = useState(false);
     const [quickSavingSamples, setQuickSavingSamples] = useState(false);
+    const [feedbackOpen, setFeedbackOpen] = useState(false);
+    const [feedbackTarget, setFeedbackTarget] = useState<any | null>(null);
+    const [feedbackProductId, setFeedbackProductId] = useState<number | null>(null);
+    const [feedbackLoading, setFeedbackLoading] = useState(false);
+    const [feedbackMarkingRead, setFeedbackMarkingRead] = useState(false);
+    const [feedbackRows, setFeedbackRows] = useState<any[]>([]);
+    const [feedbackError, setFeedbackError] = useState('');
+    const [productEditOpen, setProductEditOpen] = useState(false);
+    const [productEditTarget, setProductEditTarget] = useState<any | null>(null);
+    const [productEditProductId, setProductEditProductId] = useState<number | null>(null);
+    const [productEditLoading, setProductEditLoading] = useState(false);
+    const [productEditSaving, setProductEditSaving] = useState(false);
+    const [productEditUploading, setProductEditUploading] = useState(false);
+    const [productEditDeletingId, setProductEditDeletingId] = useState<number | null>(null);
+    const [productEditData, setProductEditData] = useState<any | null>(null);
+    const [productEditUploadKey, setProductEditUploadKey] = useState(0);
+    const [productEditDraft, setProductEditDraft] = useState({
+        category_id: '',
+        name: '',
+        title: '',
+        description: '',
+        price: '',
+        currency: '',
+        sku: '',
+        hs_code: '',
+        lead_time_days: '',
+        weight_grams: '',
+        ship_time_min_days: '',
+        ship_time_max_days: '',
+        origin_country: '',
+        origin_region: '',
+        origin_city: '',
+    });
     const [listingEditDraft, setListingEditDraft] = useState({
+        category_id: '',
         product_name: '',
         company_name: '',
         description: '',
@@ -1804,6 +1863,8 @@ export function WarehouseView() {
         ship_time_min_days: '',
         ship_time_max_days: '',
     });
+    const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; label: string }>>([]);
+    const [categoryOptionsLoading, setCategoryOptionsLoading] = useState(false);
     const [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]);
     const [releaseRecords, setReleaseRecords] = useState<ReleaseRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -1899,10 +1960,46 @@ export function WarehouseView() {
         }
     }, [showWarehouseOps]);
 
+    const loadCategoryOptions = useCallback(async () => {
+        if (categoryOptionsLoading) return;
+        if (categoryOptions.length) return;
+        setCategoryOptionsLoading(true);
+        try {
+            const res = await authedFetch('/api/v1/categories/explore');
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                setCategoryOptions([]);
+                return;
+            }
+            const cats = Array.isArray(payload?.categories) ? payload.categories : [];
+            const flat: Array<{ id: number; label: string }> = [];
+            for (const top of cats) {
+                const topId = Number(top?.id || 0);
+                const topName = asString(top?.name).trim();
+                if (topId && topName) flat.push({ id: topId, label: topName });
+                const children = Array.isArray(top?.children) ? top.children : [];
+                for (const ch of children) {
+                    const cid = Number(ch?.id || 0);
+                    const cname = asString(ch?.name).trim();
+                    if (cid && cname) {
+                        flat.push({ id: cid, label: topName ? `${topName} / ${cname}` : cname });
+                    }
+                }
+            }
+            setCategoryOptions(flat);
+        } catch {
+            setCategoryOptions([]);
+        } finally {
+            setCategoryOptionsLoading(false);
+        }
+    }, [authedFetch, categoryOptions.length, categoryOptionsLoading]);
+
     const openListingFix = useCallback((lr: any) => {
+        if (!categoryOptions.length) void loadCategoryOptions();
         const meta = lr?.product_meta && typeof lr.product_meta === 'object' ? lr.product_meta : {};
         const origin = meta?.origin_location && typeof meta.origin_location === 'object' ? meta.origin_location : {};
         setListingEditDraft({
+            category_id: String(Number(lr?.category || 0) || ''),
             product_name: asString(lr?.product_name),
             company_name: asString(lr?.company_name),
             description: asString(lr?.description),
@@ -1919,7 +2016,7 @@ export function WarehouseView() {
             ship_time_max_days: asString(meta?.ship_time_max_days),
         });
         setEditingListingRequest(lr);
-    }, []);
+    }, [categoryOptions.length, loadCategoryOptions]);
 
     const closeListingFix = useCallback(() => {
         setEditingListingRequest(null);
@@ -2065,6 +2162,81 @@ export function WarehouseView() {
         setQuickSavingSamples(false);
     }, []);
 
+    const closeFeedback = useCallback(() => {
+        setFeedbackOpen(false);
+        setFeedbackTarget(null);
+        setFeedbackProductId(null);
+        setFeedbackLoading(false);
+        setFeedbackMarkingRead(false);
+        setFeedbackRows([]);
+        setFeedbackError('');
+    }, []);
+
+    const openFeedback = useCallback(async (lr: any) => {
+        const pid = getCreatedProductId(lr);
+        if (!pid) {
+            toast.error('No product yet', { description: 'This listing does not have a published product.' });
+            return;
+        }
+        setFeedbackTarget(lr);
+        setFeedbackProductId(pid);
+        setFeedbackOpen(true);
+        setFeedbackLoading(true);
+        setFeedbackError('');
+        try {
+            const res = await authedFetch(`/api/v1/products/${pid}/feedback/`);
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                setFeedbackRows([]);
+                setFeedbackError(asString(payload?.detail, `Failed to load feedback (${res.status})`));
+                return;
+            }
+            const rows = Array.isArray(payload?.results) ? payload.results : [];
+            setFeedbackRows(rows);
+        } catch {
+            setFeedbackRows([]);
+            setFeedbackError('Failed to load feedback.');
+        } finally {
+            setFeedbackLoading(false);
+        }
+
+        setFeedbackMarkingRead(true);
+        try {
+            await authedFetch(`/api/v1/products/${pid}/feedback/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            setListingRequests((prev) => prev.map((x) => (x?.id === lr?.id ? { ...x, product_feedback_unread: 0 } : x)));
+            setQuickTarget((cur: any) => (cur?.id === lr?.id ? { ...cur, product_feedback_unread: 0 } : cur));
+        } catch {
+        } finally {
+            setFeedbackMarkingRead(false);
+        }
+    }, [authedFetch]);
+
+    const fetchProductById = useCallback(async (productId: number) => {
+        try {
+            const res = await authedFetch(`/api/v1/products/${productId}/`);
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) return null;
+            return payload;
+        } catch {
+            return null;
+        }
+    }, []);
+
+    const hydrateListingWithProduct = useCallback(async (lr: any) => {
+        const pid = getCreatedProductId(lr);
+        if (!pid) return null;
+        if (lr?._product && Number(lr._product?.id) === pid) return lr._product;
+        const product = await fetchProductById(pid);
+        if (!product) return null;
+        setListingRequests((prev) => prev.map((x) => (x?.id === lr?.id ? { ...x, _product: product } : x)));
+        setQuickTarget((cur: any) => (cur?.id === lr?.id ? { ...cur, _product: product } : cur));
+        return product;
+    }, [fetchProductById]);
+
     const openQuick = useCallback((lr: any) => {
         setQuickTarget(lr);
         const mode = (asString(lr?.product_fulfillment_mode, 'made_to_order') || 'made_to_order').toLowerCase();
@@ -2073,7 +2245,210 @@ export function WarehouseView() {
         setQuickStockQty(String(Number(lr?.product_stock_units ?? 0)));
         setQuickSamplesQty(String(Number(lr?.sample_units ?? 0)));
         setQuickOpen(true);
+        if (!!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done') {
+            void hydrateListingWithProduct(lr);
+        }
+    }, [hydrateListingWithProduct]);
+
+    const closeProductEdit = useCallback(() => {
+        setProductEditOpen(false);
+        setProductEditTarget(null);
+        setProductEditProductId(null);
+        setProductEditLoading(false);
+        setProductEditSaving(false);
+        setProductEditUploading(false);
+        setProductEditDeletingId(null);
+        setProductEditData(null);
+        setProductEditUploadKey((k) => k + 1);
+        setProductEditDraft({
+            category_id: '',
+            name: '',
+            title: '',
+            description: '',
+            price: '',
+            currency: '',
+            sku: '',
+            hs_code: '',
+            lead_time_days: '',
+            weight_grams: '',
+            ship_time_min_days: '',
+            ship_time_max_days: '',
+            origin_country: '',
+            origin_region: '',
+            origin_city: '',
+        });
     }, []);
+
+    const openProductEdit = useCallback(async (lr: any) => {
+        if (!categoryOptions.length) void loadCategoryOptions();
+        const pid = getCreatedProductId(lr);
+        if (!pid) {
+            toast.error('No product yet', { description: 'This listing does not have a published product to edit.' });
+            return;
+        }
+        setProductEditTarget(lr);
+        setProductEditProductId(pid);
+        setProductEditOpen(true);
+        setProductEditLoading(true);
+        try {
+            const product = (await hydrateListingWithProduct(lr)) || (await fetchProductById(pid));
+            if (!product) {
+                toast.error('Could not load product');
+                return;
+            }
+            setProductEditData(product);
+            const origin = product?.origin_location && typeof product.origin_location === 'object' ? product.origin_location : {};
+            setProductEditDraft({
+                category_id: String(Number(product?.category || lr?.category || 0) || ''),
+                name: asString(product?.name || product?.title || lr?.product_name),
+                title: asString(product?.title),
+                description: asString(product?.description),
+                price: product?.price === null || product?.price === undefined ? '' : String(product.price),
+                currency: asString(product?.currency),
+                sku: asString(product?.sku),
+                hs_code: asString(product?.hs_code),
+                lead_time_days: product?.lead_time_days === null || product?.lead_time_days === undefined ? '' : String(product.lead_time_days),
+                weight_grams: product?.weight_grams === null || product?.weight_grams === undefined ? '' : String(product.weight_grams),
+                ship_time_min_days: product?.ship_time_min_days === null || product?.ship_time_min_days === undefined ? '' : String(product.ship_time_min_days),
+                ship_time_max_days: product?.ship_time_max_days === null || product?.ship_time_max_days === undefined ? '' : String(product.ship_time_max_days),
+                origin_country: asString(origin?.country),
+                origin_region: asString(origin?.region),
+                origin_city: asString(origin?.city),
+            });
+        } finally {
+            setProductEditLoading(false);
+        }
+    }, [categoryOptions.length, fetchProductById, hydrateListingWithProduct, loadCategoryOptions]);
+
+    const saveProductEdit = useCallback(async () => {
+        if (!productEditProductId) return;
+        if (productEditSaving) return;
+        const categoryId = Math.floor(Number((productEditDraft.category_id || '').trim()));
+        if (!Number.isFinite(categoryId) || categoryId <= 0) {
+            toast.error('Category required', { description: 'Select a category before saving.' });
+            return;
+        }
+        const name = (productEditDraft.name || '').trim();
+        if (!name) {
+            toast.error('Name required', { description: 'Product name cannot be empty.' });
+            return;
+        }
+        const toIntOrNull = (v: string) => {
+            const raw = (v || '').trim();
+            if (!raw) return null;
+            const n = Math.floor(Number(raw));
+            if (!Number.isFinite(n)) return null;
+            return n;
+        };
+        const toNumOrNull = (v: string) => {
+            const raw = (v || '').trim();
+            if (!raw) return null;
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return null;
+            return n;
+        };
+        const origin = {
+            country: (productEditDraft.origin_country || '').trim(),
+            region: (productEditDraft.origin_region || '').trim(),
+            city: (productEditDraft.origin_city || '').trim(),
+        };
+        setProductEditSaving(true);
+        try {
+            const res = await authedFetch(`/api/v1/products/${productEditProductId}/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    category: categoryId,
+                    name,
+                    title: (productEditDraft.title || '').trim(),
+                    description: (productEditDraft.description || '').trim(),
+                    price: toNumOrNull(productEditDraft.price),
+                    currency: (productEditDraft.currency || '').trim() || undefined,
+                    sku: (productEditDraft.sku || '').trim(),
+                    hs_code: (productEditDraft.hs_code || '').trim(),
+                    lead_time_days: toIntOrNull(productEditDraft.lead_time_days),
+                    weight_grams: toIntOrNull(productEditDraft.weight_grams),
+                    ship_time_min_days: toIntOrNull(productEditDraft.ship_time_min_days),
+                    ship_time_max_days: toIntOrNull(productEditDraft.ship_time_max_days),
+                    origin_location: origin.country || origin.region || origin.city ? origin : {},
+                }),
+            });
+            const payload = await res.json().catch(() => null);
+            if (!res.ok) {
+                toast.error('Could not save', { description: asString(payload?.detail, `Save failed (${res.status})`) });
+                return;
+            }
+            setProductEditData(payload);
+            setListingRequests((prev) =>
+                prev.map((x) => (x?.id === productEditTarget?.id ? { ...x, _product: payload } : x))
+            );
+            setQuickTarget((cur: any) => (cur?.id === productEditTarget?.id ? { ...cur, _product: payload } : cur));
+            toast.success('Product updated');
+        } catch {
+            toast.error('Could not save', { description: 'Save failed.' });
+        } finally {
+            setProductEditSaving(false);
+        }
+    }, [authedFetch, productEditDraft, productEditProductId, productEditSaving, productEditTarget]);
+
+    const uploadProductImages = useCallback(async (files: FileList | null) => {
+        if (!productEditProductId) return;
+        if (!files || files.length === 0) return;
+        if (productEditUploading) return;
+        setProductEditUploading(true);
+        try {
+            for (const file of Array.from(files)) {
+                const fd = new FormData();
+                fd.set('product', String(productEditProductId));
+                fd.set('media_type', 'image');
+                fd.set('file', file);
+                fd.set('title', file.name || 'image');
+                const res = await authedFetch('/api/v1/product-media/upload', { method: 'POST', body: fd });
+                const payload = await res.json().catch(() => null);
+                if (!res.ok) {
+                    toast.error('Upload failed', { description: asString(payload?.detail, `Upload failed (${res.status})`) });
+                    break;
+                }
+            }
+            const refreshed = await fetchProductById(productEditProductId);
+            if (refreshed) {
+                setProductEditData(refreshed);
+                setListingRequests((prev) =>
+                    prev.map((x) => (x?.id === productEditTarget?.id ? { ...x, _product: refreshed } : x))
+                );
+                setQuickTarget((cur: any) => (cur?.id === productEditTarget?.id ? { ...cur, _product: refreshed } : cur));
+                toast.success('Images updated');
+            }
+        } finally {
+            setProductEditUploading(false);
+            setProductEditUploadKey((k) => k + 1);
+        }
+    }, [authedFetch, fetchProductById, productEditProductId, productEditTarget, productEditUploading]);
+
+    const deleteProductMedia = useCallback(async (mediaId: number) => {
+        if (!mediaId) return;
+        if (productEditDeletingId) return;
+        setProductEditDeletingId(mediaId);
+        try {
+            const res = await authedFetch(`/api/v1/product-media/${mediaId}/`, { method: 'DELETE' });
+            if (!res.ok) {
+                const payload = await res.json().catch(() => null);
+                toast.error('Could not delete', { description: asString(payload?.detail, `Delete failed (${res.status})`) });
+                return;
+            }
+            setProductEditData((cur: any) => {
+                if (!cur) return cur;
+                const nextMedia = Array.isArray(cur.media) ? cur.media.filter((m: any) => Number(m?.id) !== Number(mediaId)) : [];
+                const next = { ...cur, media: nextMedia };
+                return next;
+            });
+            toast.success('Image removed');
+        } catch {
+            toast.error('Could not delete', { description: 'Delete failed.' });
+        } finally {
+            setProductEditDeletingId(null);
+        }
+    }, [authedFetch, productEditDeletingId]);
 
     const saveQuickStock = useCallback(async () => {
         if (!quickTarget) return;
@@ -2189,9 +2564,15 @@ export function WarehouseView() {
             const target = e.target as Node | null;
             if (target && el.contains(target)) return;
             setRowMenuId(null);
+            setRowMenuTarget(null);
+            setRowMenuPos(null);
         };
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') setRowMenuId(null);
+            if (e.key === 'Escape') {
+                setRowMenuId(null);
+                setRowMenuTarget(null);
+                setRowMenuPos(null);
+            }
         };
         window.addEventListener('mousedown', onDown);
         window.addEventListener('keydown', onKey);
@@ -2230,6 +2611,7 @@ export function WarehouseView() {
         };
 
         const payload: any = {
+            category_id: toInt(listingEditDraft.category_id),
             product_name: listingEditDraft.product_name.trim(),
             company_name: listingEditDraft.company_name.trim(),
             description: listingEditDraft.description.trim(),
@@ -2247,6 +2629,7 @@ export function WarehouseView() {
         };
 
         const missing: string[] = [];
+        if (!payload.category_id) missing.push('Category');
         if (!payload.sku) missing.push('SKU');
         if (!payload.hs_code) missing.push('HS code');
         if (!payload.origin_country) missing.push('Origin country');
@@ -2656,6 +3039,22 @@ export function WarehouseView() {
                                 })()}
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="sm:col-span-2">
+                                        <select
+                                            value={listingEditDraft.category_id}
+                                            onChange={(e) => setListingEditDraft((p) => ({ ...p, category_id: e.target.value }))}
+                                            className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 focus:outline-none focus:border-[#0171E3]/30"
+                                        >
+                                            <option value="" disabled>
+                                                {categoryOptionsLoading ? 'Loading categories…' : 'Select category'}
+                                            </option>
+                                            {categoryOptions.map((opt) => (
+                                                <option key={opt.id} value={String(opt.id)}>
+                                                    {opt.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
                                     <input
                                         value={listingEditDraft.product_name}
                                         onChange={(e) => setListingEditDraft((p) => ({ ...p, product_name: e.target.value }))}
@@ -2896,6 +3295,374 @@ export function WarehouseView() {
                                         </div>
                                     </div>
                                 )}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {feedbackOpen && feedbackTarget && feedbackProductId && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[79] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeFeedback();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[720px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Feedback</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{feedbackProductId} · {asString(feedbackTarget?._product?.name || feedbackTarget?._product?.title || feedbackTarget?.product_name, '—')}
+                                    </div>
+                                </div>
+                                <button onClick={closeFeedback} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-3 max-h-[70vh] overflow-auto">
+                                {feedbackLoading ? (
+                                    <div className="py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">Loading…</div>
+                                ) : feedbackError ? (
+                                    <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[12px] font-medium text-[#E5484D]/80">
+                                        {feedbackError}
+                                    </div>
+                                ) : feedbackRows.length === 0 ? (
+                                    <div className="py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">No feedback yet.</div>
+                                ) : (
+                                    <div className="rounded-2xl border border-black/[0.06] overflow-hidden">
+                                        <div className="divide-y divide-black/[0.04]">
+                                            {feedbackRows.map((fb) => {
+                                                const kind = asString(fb?.kind).toLowerCase();
+                                                const kindCls =
+                                                    kind === 'action_required' ? 'bg-[#E5484D]/10 text-[#E5484D]/80' :
+                                                    kind === 'warning' ? 'bg-[#FFB224]/10 text-[#FFB224]/80' :
+                                                    'bg-black/[0.04] text-[#1A1A1A]/55';
+                                                const when = fb?.created_at ? new Date(fb.created_at).toLocaleString() : '';
+                                                return (
+                                                    <div key={asString(fb?.id)} className="px-4 py-3">
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-[1.2px] ${kindCls}`}>
+                                                                        {kind === 'action_required' ? 'Action required' : kind || 'Info'}
+                                                                    </span>
+                                                                    <div className="text-[11px] font-bold text-[#1A1A1A]/35 truncate">
+                                                                        {asString(fb?.author_label) ? `${asString(fb.author_label)} · ${when}` : when}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="mt-1 text-[12px] font-medium text-[#1A1A1A]/70 whitespace-pre-wrap break-words">
+                                                                    {asString(fb?.message, '—')}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                                {feedbackMarkingRead ? (
+                                    <div className="text-[11px] font-medium text-[#1A1A1A]/30">Marking as read…</div>
+                                ) : null}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {productEditOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[78] flex items-center justify-center p-5"
+                        style={{ background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(8px)' }}
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) closeProductEdit();
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+                            transition={{ duration: 0.22, ease: EASE }}
+                            className="w-full max-w-[780px] rounded-[26px] bg-white/95 backdrop-blur-2xl border border-white/40 overflow-hidden"
+                            style={{ boxShadow: '0 24px 80px -12px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.04)' }}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight">Edit product</div>
+                                    <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
+                                        #{productEditProductId || '—'} · {asString(productEditData?.category_name) || asString(productEditTarget?.category_label, 'Uncategorized')}
+                                    </div>
+                                </div>
+                                <button onClick={closeProductEdit} className="w-9 h-9 rounded-full bg-black/[0.04] flex items-center justify-center hover:bg-black/[0.06]">
+                                    <X size={15} className="text-[#1A1A1A]/55" strokeWidth={2.5} />
+                                </button>
+                            </div>
+
+                            <div className="p-6 space-y-5 max-h-[75vh] overflow-auto">
+                                {productEditLoading ? (
+                                    <div className="py-10 text-center text-[12px] font-medium text-[#1A1A1A]/35">Loading…</div>
+                                ) : (
+                                    <>
+                                        <div>
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Category</div>
+                                            <select
+                                                value={productEditDraft.category_id}
+                                                onChange={(e) => setProductEditDraft((d) => ({ ...d, category_id: e.target.value }))}
+                                                className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 focus:outline-none focus:border-[#0171E3]/30"
+                                            >
+                                                <option value="" disabled>
+                                                    {categoryOptionsLoading ? 'Loading categories…' : 'Select category'}
+                                                </option>
+                                                {categoryOptions.map((opt) => (
+                                                    <option key={opt.id} value={String(opt.id)}>
+                                                        {opt.label}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Name</div>
+                                                <input
+                                                    value={productEditDraft.name}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, name: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Title</div>
+                                                <input
+                                                    value={productEditDraft.title}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, title: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Description</div>
+                                            <textarea
+                                                value={productEditDraft.description}
+                                                onChange={(e) => setProductEditDraft((d) => ({ ...d, description: e.target.value }))}
+                                                rows={5}
+                                                className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30 resize-none"
+                                            />
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Price</div>
+                                                <input
+                                                    value={productEditDraft.price}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, price: e.target.value }))}
+                                                    inputMode="decimal"
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.01"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Currency</div>
+                                                <input
+                                                    value={productEditDraft.currency}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, currency: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">SKU</div>
+                                                <input
+                                                    value={productEditDraft.sku}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, sku: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">HS code</div>
+                                                <input
+                                                    value={productEditDraft.hs_code}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, hs_code: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Lead time (days)</div>
+                                                <input
+                                                    value={productEditDraft.lead_time_days}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, lead_time_days: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Weight (grams)</div>
+                                                <input
+                                                    value={productEditDraft.weight_grams}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, weight_grams: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Ship time min (days)</div>
+                                                <input
+                                                    value={productEditDraft.ship_time_min_days}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, ship_time_min_days: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Ship time max (days)</div>
+                                                <input
+                                                    value={productEditDraft.ship_time_max_days}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, ship_time_max_days: e.target.value }))}
+                                                    inputMode="numeric"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Origin country</div>
+                                                <input
+                                                    value={productEditDraft.origin_country}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, origin_country: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Origin region</div>
+                                                <input
+                                                    value={productEditDraft.origin_region}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, origin_region: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px] mb-2">Origin city</div>
+                                                <input
+                                                    value={productEditDraft.origin_city}
+                                                    onChange={(e) => setProductEditDraft((d) => ({ ...d, origin_city: e.target.value }))}
+                                                    className="w-full px-4 py-3 rounded-2xl bg-black/[0.02] border border-black/[0.06] text-[13px] font-semibold text-[#1A1A1A]/80 placeholder:text-[#1A1A1A]/25 focus:outline-none focus:border-[#0171E3]/30"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Images</div>
+                                                <label className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.5px] ${
+                                                    productEditUploading ? 'bg-black/[0.04] text-[#1A1A1A]/35 cursor-not-allowed' : 'bg-[#0171E3]/10 text-[#0171E3]/80 hover:bg-[#0171E3]/15 cursor-pointer'
+                                                }`}>
+                                                    {productEditUploading ? 'Uploading…' : 'Upload'}
+                                                    <input
+                                                        key={productEditUploadKey}
+                                                        type="file"
+                                                        accept="image/*"
+                                                        multiple
+                                                        className="hidden"
+                                                        disabled={productEditUploading}
+                                                        onChange={(e) => void uploadProductImages(e.target.files)}
+                                                    />
+                                                </label>
+                                            </div>
+                                            <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                                                {(Array.isArray(productEditData?.media) ? productEditData.media : [])
+                                                    .filter((m: any) => String(m?.media_type).toLowerCase() === 'image')
+                                                    .slice()
+                                                    .sort((a: any, b: any) => Number(a?.position ?? 0) - Number(b?.position ?? 0))
+                                                    .map((m: any) => {
+                                                        const mid = Number(m?.id || 0);
+                                                        const url = asString(m?.public_url);
+                                                        return (
+                                                            <div key={asString(m?.id)} className="relative rounded-2xl overflow-hidden border border-black/[0.06] bg-white aspect-square">
+                                                                {url ? (
+                                                                    <img src={url} alt={asString(m?.title || 'image')} className="w-full h-full object-cover" />
+                                                                ) : (
+                                                                    <div className="w-full h-full flex items-center justify-center text-[10px] font-bold text-[#1A1A1A]/25">—</div>
+                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={!mid || productEditDeletingId === mid}
+                                                                    onClick={() => void deleteProductMedia(mid)}
+                                                                    className={`absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center ${
+                                                                        productEditDeletingId === mid ? 'bg-black/[0.08] text-[#1A1A1A]/35 cursor-not-allowed' : 'bg-black/[0.06] hover:bg-black/[0.10] text-[#1A1A1A]/65'
+                                                                    }`}
+                                                                    aria-label="Remove image"
+                                                                >
+                                                                    <X size={14} strokeWidth={2.5} />
+                                                                </button>
+                                                            </div>
+                                                        );
+                                                    })}
+                                            </div>
+                                            {(Array.isArray(productEditData?.media) ? productEditData.media : []).filter((m: any) => String(m?.media_type).toLowerCase() === 'image').length === 0 ? (
+                                                <div className="text-[12px] font-medium text-[#1A1A1A]/40">No images yet.</div>
+                                            ) : null}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+
+                            <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-2 border-t border-black/[0.06]">
+                                <button
+                                    type="button"
+                                    onClick={closeProductEdit}
+                                    className="px-4 py-2.5 rounded-full text-[12px] font-bold bg-black/[0.04] text-[#1A1A1A]/60 hover:bg-black/[0.06]"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void saveProductEdit()}
+                                    disabled={productEditSaving || productEditLoading}
+                                    className={`px-4 py-2.5 rounded-full text-[12px] font-black text-white ${
+                                        productEditSaving || productEditLoading ? 'bg-[#1A1A1A]/40 cursor-not-allowed' : 'bg-[#1A1A1A] hover:bg-[#2A2A2A]'
+                                    }`}
+                                >
+                                    {productEditSaving ? 'Saving…' : 'Save'}
+                                </button>
                             </div>
                         </motion.div>
                     </motion.div>
@@ -3174,7 +3941,9 @@ export function WarehouseView() {
                         >
                             <div className="px-6 py-5 border-b border-black/[0.06] flex items-start justify-between gap-4">
                                 <div className="min-w-0">
-                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight truncate">{asString(quickTarget?.product_name, '—')}</div>
+                                    <div className="text-[14px] font-black text-[#1A1A1A] tracking-tight truncate">
+                                        {asString(quickTarget?._product?.name || quickTarget?._product?.title || quickTarget?.product_name, '—')}
+                                    </div>
                                     <div className="text-[12px] font-medium text-[#1A1A1A]/45 mt-1 truncate">
                                         #{asString(quickTarget?.id)} · {asString(quickTarget?.category_label, 'Uncategorized')}
                                     </div>
@@ -3208,6 +3977,31 @@ export function WarehouseView() {
                                     </div>
                                 ) : null}
 
+                                {getCreatedProductId(quickTarget) && (Number(quickTarget?.product_feedback_unread ?? 0) > 0 || asString(quickTarget?.product_feedback_latest?.message)) ? (
+                                    <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-4">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div className="text-[10px] font-black text-[#1A1A1A]/35 uppercase tracking-[1.5px]">Feedback</div>
+                                                <div className="mt-1 text-[12px] font-medium text-[#1A1A1A]/70 whitespace-pre-wrap break-words">
+                                                    {asString(quickTarget?.product_feedback_latest?.message, '—')}
+                                                </div>
+                                            </div>
+                                            {Number(quickTarget?.product_feedback_unread ?? 0) > 0 ? (
+                                                <span className="px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-[1.2px] bg-[#E5484D]/10 text-[#E5484D]/80">
+                                                    {Number(quickTarget?.product_feedback_unread ?? 0)} new
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => void openFeedback(quickTarget)}
+                                            className="mt-3 w-full px-4 py-2.5 rounded-2xl text-[12px] font-black bg-black/[0.04] text-[#1A1A1A]/65 hover:bg-black/[0.06]"
+                                        >
+                                            View feedback
+                                        </button>
+                                    </div>
+                                ) : null}
+
                                 <div className="grid grid-cols-2 gap-2">
                                     <button
                                         type="button"
@@ -3237,6 +4031,15 @@ export function WarehouseView() {
 
                                 {(!!quickTarget?.created_product || asString(quickTarget?.stage).toLowerCase() === 'done') ? (
                                     <>
+                                        {getCreatedProductId(quickTarget) ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => void openProductEdit(quickTarget)}
+                                                className="w-full px-4 py-2.5 rounded-2xl text-[12px] font-black bg-black/[0.04] text-[#1A1A1A]/65 hover:bg-black/[0.06]"
+                                            >
+                                                Edit product details & images
+                                            </button>
+                                        ) : null}
                                         <div className="rounded-[22px] bg-white/45 border border-black/[0.06] p-4 space-y-3">
                                             <div className="text-[10px] font-black text-[#1A1A1A]/28 uppercase tracking-[1.5px]">Bulk stock</div>
                                             <div className="rounded-2xl bg-black/[0.02] border border-black/[0.06] p-2 flex gap-2">
@@ -4402,9 +5205,17 @@ export function WarehouseView() {
                                                     const pill = stagePill(lr?.stage);
                                                     const hasChanges = asString(lr?.stage).toLowerCase() === 'samples' && !!lr?.product_meta?.review_message;
                                                     const hasFeedback = !!asString(lr?.compliance_notes);
+                                                    const feedbackUnread = Number(lr?.product_feedback_unread ?? 0);
                                                     const sampleUnits = Number(lr?.sample_units ?? 0);
                                                     const sampleLow = !!lr?.sample_low_stock;
                                                     const isPublished = !!lr?.created_product || asString(lr?.stage).toLowerCase() === 'done';
+                                                    const displayName = isPublished
+                                                        ? asString(lr?._product?.name || lr?._product?.title || lr?.product_name, '—')
+                                                        : asString(lr?.product_name, '—');
+                                                    const displayThumb = isPublished
+                                                        ? asString(lr?._product?.hero_image_url) || asString(lr?.photos?.[0]?.file_url)
+                                                        : asString(lr?.photos?.[0]?.file_url);
+                                                    const isRowMenuOpen = rowMenuId === lr?.id;
                                                     const sampleLabel =
                                                         !isPublished ? '' :
                                                         sampleUnits <= 0 ? 'Samples: 0' :
@@ -4435,17 +5246,22 @@ export function WarehouseView() {
                                                             onClick={() => openQuick(lr)}
                                                         >
                                                             <div className="w-11 h-11 rounded-[14px] bg-white flex items-center justify-center shadow-sm overflow-hidden border border-[#1A1A1A]/[0.04] flex-shrink-0">
-                                                                {lr?.photos?.[0]?.file_url ? (
-                                                                    <img src={lr.photos[0].file_url} alt={asString(lr?.product_name)} className="w-full h-full object-cover" />
+                                                                {displayThumb ? (
+                                                                    <img src={displayThumb} alt={displayName} className="w-full h-full object-cover" />
                                                                 ) : (
                                                                     <Package size={18} className="text-[#1A1A1A]/20" />
                                                                 )}
                                                             </div>
                                                             <div className="min-w-0 flex-1">
                                                                 <div className="flex items-center gap-2 min-w-0">
-                                                                    <div className="text-[13px] font-black text-[#1A1A1A]/85 truncate">{asString(lr?.product_name, '—')}</div>
+                                                                    <div className="text-[13px] font-black text-[#1A1A1A]/85 truncate">{displayName}</div>
                                                                     {hasChanges && (
                                                                         <span className="text-[10px] font-black text-[#0171E3]/70 bg-[#0171E3]/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">Action</span>
+                                                                    )}
+                                                                    {feedbackUnread > 0 && (
+                                                                        <span className="text-[10px] font-black text-[#E5484D]/80 bg-[#E5484D]/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">
+                                                                            Feedback {feedbackUnread}
+                                                                        </span>
                                                                     )}
                                                                     {hasFeedback && !hasChanges && (
                                                                         <span className="text-[10px] font-black text-amber-700/70 bg-amber-500/10 px-2 py-0.5 rounded-full uppercase tracking-[1.2px]">Note</span>
@@ -4481,77 +5297,25 @@ export function WarehouseView() {
                                                                         type="button"
                                                                         onClick={(e) => {
                                                                             e.stopPropagation();
-                                                                            setRowMenuId((cur) => (cur === lr?.id ? null : lr?.id));
+                                                                            if (isRowMenuOpen) {
+                                                                                setRowMenuId(null);
+                                                                                setRowMenuTarget(null);
+                                                                                setRowMenuPos(null);
+                                                                                return;
+                                                                            }
+                                                                            const btn = e.currentTarget as HTMLElement;
+                                                                            const rect = btn.getBoundingClientRect();
+                                                                            const right = Math.max(8, window.innerWidth - rect.right);
+                                                                            const top = Math.max(8, rect.bottom + 8);
+                                                                            setRowMenuId(lr?.id ?? null);
+                                                                            setRowMenuTarget(lr);
+                                                                            setRowMenuPos({ top, right });
                                                                         }}
                                                                         className="w-9 h-9 rounded-full bg-black/[0.03] hover:bg-black/[0.06] flex items-center justify-center transition-colors"
                                                                         aria-label="Actions"
                                                                     >
                                                                         <MoreHorizontal size={16} className="text-[#1A1A1A]/55" />
                                                                     </button>
-                                                                    {rowMenuId === lr?.id && (
-                                                                        <div
-                                                                            ref={rowMenuRef}
-                                                                            onClick={(e) => e.stopPropagation()}
-                                                                            className="absolute right-0 top-10 z-30 w-[220px] rounded-[18px] bg-white/95 backdrop-blur-2xl border border-black/[0.08] overflow-hidden shadow-[0_18px_60px_-20px_rgba(0,0,0,0.35)]"
-                                                                        >
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => { setRowMenuId(null); void openHistory(lr); }}
-                                                                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
-                                                                            >
-                                                                                View history
-                                                                            </button>
-                                                                            {isPublished && (
-                                                                                <button
-                                                                                    type="button"
-                                                                                    onClick={() => { setRowMenuId(null); openStockEdit(lr); }}
-                                                                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
-                                                                                >
-                                                                                    Update stock
-                                                                                </button>
-                                                                            )}
-                                                                            {isPublished && (
-                                                                                <button
-                                                                                    type="button"
-                                                                                    onClick={() => { setRowMenuId(null); openSampleEdit(lr); }}
-                                                                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
-                                                                                >
-                                                                                    Update samples
-                                                                                </button>
-                                                                            )}
-                                                                            {hasChanges && (
-                                                                                <button
-                                                                                    type="button"
-                                                                                    onClick={() => { setRowMenuId(null); openListingFix(lr); }}
-                                                                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
-                                                                                >
-                                                                                    Fix & resubmit
-                                                                                </button>
-                                                                            )}
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => {
-                                                                                    setRowMenuId(null);
-                                                                                    try {
-                                                                                        const ta = document.createElement('textarea');
-                                                                                        ta.value = String(lr?.id || '');
-                                                                                        ta.style.position = 'fixed';
-                                                                                        ta.style.opacity = '0';
-                                                                                        document.body.appendChild(ta);
-                                                                                        ta.select();
-                                                                                        document.execCommand('copy');
-                                                                                        document.body.removeChild(ta);
-                                                                                        toast.success('Listing id copied');
-                                                                                    } catch {
-                                                                                        toast.error('Could not copy');
-                                                                                    }
-                                                                                }}
-                                                                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
-                                                                            >
-                                                                                Copy listing id
-                                                                            </button>
-                                                                        </div>
-                                                                    )}
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -4565,6 +5329,119 @@ export function WarehouseView() {
                         })()}
                     </div>
                 </div>
+            ) : null}
+
+            {rowMenuId && rowMenuTarget && rowMenuPos ? (
+                <ClientPortal>
+                    <div className="fixed inset-0 z-[120]" aria-hidden="true">
+                        <div className="absolute inset-0" />
+                        <div
+                            ref={rowMenuRef}
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute w-[220px] rounded-[18px] bg-white/95 backdrop-blur-2xl border border-black/[0.08] overflow-hidden shadow-[0_18px_60px_-20px_rgba(0,0,0,0.35)]"
+                            style={{ top: rowMenuPos.top, right: rowMenuPos.right }}
+                        >
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const lr = rowMenuTarget;
+                                    setRowMenuId(null);
+                                    setRowMenuTarget(null);
+                                    setRowMenuPos(null);
+                                    void openHistory(lr);
+                                }}
+                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                            >
+                                View history
+                            </button>
+                            {(!!rowMenuTarget?.created_product || asString(rowMenuTarget?.stage).toLowerCase() === 'done') && getCreatedProductId(rowMenuTarget) ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const lr = rowMenuTarget;
+                                        setRowMenuId(null);
+                                        setRowMenuTarget(null);
+                                        setRowMenuPos(null);
+                                        void openProductEdit(lr);
+                                    }}
+                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                >
+                                    Edit product
+                                </button>
+                            ) : null}
+                            {(!!rowMenuTarget?.created_product || asString(rowMenuTarget?.stage).toLowerCase() === 'done') ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const lr = rowMenuTarget;
+                                            setRowMenuId(null);
+                                            setRowMenuTarget(null);
+                                            setRowMenuPos(null);
+                                            openStockEdit(lr);
+                                        }}
+                                        className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                    >
+                                        Update stock
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const lr = rowMenuTarget;
+                                            setRowMenuId(null);
+                                            setRowMenuTarget(null);
+                                            setRowMenuPos(null);
+                                            openSampleEdit(lr);
+                                        }}
+                                        className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                    >
+                                        Update samples
+                                    </button>
+                                </>
+                            ) : null}
+                            {asString(rowMenuTarget?.stage).toLowerCase() === 'samples' && !!rowMenuTarget?.product_meta?.review_message ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const lr = rowMenuTarget;
+                                        setRowMenuId(null);
+                                        setRowMenuTarget(null);
+                                        setRowMenuPos(null);
+                                        openListingFix(lr);
+                                    }}
+                                    className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                                >
+                                    Fix & resubmit
+                                </button>
+                            ) : null}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const lr = rowMenuTarget;
+                                    setRowMenuId(null);
+                                    setRowMenuTarget(null);
+                                    setRowMenuPos(null);
+                                    try {
+                                        const ta = document.createElement('textarea');
+                                        ta.value = String(lr?.id || '');
+                                        ta.style.position = 'fixed';
+                                        ta.style.opacity = '0';
+                                        document.body.appendChild(ta);
+                                        ta.select();
+                                        document.execCommand('copy');
+                                        document.body.removeChild(ta);
+                                        toast.success('Listing id copied');
+                                    } catch {
+                                        toast.error('Could not copy');
+                                    }
+                                }}
+                                className="w-full px-4 py-3 text-left text-[12px] font-bold text-[#1A1A1A]/75 hover:bg-black/[0.04]"
+                            >
+                                Copy listing id
+                            </button>
+                        </div>
+                    </div>
+                </ClientPortal>
             ) : null}
         </motion.div>
     );

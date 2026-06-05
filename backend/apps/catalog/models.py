@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 from django.utils.text import slugify
 from uuid import uuid4
 
@@ -220,6 +221,44 @@ class PricingTier(models.Model):
 
     def __str__(self):
         return f"tier:{self.pk}"
+
+
+class ProductFeedback(models.Model):
+    class Kind(models.TextChoices):
+        INFO = "info", "Info"
+        WARNING = "warning", "Warning"
+        ACTION_REQUIRED = "action_required", "Action required"
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="feedback")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="product_feedback")
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="product_feedback_authored",
+    )
+    kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.INFO)
+    message = models.TextField()
+    read_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["seller", "created_at"]),
+            models.Index(fields=["product", "created_at"]),
+            models.Index(fields=["seller", "product", "read_at"]),
+        ]
+
+    def __str__(self):
+        return f"product_feedback:{self.pk}:{self.product_id}"
+
+    def mark_read(self):
+        if self.read_at:
+            return
+        self.read_at = timezone.now()
+        self.save(update_fields=["read_at"])
 
 
 def resolve_unit_price(product: Product, variation: "ProductVariation | None", quantity: int):

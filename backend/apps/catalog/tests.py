@@ -2,8 +2,8 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.catalog.models import Category, ListingRequest, Product, Warehouse
-from apps.accounts.models import BuyerAddress
+from apps.catalog.models import Category, ListingRequest, Product, ProductFeedback, Warehouse
+from apps.accounts.models import BuyerAddress, Notification
 
 
 class ListingRequestFlowTests(TestCase):
@@ -254,3 +254,68 @@ class ListingRequestFlowTests(TestCase):
             format="json",
         )
         self.assertEqual(ok.status_code, 201)
+
+
+class ProductFeedbackTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        User = get_user_model()
+        self.admin = User.objects.create_user(email="admin2@test.local", password="pass1234", role="admin", is_staff=True)
+        self.seller = User.objects.create_user(email="seller2@test.local", password="pass1234", role="seller", account_type="seller")
+        self.category = Category.objects.create(name="Cat A", slug="cat-a")
+        self.product = Product.objects.create(
+            seller=self.seller,
+            category=self.category,
+            name="Prod A",
+            title="Prod A",
+            currency="USD",
+            price="10.00",
+            status=Product.Status.ACTIVE,
+        )
+
+    def test_admin_can_send_product_feedback_and_seller_can_read_and_mark_read(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/v1/admin/products/{self.product.id}/feedback/",
+            {"kind": "action_required", "message": "Please update your hero image."},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(ProductFeedback.objects.filter(product=self.product, seller=self.seller, deleted_at__isnull=True).exists())
+        self.assertTrue(
+            Notification.objects.filter(user=self.seller, channel=Notification.Channel.IN_APP, event_type="product_feedback").exists()
+        )
+
+        self.client.force_authenticate(user=self.seller)
+        get_res = self.client.get(f"/api/v1/products/{self.product.id}/feedback/")
+        self.assertEqual(get_res.status_code, 200)
+        body = get_res.json()
+        self.assertGreaterEqual(int(body.get("unread_count") or 0), 1)
+        self.assertTrue(isinstance(body.get("results"), list))
+
+        mark_res = self.client.post(f"/api/v1/products/{self.product.id}/feedback/", {}, format="json")
+        self.assertEqual(mark_res.status_code, 200)
+        body2 = mark_res.json()
+        self.assertEqual(int(body2.get("unread_count") or 0), 0)
+
+    def test_seller_listing_requests_includes_feedback_fields(self):
+        ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Cat A",
+            product_name="LR",
+            unit_price="10.00",
+            moq=1,
+            stage=ListingRequest.Stage.DONE,
+            created_product=self.product,
+        )
+        ProductFeedback.objects.create(product=self.product, seller=self.seller, author=self.admin, kind="info", message="Note 1")
+
+        self.client.force_authenticate(user=self.seller)
+        res = self.client.get("/api/v1/seller/listing-requests/")
+        self.assertEqual(res.status_code, 200)
+        rows = res.json()
+        self.assertTrue(isinstance(rows, list) and len(rows) >= 1)
+        first = rows[0]
+        self.assertIn("product_feedback_unread", first)
+        self.assertIn("product_feedback_latest", first)

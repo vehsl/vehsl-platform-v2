@@ -608,8 +608,11 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
             if (product.currency.trim()) fd.set('currency', product.currency.trim());
             fd.set('unit_price', product.price.trim());
             fd.set('moq', String(product.qty || 1));
-            if (product.categoryId) fd.set('category_id', String(product.categoryId));
-            if (product.category.trim()) fd.set('category', product.category.trim());
+            if (!product.categoryId) {
+                toast.error('Category required', { description: 'Select a category before submitting.' });
+                return;
+            }
+            fd.set('category_id', String(product.categoryId));
             if (product.sku.trim()) fd.set('sku', product.sku.trim());
             if (product.hsCode.trim()) fd.set('hs_code', product.hsCode.trim());
             if (product.originCountry.trim()) fd.set('origin_country', product.originCountry.trim());
