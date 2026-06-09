@@ -67,6 +67,13 @@ const CATEGORIES = [
     'Industrial & Mfg.', 'Sports & Outdoors', 'Other',
 ];
 
+const FIXED_QUANTITY_TIERS = [
+    { label: '4 Cartons (80 units)', minQuantity: 80 },
+    { label: 'Full pallet (12 cartons)', minQuantity: 240 },
+    { label: 'Full container load (20ft)', minQuantity: 1440 },
+    { label: 'Lowest price per unit', minQuantity: 2880 },
+] as const;
+
 const MILESTONES: { id: StepId; Icon: React.ElementType; label: string; tip: string }[] = [
     { id: 'request', Icon: FileText,       label: 'Request',  tip: 'Submit your listing' },
     { id: 'compliance', Icon: Shield,      label: 'Compliance', tip: 'Compliance verification' },
@@ -457,6 +464,66 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         if (c === 'CNY') return '¥';
         return '$';
     }, [product.currency]);
+    const variationLabelForDraft = useCallback((v: { sku: string; attributes: Array<{ key: string; value: string }> }) => {
+        const pairs = (v?.attributes || []).filter((pair) => (pair.key || '').trim() && (pair.value || '').trim());
+        if (pairs.length) return pairs.map((pair) => `${pair.key}: ${pair.value}`).join(', ');
+        return (v?.sku || '').trim() ? `SKU: ${(v.sku || '').trim()}` : 'Variant';
+    }, []);
+    const formatTierPriceDisplay = useCallback((raw: string) => {
+        const n = Number(String(raw || '').trim());
+        if (!Number.isFinite(n) || n < 0) return '0.00';
+        if (Number.isInteger(n)) return n.toFixed(0);
+        return n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    }, []);
+    const bulkPrice = useMemo(() => String(product.pricingTiers?.[0]?.unitPrice || ''), [product.pricingTiers]);
+    const setBulkPrice = useCallback((value: string) => {
+        setProduct((p) => {
+            const nextTiers = [...(p.pricingTiers || [])];
+            const minQuantity = String(FIXED_QUANTITY_TIERS[0].minQuantity);
+            if (nextTiers.length === 0) {
+                nextTiers.push({
+                    variationIndex: null,
+                    minQuantity,
+                    maxQuantity: '',
+                    unitPrice: value,
+                    currency: p.currency || 'USD',
+                });
+            } else {
+                const currentMin = Math.max(Number((nextTiers[0]?.minQuantity || '').trim()) || 0, Number(minQuantity));
+                nextTiers[0] = {
+                    ...nextTiers[0],
+                    minQuantity: String(currentMin),
+                    unitPrice: value,
+                    currency: p.currency || 'USD',
+                };
+            }
+            return { ...p, pricingTiers: nextTiers };
+        });
+    }, []);
+    const canAddMoreFixedTiers = (product.pricingTiers || []).length < FIXED_QUANTITY_TIERS.length;
+    const pricingPreviewRows = useMemo(() => {
+        const rows = [
+            {
+                id: 'base',
+                minQuantity: Math.max(1, Number(product.qty) || 1),
+                maxQuantity: null as number | null,
+                unitPrice: String(product.price || '').trim(),
+                isBase: true,
+                descriptor: `${Math.max(1, Number(product.qty) || 1).toLocaleString()} units`,
+            },
+            ...(product.pricingTiers || [])
+                .filter((tier) => String(tier.unitPrice || '').trim())
+                .map((tier, index) => ({
+                    id: `tier-${index}`,
+                    minQuantity: Math.max(1, Number((tier.minQuantity || '').trim()) || 1),
+                    maxQuantity: (tier.maxQuantity || '').trim() ? Math.max(1, Number((tier.maxQuantity || '').trim()) || 0) : null,
+                    unitPrice: String(tier.unitPrice || '').trim(),
+                    isBase: false,
+                    descriptor: FIXED_QUANTITY_TIERS[index]?.label || `${Math.max(1, Number((tier.minQuantity || '').trim()) || 1).toLocaleString()}+ units`,
+                })),
+        ];
+        return rows;
+    }, [product.price, product.pricingTiers, product.qty]);
     const canSubmitRequest = !!product.photo
         && product.name.trim().length > 0
         && product.price.trim().length > 0
@@ -1156,8 +1223,8 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                     </div>
 
                     {/* ── Price + Qty ── */}
-                    <div className="flex gap-3">
-                        <div className="flex-1">
+                    <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_220px] gap-3">
+                        <div>
                             <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">UNIT PRICE <span className="text-[#e67e22]/60">*</span></p>
                             <div className="relative">
                                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[14px] font-semibold text-[#1A1A1A]/28">{currencySymbol}</span>
@@ -1178,28 +1245,235 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                             )}
                         </div>
                         <div>
+                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">BULK PRICE</p>
+                            <div className="relative">
+                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[14px] font-semibold text-[#1A1A1A]/28">{currencySymbol}</span>
+                                <input
+                                    type="number"
+                                    placeholder="0.00"
+                                    value={bulkPrice}
+                                    onChange={e => setBulkPrice(e.target.value)}
+                                    className="w-full rounded-[14px] pl-9 pr-5 py-3.5 text-[15px] font-medium text-[#1A1A1A]/80 placeholder-[#1A1A1A]/18 outline-none transition-all duration-200"
+                                    style={{
+                                        background: 'rgba(0,0,0,0.028)',
+                                        border: '0.5px solid rgba(0,0,0,0.07)',
+                                    }}
+                                />
+                            </div>
+                        </div>
+                        <div>
                             <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">MIN. ORDER</p>
                             <div
                                 className="flex items-center rounded-[14px] overflow-hidden"
                                 style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
                             >
                                 <button
-                                    onClick={() => setProduct(p => ({ ...p, qty: Math.max(1, p.qty - 10) }))}
+                                    type="button"
+                                    onClick={() => setProduct(p => ({ ...p, qty: Math.max(1, p.qty - 1) }))}
                                     className="w-10 py-3.5 flex items-center justify-center text-[#1A1A1A]/28 hover:text-[#1A1A1A]/55 transition-colors border-none bg-transparent cursor-pointer"
                                 >
                                     <span className="text-[16px] leading-none">−</span>
                                 </button>
-                                <span className="w-12 text-center text-[14px] font-bold tabular-nums text-[#1A1A1A]/78">
-                                    {product.qty}
-                                </span>
+                                <input
+                                    type="number"
+                                    min={1}
+                                    value={product.qty}
+                                    onChange={e =>
+                                        setProduct(p => ({
+                                            ...p,
+                                            qty: Math.max(1, Number(e.target.value || 1) || 1),
+                                        }))
+                                    }
+                                    className="w-16 text-center text-[14px] font-bold tabular-nums text-[#1A1A1A]/78 bg-transparent outline-none [appearance:textfield]"
+                                    style={{ MozAppearance: 'textfield' as any }}
+                                />
                                 <button
-                                    onClick={() => setProduct(p => ({ ...p, qty: p.qty + 10 }))}
+                                    type="button"
+                                    onClick={() => setProduct(p => ({ ...p, qty: p.qty + 1 }))}
                                     className="w-10 py-3.5 flex items-center justify-center text-[#1A1A1A]/28 hover:text-[#0171E3] transition-colors border-none bg-transparent cursor-pointer"
                                 >
                                     <Plus size={14} strokeWidth={2.5} />
                                 </button>
                             </div>
                         </div>
+                    </div>
+
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">QUANTITY PRICING</p>
+                                <p className="text-[12px] font-medium text-[#1A1A1A]/30 mt-1">Add buyer-facing price breaks. The lowest qualifying price shows automatically.</p>
+                            </div>
+                            <button
+                                type="button"
+                                disabled={!canAddMoreFixedTiers}
+                                onClick={() =>
+                                    setProduct(p => {
+                                        const nextIndex = (p.pricingTiers || []).length;
+                                        const preset = FIXED_QUANTITY_TIERS[nextIndex];
+                                        if (!preset) return p;
+                                        return {
+                                            ...p,
+                                            pricingTiers: [
+                                                ...(p.pricingTiers || []),
+                                                {
+                                                    variationIndex: null,
+                                                    minQuantity: String(preset.minQuantity),
+                                                    maxQuantity: '',
+                                                    unitPrice: p.price || '',
+                                                    currency: p.currency || 'USD',
+                                                },
+                                            ],
+                                        };
+                                    })
+                                }
+                                className="px-3 py-1.5 rounded-full text-[12px] font-bold cursor-pointer border disabled:cursor-not-allowed"
+                                style={{
+                                    background: !canAddMoreFixedTiers ? 'rgba(0,0,0,0.03)' : 'rgba(1,113,227,0.06)',
+                                    borderColor: !canAddMoreFixedTiers ? 'rgba(0,0,0,0.08)' : 'rgba(1,113,227,0.18)',
+                                    color: !canAddMoreFixedTiers ? 'rgba(26,26,26,0.32)' : '#0171E3',
+                                }}
+                            >
+                                {canAddMoreFixedTiers ? 'Add tier' : 'All tiers added'}
+                            </button>
+                        </div>
+
+                        <div
+                            className="rounded-[28px] px-5 py-5 sm:px-7"
+                            style={{
+                                background: 'rgba(0,0,0,0.022)',
+                                border: '0.5px solid rgba(0,0,0,0.06)',
+                                boxShadow: 'none',
+                            }}
+                        >
+                            <div className="space-y-3.5">
+                                {pricingPreviewRows.map((row) => (
+                                    <div key={row.id} className="flex items-center gap-3.5">
+                                        <div
+                                            className="shrink-0"
+                                            style={{
+                                                width: 22,
+                                                height: 22,
+                                                borderRadius: row.isBase ? 999 : 7,
+                                                background: row.isBase ? 'rgba(1,113,227,0.92)' : 'rgba(0,0,0,0.12)',
+                                                boxShadow: row.isBase ? '0 6px 18px rgba(1,113,227,0.18)' : 'none',
+                                            }}
+                                        />
+                                        <div className="min-w-0 flex items-baseline gap-1.5">
+                                            <span className="text-[16px] sm:text-[17px] font-semibold text-[#1A1A1A]/78 whitespace-nowrap">
+                                                {currencySymbol}{formatTierPriceDisplay(row.unitPrice)}
+                                            </span>
+                                            <span className="truncate text-[13px] sm:text-[14px] font-semibold text-[#1A1A1A]/48">
+                                                - {row.descriptor}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {(product.pricingTiers || []).length === 0 ? (
+                            <p className="text-[12px] font-medium text-[#1A1A1A]/30">No extra tiers yet. Buyers will only see your MOQ price until you add more.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {(product.pricingTiers || []).map((t, idx) => (
+                                    <div
+                                        key={idx}
+                                        className="rounded-[18px] p-4"
+                                        style={{ background: 'rgba(0,0,0,0.022)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                    >
+                                        <div className="flex items-center justify-between gap-3 mb-3">
+                                            <p className="text-[12px] font-bold text-[#1A1A1A]/60">{FIXED_QUANTITY_TIERS[idx]?.label || `Tier #${idx + 1}`}</p>
+                                            <button
+                                                type="button"
+                                                onClick={() => setProduct(p => ({ ...p, pricingTiers: (p.pricingTiers || []).filter((_, i) => i !== idx) }))}
+                                                className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
+                                                style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
+                                            >
+                                                <X size={14} strokeWidth={2.5} />
+                                            </button>
+                                        </div>
+
+                                        <div className={`grid grid-cols-1 ${product.variations.length ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-3`}>
+                                            {product.variations.length ? (
+                                                <div>
+                                                    <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">APPLIES TO</p>
+                                                    <select
+                                                        value={t.variationIndex == null ? '' : String(t.variationIndex)}
+                                                        onChange={e =>
+                                                            setProduct(p => ({
+                                                                ...p,
+                                                                pricingTiers: (p.pricingTiers || []).map((tt, i) =>
+                                                                    i === idx ? { ...tt, variationIndex: e.target.value === '' ? null : Number(e.target.value) } : tt
+                                                                ),
+                                                            }))
+                                                        }
+                                                        className="w-full rounded-[14px] px-4 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                        style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                    >
+                                                        <option value="">All variants</option>
+                                                        {(product.variations || []).map((v, i) => (
+                                                            <option key={i} value={String(i)}>
+                                                                Variant #{i + 1} - {variationLabelForDraft(v)}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                            ) : null}
+                                            <div>
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">MIN QTY</p>
+                                                <input
+                                                    type="number"
+                                                    value={t.minQuantity}
+                                                    onChange={e =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            pricingTiers: (p.pricingTiers || []).map((tt, i) => (i === idx ? { ...tt, minQuantity: e.target.value } : tt)),
+                                                        }))
+                                                    }
+                                                    className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                    style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">MAX QTY</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="Optional"
+                                                    value={t.maxQuantity}
+                                                    onChange={e =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            pricingTiers: (p.pricingTiers || []).map((tt, i) => (i === idx ? { ...tt, maxQuantity: e.target.value } : tt)),
+                                                        }))
+                                                    }
+                                                    className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                    style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">UNIT PRICE ({product.currency})</p>
+                                                <input
+                                                    type="number"
+                                                    placeholder="0.00"
+                                                    value={t.unitPrice}
+                                                    onChange={e =>
+                                                        setProduct(p => ({
+                                                            ...p,
+                                                            pricingTiers: (p.pricingTiers || []).map((tt, i) =>
+                                                                i === idx ? { ...tt, unitPrice: e.target.value, currency: p.currency || 'USD' } : tt
+                                                            ),
+                                                        }))
+                                                    }
+                                                    className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
+                                                    style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {/* ── Optional details ── */}
@@ -1724,136 +1998,6 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                                             </div>
                                                         </div>
                                                     ))}
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        <div className="space-y-3">
-                                            <div className="flex items-center justify-between gap-3">
-                                                <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest">BULK PRICING TIERS</p>
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        setProduct(p => ({
-                                                            ...p,
-                                                            pricingTiers: [
-                                                                ...(p.pricingTiers || []),
-                                                                { variationIndex: null, minQuantity: '1', maxQuantity: '', unitPrice: '', currency: p.currency || 'USD' },
-                                                            ],
-                                                        }))
-                                                    }
-                                                    className="px-3 py-1.5 rounded-full text-[12px] font-bold cursor-pointer border"
-                                                    style={{ background: 'rgba(0,0,0,0.03)', borderColor: 'rgba(0,0,0,0.07)', color: 'rgba(26,26,26,0.55)' }}
-                                                >
-                                                    Add tier
-                                                </button>
-                                            </div>
-
-                                            {(product.pricingTiers || []).length === 0 ? (
-                                                <p className="text-[12px] font-medium text-[#1A1A1A]/30">Optional. Add tiers like 100+ units, 500+ units, etc.</p>
-                                            ) : (
-                                                <div className="space-y-2">
-                                                    {(product.pricingTiers || []).map((t, idx) => {
-                                                        const labelFor = (v: any) => {
-                                                            const pairs = (v?.attributes || []).filter((p: any) => (p.key || '').trim() && (p.value || '').trim());
-                                                            if (pairs.length) return pairs.map((p: any) => `${p.key}: ${p.value}`).join(', ');
-                                                            return (v?.sku || '').trim() ? `SKU: ${(v.sku || '').trim()}` : 'Variant';
-                                                        };
-                                                        return (
-                                                            <div
-                                                                key={idx}
-                                                                className="rounded-[18px] p-4"
-                                                                style={{ background: 'rgba(0,0,0,0.022)', border: '0.5px solid rgba(0,0,0,0.06)' }}
-                                                            >
-                                                                <div className="flex items-center justify-between gap-3 mb-3">
-                                                                    <p className="text-[12px] font-bold text-[#1A1A1A]/60">Tier #{idx + 1}</p>
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => setProduct(p => ({ ...p, pricingTiers: (p.pricingTiers || []).filter((_, i) => i !== idx) }))}
-                                                                        className="w-8 h-8 rounded-full flex items-center justify-center border-none cursor-pointer"
-                                                                        style={{ background: 'rgba(0,0,0,0.04)', color: 'rgba(26,26,26,0.55)' }}
-                                                                    >
-                                                                        <X size={14} strokeWidth={2.5} />
-                                                                    </button>
-                                                                </div>
-
-                                                                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                                                                    <div>
-                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">APPLIES TO</p>
-                                                                        <select
-                                                                            value={t.variationIndex == null ? '' : String(t.variationIndex)}
-                                                                            onChange={e =>
-                                                                                setProduct(p => ({
-                                                                                    ...p,
-                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) =>
-                                                                                        i === idx ? { ...tt, variationIndex: e.target.value === '' ? null : Number(e.target.value) } : tt
-                                                                                    ),
-                                                                                }))
-                                                                            }
-                                                                            className="w-full rounded-[14px] px-4 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
-                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
-                                                                        >
-                                                                            <option value="">All variants</option>
-                                                                            {(product.variations || []).map((v, i) => (
-                                                                                <option key={i} value={String(i)}>
-                                                                                    Variant #{i + 1} — {labelFor(v)}
-                                                                                </option>
-                                                                            ))}
-                                                                        </select>
-                                                                    </div>
-                                                                    <div>
-                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">MIN QTY</p>
-                                                                        <input
-                                                                            type="number"
-                                                                            value={t.minQuantity}
-                                                                            onChange={e =>
-                                                                                setProduct(p => ({
-                                                                                    ...p,
-                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) => (i === idx ? { ...tt, minQuantity: e.target.value } : tt)),
-                                                                                }))
-                                                                            }
-                                                                            className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
-                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
-                                                                        />
-                                                                    </div>
-                                                                    <div>
-                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">MAX QTY</p>
-                                                                        <input
-                                                                            type="number"
-                                                                            placeholder="Optional"
-                                                                            value={t.maxQuantity}
-                                                                            onChange={e =>
-                                                                                setProduct(p => ({
-                                                                                    ...p,
-                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) => (i === idx ? { ...tt, maxQuantity: e.target.value } : tt)),
-                                                                                }))
-                                                                            }
-                                                                            className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
-                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
-                                                                        />
-                                                                    </div>
-                                                                    <div>
-                                                                        <p className="text-[10px] font-bold text-[#1A1A1A]/30 tracking-widest mb-2">UNIT PRICE ({product.currency})</p>
-                                                                        <input
-                                                                            type="number"
-                                                                            placeholder="0.00"
-                                                                            value={t.unitPrice}
-                                                                            onChange={e =>
-                                                                                setProduct(p => ({
-                                                                                    ...p,
-                                                                                    pricingTiers: (p.pricingTiers || []).map((tt, i) =>
-                                                                                        i === idx ? { ...tt, unitPrice: e.target.value, currency: p.currency || 'USD' } : tt
-                                                                                    ),
-                                                                                }))
-                                                                            }
-                                                                            className="w-full rounded-[14px] px-5 py-3 text-[13px] font-medium text-[#1A1A1A]/78 outline-none"
-                                                                            style={{ background: 'rgba(255,255,255,0.65)', border: '0.5px solid rgba(0,0,0,0.07)' }}
-                                                                        />
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        );
-                                                    })}
                                                 </div>
                                             )}
                                         </div>
