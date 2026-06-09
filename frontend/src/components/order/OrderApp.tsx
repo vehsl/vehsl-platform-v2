@@ -254,6 +254,17 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
                   <span>Back To Explore</span>
                 </button>
               )}
+              {isSeller && activeTab === "warehouse" && (
+                <button
+                  onClick={() => {
+                    if (typeof window !== "undefined") window.location.assign("/orders");
+                  }}
+                  className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/60 bg-white/70 px-3.5 py-2 text-[12px] font-bold text-[#1A1A1A]/70 shadow-[0_1px_3px_rgba(0,0,0,0.05)] transition hover:text-[#1A1A1A] hover:bg-white/85"
+                >
+                  <ArrowLeft size={14} strokeWidth={2.5} />
+                  <span>Back To Dashboard</span>
+                </button>
+              )}
               <h1 className="text-[32px] sm:text-[38px] md:text-[46px] font-black tracking-tight text-[#1A1A1A] leading-[1.05]">
                 {activeTab === "orders" ? "Orders" : "Storage"}
               </h1>
