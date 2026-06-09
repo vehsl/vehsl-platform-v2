@@ -1476,6 +1476,138 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                         )}
                     </div>
 
+                    <div className="space-y-5">
+                        <div>
+                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CURRENCY</p>
+                            <div className="flex flex-wrap gap-2">
+                                {['USD', 'EUR', 'GBP', 'CNY'].map(cur => (
+                                    <button
+                                        key={cur}
+                                        onClick={() =>
+                                            setProduct(p => ({
+                                                ...p,
+                                                currency: cur,
+                                                pricingTiers: (p.pricingTiers || []).map(t => ({ ...t, currency: cur })),
+                                            }))
+                                        }
+                                        className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                        style={{
+                                            background: product.currency === cur ? 'rgba(1,113,227,0.08)' : 'transparent',
+                                            borderColor: product.currency === cur ? 'rgba(1,113,227,0.25)' : 'rgba(0,0,0,0.07)',
+                                            color: product.currency === cur ? '#0171E3' : 'rgba(26,26,26,0.42)',
+                                        }}
+                                    >
+                                        {cur}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div>
+                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CATEGORY</p>
+                            <div className="space-y-3">
+                                <input
+                                    type="text"
+                                    placeholder="Search categories..."
+                                    value={categoryQuery}
+                                    onChange={(e) => { setCategoryQuery(e.target.value); setShowAllCategories(false); }}
+                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                />
+                                {categoryOptions.length ? (() => {
+                                    const q = categoryQuery.trim().toLowerCase();
+                                    const filtered = q ? categoryOptions.filter((c) => c.name.toLowerCase().includes(q)) : categoryOptions;
+                                    const visible = showAllCategories ? filtered : filtered.slice(0, 24);
+                                    const selectedLabel = (product.category || '').trim();
+                                    return (
+                                        <div
+                                            className="rounded-[22px] p-4 sm:p-5"
+                                            style={{ background: 'rgba(255,255,255,0.42)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                        >
+                                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
+                                                <div>
+                                                    <p className="text-[12px] font-bold text-[#1A1A1A]/58">
+                                                        {q ? `Search results (${filtered.length})` : 'Popular categories'}
+                                                    </p>
+                                                    <p className="text-[11px] font-medium text-[#1A1A1A]/32 mt-1">
+                                                        Pick the best fit so buyers can find your listing faster.
+                                                    </p>
+                                                </div>
+                                                {selectedLabel ? (
+                                                    <div
+                                                        className="inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-bold"
+                                                        style={{ background: 'rgba(1,113,227,0.08)', border: '0.5px solid rgba(1,113,227,0.18)', color: '#0171E3' }}
+                                                    >
+                                                        Selected: {selectedLabel}
+                                                    </div>
+                                                ) : null}
+                                            </div>
+
+                                            <div className="flex flex-wrap gap-2.5">
+                                                {visible.map(cat => (
+                                                    <button
+                                                        key={cat.id}
+                                                        onClick={() =>
+                                                            setProduct(p => {
+                                                                const same = p.categoryId === cat.id;
+                                                                return { ...p, category: same ? '' : cat.name, categoryId: same ? null : cat.id };
+                                                            })
+                                                        }
+                                                        className="px-4 py-2 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                                        style={{
+                                                            background: product.categoryId === cat.id ? 'linear-gradient(135deg, rgba(1,113,227,0.14), rgba(1,113,227,0.06))' : 'rgba(255,255,255,0.7)',
+                                                            borderColor: product.categoryId === cat.id ? 'rgba(1,113,227,0.22)' : 'rgba(0,0,0,0.06)',
+                                                            color: product.categoryId === cat.id ? '#0171E3' : 'rgba(26,26,26,0.58)',
+                                                            boxShadow: product.categoryId === cat.id ? '0 8px 18px rgba(1,113,227,0.08)' : '0 1px 0 rgba(255,255,255,0.6) inset',
+                                                        }}
+                                                    >
+                                                        {cat.name}
+                                                    </button>
+                                                ))}
+                                                {!showAllCategories && filtered.length > 24 ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowAllCategories(true)}
+                                                        className="px-4 py-2 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
+                                                        style={{
+                                                            background: 'rgba(0,0,0,0.03)',
+                                                            borderColor: 'rgba(0,0,0,0.07)',
+                                                            color: 'rgba(26,26,26,0.48)',
+                                                        }}
+                                                    >
+                                                        Show {filtered.length - 24} more
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    );
+                                })() : categoryLoading ? (
+                                    <div
+                                        className="rounded-[22px] px-5 py-4 text-[12px] font-semibold text-[#1A1A1A]/30"
+                                        style={{ background: 'rgba(255,255,255,0.42)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                    >
+                                        Loading categories…
+                                    </div>
+                                ) : (
+                                    <div
+                                        className="w-full space-y-3 rounded-[22px] p-4"
+                                        style={{ background: 'rgba(255,255,255,0.42)', border: '0.5px solid rgba(0,0,0,0.06)' }}
+                                    >
+                                        <span className="text-[12px] font-semibold text-[#1A1A1A]/30">No categories found.</span>
+                                        <input
+                                            type="text"
+                                            placeholder="Enter category"
+                                            value={product.category}
+                                            onChange={e => setProduct(p => ({ ...p, category: e.target.value, categoryId: null }))}
+                                            className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
+                                            style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
                     {/* ── Optional details ── */}
                     <div>
                         <button
@@ -1502,106 +1634,6 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
                                     className="overflow-hidden"
                                 >
                                     <div className="pt-5 space-y-5">
-                                        {/* Currency */}
-                                        <div>
-                                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CURRENCY</p>
-                                            <div className="flex flex-wrap gap-2">
-                                                {['USD', 'EUR', 'GBP', 'CNY'].map(cur => (
-                                                    <button
-                                                        key={cur}
-                                                        onClick={() =>
-                                                            setProduct(p => ({
-                                                                ...p,
-                                                                currency: cur,
-                                                                pricingTiers: (p.pricingTiers || []).map(t => ({ ...t, currency: cur })),
-                                                            }))
-                                                        }
-                                                        className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
-                                                        style={{
-                                                            background: product.currency === cur ? 'rgba(1,113,227,0.08)' : 'transparent',
-                                                            borderColor: product.currency === cur ? 'rgba(1,113,227,0.25)' : 'rgba(0,0,0,0.07)',
-                                                            color: product.currency === cur ? '#0171E3' : 'rgba(26,26,26,0.42)',
-                                                        }}
-                                                    >
-                                                        {cur}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-
-                                        {/* Category */}
-                                        <div>
-                                            <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">CATEGORY</p>
-                                            <div className="space-y-3">
-                                                <input
-                                                    type="text"
-                                                    placeholder="Search categories..."
-                                                    value={categoryQuery}
-                                                    onChange={(e) => { setCategoryQuery(e.target.value); setShowAllCategories(false); }}
-                                                    className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
-                                                    style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
-                                                />
-                                                <div className="flex flex-wrap gap-2">
-                                                {categoryOptions.length ? (() => {
-                                                    const q = categoryQuery.trim().toLowerCase();
-                                                    const filtered = q ? categoryOptions.filter((c) => c.name.toLowerCase().includes(q)) : categoryOptions;
-                                                    const visible = showAllCategories ? filtered : filtered.slice(0, 24);
-                                                    return (
-                                                        <>
-                                                            {visible.map(cat => (
-                                                        <button
-                                                            key={cat.id}
-                                                            onClick={() =>
-                                                                setProduct(p => {
-                                                                    const same = p.categoryId === cat.id;
-                                                                    return { ...p, category: same ? '' : cat.name, categoryId: same ? null : cat.id };
-                                                                })
-                                                            }
-                                                            className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
-                                                            style={{
-                                                                background: product.categoryId === cat.id ? 'rgba(1,113,227,0.08)' : 'transparent',
-                                                                borderColor: product.categoryId === cat.id ? 'rgba(1,113,227,0.25)' : 'rgba(0,0,0,0.07)',
-                                                                color: product.categoryId === cat.id ? '#0171E3' : 'rgba(26,26,26,0.42)',
-                                                            }}
-                                                        >
-                                                            {cat.name}
-                                                        </button>
-                                                            ))}
-                                                            {!showAllCategories && filtered.length > 24 ? (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setShowAllCategories(true)}
-                                                                    className="px-3 py-1.5 rounded-full text-[12px] font-semibold transition-all duration-200 cursor-pointer border"
-                                                                    style={{
-                                                                        background: 'rgba(0,0,0,0.02)',
-                                                                        borderColor: 'rgba(0,0,0,0.07)',
-                                                                        color: 'rgba(26,26,26,0.42)',
-                                                                    }}
-                                                                >
-                                                                    Show {filtered.length - 24} more
-                                                                </button>
-                                                            ) : null}
-                                                        </>
-                                                    );
-                                                })() : categoryLoading ? (
-                                                    <span className="text-[12px] font-semibold text-[#1A1A1A]/30">Loading categories…</span>
-                                                ) : (
-                                                    <div className="w-full space-y-2">
-                                                        <span className="text-[12px] font-semibold text-[#1A1A1A]/30">No categories found.</span>
-                                                        <input
-                                                            type="text"
-                                                            placeholder="Enter category"
-                                                            value={product.category}
-                                                            onChange={e => setProduct(p => ({ ...p, category: e.target.value, categoryId: null }))}
-                                                            className="w-full rounded-[14px] px-5 py-3.5 text-[14px] font-medium text-[#1A1A1A]/78 placeholder-[#1A1A1A]/18 outline-none"
-                                                            style={{ background: 'rgba(0,0,0,0.028)', border: '0.5px solid rgba(0,0,0,0.07)' }}
-                                                        />
-                                                    </div>
-                                                )}
-                                                </div>
-                                            </div>
-                                        </div>
-
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <div>
                                                 <p className="text-[11px] font-bold text-[#1A1A1A]/35 tracking-widest mb-3">SKU</p>
