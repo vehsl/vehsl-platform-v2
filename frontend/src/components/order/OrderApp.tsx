@@ -30,19 +30,28 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
     try {
       const params = new URLSearchParams(window.location.search);
       const tab = (params.get("tab") || "").toLowerCase();
-      if (tab === "warehouse") setActiveTab("warehouse");
+      if (tab === "warehouse" && isSeller) setActiveTab("warehouse");
       if (tab === "orders") setActiveTab("orders");
     } catch {}
-  }, [mounted]);
+  }, [mounted, isSeller]);
 
   useEffect(() => {
     if (!mounted) return;
     try {
       const url = new URL(window.location.href);
-      url.searchParams.set("tab", activeTab);
+      if (isSeller) {
+        url.searchParams.set("tab", activeTab);
+      } else {
+        url.searchParams.delete("tab");
+      }
       window.history.replaceState(null, "", url.toString());
     } catch {}
-  }, [activeTab, mounted]);
+  }, [activeTab, mounted, isSeller]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (!isSeller && activeTab !== "orders") setActiveTab("orders");
+  }, [mounted, isSeller, activeTab]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -210,17 +219,19 @@ function AppInner({ initialOrderId }: { initialOrderId?: string }) {
               <Package size={11} strokeWidth={2.5} />
               <span className="hidden sm:inline">{isSeller ? "Dashboard" : "Orders"}</span>
             </button>
-            <button
-              onClick={() => setActiveTab("warehouse")}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full transition-all duration-250 text-[11px] font-bold ${
-                activeTab === "warehouse"
-                  ? "bg-white/80 text-[#1A1A1A]/80 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_0_0_0.5px_rgba(0,0,0,0.04)]"
-                  : "text-[#1A1A1A]/35 hover:text-[#1A1A1A]/55"
-              }`}
-            >
-              <Warehouse size={11} strokeWidth={2.5} />
-              <span className="hidden sm:inline">Storage</span>
-            </button>
+            {isSeller && (
+              <button
+                onClick={() => setActiveTab("warehouse")}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full transition-all duration-250 text-[11px] font-bold ${
+                  activeTab === "warehouse"
+                    ? "bg-white/80 text-[#1A1A1A]/80 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_0_0_0.5px_rgba(0,0,0,0.04)]"
+                    : "text-[#1A1A1A]/35 hover:text-[#1A1A1A]/55"
+                }`}
+              >
+                <Warehouse size={11} strokeWidth={2.5} />
+                <span className="hidden sm:inline">Storage</span>
+              </button>
+            )}
           </div>
           <SettingsPopover />
         </div>
