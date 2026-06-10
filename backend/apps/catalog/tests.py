@@ -131,6 +131,83 @@ class ListingRequestFlowTests(TestCase):
         p = Product.objects.get(id=lr.created_product_id)
         self.assertEqual(p.status, Product.Status.ACTIVE)
 
+    def test_admin_patch_listing_request_syncs_created_product(self):
+        lr = ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Test Category",
+            product_name="P3b",
+            company_name="Seller Co",
+            description="old desc",
+            monthly_capacity="100 / month",
+            currency="USD",
+            unit_price="10.00",
+            moq=5,
+            stage=ListingRequest.Stage.INSPECTION,
+            compliance_verified=True,
+            inspected=True,
+            product_meta={
+                **self._required_meta(),
+                "sku": "OLD-SKU",
+                "detail_config": {"specifications": [{"title": "Size", "items": [{"label": "Width", "value": "10"}]}]},
+                "variations": [{"sku": "VAR-1", "attributes": {"Color": "Blue"}}],
+                "pricing_tiers": [{"variation": None, "min_quantity": 5, "max_quantity": None, "unit_price": "10.00", "currency": "USD"}],
+            },
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
+        self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/publish/", {}, format="json")
+        lr.refresh_from_db()
+        product = Product.objects.get(id=lr.created_product_id)
+
+        patch_payload = {
+            "product_name": "Updated Product",
+            "company_name": "Updated Co",
+            "description": "new desc",
+            "monthly_capacity": "250 / month",
+            "currency": "EUR",
+            "unit_price": "14.50",
+            "moq": 12,
+            "sku": "NEW-SKU",
+            "hs_code": "7777.88",
+            "origin_country": "DE",
+            "origin_region": "BE",
+            "origin_city": "Berlin",
+            "lead_time_days": 9,
+            "weight_grams": 1500,
+            "ship_time_min_days": 4,
+            "ship_time_max_days": 8,
+            "sample_available": True,
+            "sample_ship_days": 6,
+            "ip_protection_level": "high",
+            "trademark_registration_number": "TM-999",
+            "detail_config": {"specifications": [{"title": "Material", "items": [{"label": "Shell", "value": "Steel"}]}]},
+            "variations": '[{"sku":"VAR-2","attributes":{"Color":"Red"}}]',
+            "pricing_tiers": '[{"variation":null,"min_quantity":12,"max_quantity":null,"unit_price":"13.75","currency":"EUR"}]',
+        }
+        res = self.client.patch(f"/api/v1/admin/listing-requests/{lr.id}/", patch_payload, format="json")
+        self.assertEqual(res.status_code, 200)
+
+        lr.refresh_from_db()
+        product.refresh_from_db()
+        self.assertEqual(lr.product_name, "Updated Product")
+        self.assertEqual(lr.company_name, "Updated Co")
+        self.assertEqual(lr.currency, "EUR")
+        self.assertEqual(str(lr.unit_price), "14.50")
+        self.assertEqual(product.name, "Updated Product")
+        self.assertEqual(product.currency, "EUR")
+        self.assertEqual(str(product.price), "14.50")
+        self.assertEqual(product.sku, "NEW-SKU")
+        self.assertEqual(product.hs_code, "7777.88")
+        self.assertEqual(product.origin_location.get("country"), "DE")
+        self.assertEqual(product.lead_time_days, 9)
+        self.assertEqual(product.sample_available, True)
+        self.assertEqual(product.ip_protection_level, "high")
+        self.assertEqual(product.detail_config.get("monthly_capacity"), "250 / month")
+        self.assertEqual(product.variations.filter(deleted_at__isnull=True).count(), 1)
+        self.assertEqual(product.pricing_tiers.filter(deleted_at__isnull=True).count(), 1)
+
     def test_needs_changes_resets_flags_and_blocks_verify_until_resubmitted(self):
         lr = ListingRequest.objects.create(
             seller=self.seller,

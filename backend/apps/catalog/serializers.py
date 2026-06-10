@@ -696,9 +696,14 @@ class AdminListingRequestSerializer(ListingRequestSerializer):
     documents_attached = serializers.SerializerMethodField()
 
     class Meta(ListingRequestSerializer.Meta):
-        fields = ["seller_id", "seller_email", "seller_label", "missing_fields", "required_documents", "documents_attached"] + list(
-            ListingRequestSerializer.Meta.fields
-        )
+        fields = [
+            "seller_id",
+            "seller_email",
+            "seller_label",
+            "missing_fields",
+            "required_documents",
+            "documents_attached",
+        ] + list(ListingRequestSerializer.Meta.fields)
 
     def get_seller_label(self, obj: ListingRequest):
         seller = getattr(obj, "seller", None)
@@ -753,6 +758,19 @@ class AdminListingRequestSerializer(ListingRequestSerializer):
         except Exception:
             count = 0
         return count
+
+
+class AdminListingRequestDetailSerializer(AdminListingRequestSerializer):
+    created_product_detail = serializers.SerializerMethodField()
+
+    class Meta(AdminListingRequestSerializer.Meta):
+        fields = ["created_product_detail"] + list(AdminListingRequestSerializer.Meta.fields)
+
+    def get_created_product_detail(self, obj: ListingRequest):
+        p = getattr(obj, "created_product", None)
+        if not p:
+            return None
+        return ProductSerializer(p, context=self.context).data
 
 
 class ListingRequestCreateSerializer(serializers.Serializer):

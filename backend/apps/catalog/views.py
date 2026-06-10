@@ -39,6 +39,7 @@ from .serializers import (
     AdminProductListSerializer,
     AdminProductWriteSerializer,
     AdminListingRequestSerializer,
+    AdminListingRequestDetailSerializer,
     CategorySerializer,
     ComplianceRuleSerializer,
     InboundRequestSerializer,
@@ -94,7 +95,7 @@ def _ensure_seed_categories():
             )
 
 
-def _create_product_from_listing_request(lr: ListingRequest) -> Product:
+def _apply_listing_request_to_product(lr: ListingRequest, p: Product) -> Product:
     category = lr.category
     if category is None:
         category = (
@@ -105,17 +106,17 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
     if category is None:
         raise ValueError("No categories available to assign product.")
 
-    p = Product.objects.create(
-        seller=lr.seller,
-        category=category,
-        name=lr.product_name,
-        title=lr.product_name,
-        description=lr.description or "",
-        currency=(lr.currency or "USD").upper(),
-        price=lr.unit_price,
-        status=Product.Status.ACTIVE,
-        vehsl_rating=lr.rating,
-    )
+    p.seller = lr.seller
+    p.category = category
+    p.name = (lr.product_name or "").strip() or p.name
+    p.title = (lr.product_name or "").strip() or p.title or p.name
+    p.description = lr.description or ""
+    p.currency = (lr.currency or "USD").upper()
+    p.price = lr.unit_price
+    p.vehsl_rating = lr.rating
+    if not getattr(p, "status", None):
+        p.status = Product.Status.ACTIVE
+
     try:
         meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
         sku = str(meta.get("sku") or "").strip()
@@ -127,10 +128,8 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
         variations_in = meta.get("variations") if isinstance(meta.get("variations"), list) else []
         tiers_in = meta.get("pricing_tiers") if isinstance(meta.get("pricing_tiers"), list) else []
 
-        if sku:
-            p.sku = sku[:64]
-        if hs_code:
-            p.hs_code = hs_code[:32]
+        p.sku = sku[:64] if sku else ""
+        p.hs_code = hs_code[:32] if hs_code else ""
         if ip_level and ip_level in {c[0] for c in Product.IpProtectionLevel.choices}:
             p.ip_protection_level = ip_level
 
@@ -140,6 +139,8 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
                 "region": str(origin_location.get("region") or "").strip(),
                 "city": str(origin_location.get("city") or "").strip(),
             }
+        else:
+            p.origin_location = {}
 
         def as_int(v, default=None):
             try:
@@ -177,12 +178,16 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
             merged_cfg["moq"] = int(lr.moq or 1)
         except Exception:
             merged_cfg["moq"] = 1
-        if (lr.company_name or "").strip():
-            merged_cfg.setdefault("company_name", (lr.company_name or "").strip())
-        if (lr.monthly_capacity or "").strip():
-            merged_cfg.setdefault("monthly_capacity", (lr.monthly_capacity or "").strip())
+        merged_cfg["company_name"] = (lr.company_name or "").strip()
+        merged_cfg["monthly_capacity"] = (lr.monthly_capacity or "").strip()
+        merged_cfg["trademark_registration_number"] = trademark_reg[:128]
         p.detail_config = merged_cfg
+        p.full_clean()
         p.save()
+
+        now_ts = timezone.now()
+        ProductVariation.objects.filter(product=p, deleted_at__isnull=True).update(deleted_at=now_ts)
+        PricingTier.objects.filter(product=p, deleted_at__isnull=True).update(deleted_at=now_ts)
 
         created_variations: list[ProductVariation] = []
         if isinstance(variations_in, list) and variations_in:
@@ -255,6 +260,7 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
                 defaults={"unit_price": lr.unit_price},
             )
 
+        Trademark.objects.filter(product=p, deleted_at__isnull=True).update(deleted_at=now_ts)
         if trademark_reg:
             Trademark.objects.create(
                 seller=lr.seller,
@@ -264,6 +270,12 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
             )
     except Exception:
         pass
+
+    return p
+
+
+def _sync_product_media_from_listing_request(lr: ListingRequest, p: Product) -> None:
+    ProductMedia.objects.filter(product=p, deleted_at__isnull=True).update(deleted_at=timezone.now())
 
     photos = list(lr.photos.all())
     img_pos = 0
@@ -288,6 +300,32 @@ def _create_product_from_listing_request(lr: ListingRequest) -> Product:
                 position=doc_pos,
             )
             doc_pos += 1
+
+
+def _create_product_from_listing_request(lr: ListingRequest) -> Product:
+    category = lr.category
+    if category is None:
+        category = (
+            Category.objects.filter(deleted_at__isnull=True)
+            .order_by("display_order", "sort_order", "name", "id")
+            .first()
+        )
+    if category is None:
+        raise ValueError("No categories available to assign product.")
+
+    p = Product.objects.create(
+        seller=lr.seller,
+        category=category,
+        name=lr.product_name,
+        title=lr.product_name,
+        description=lr.description or "",
+        currency=(lr.currency or "USD").upper(),
+        price=lr.unit_price,
+        status=Product.Status.ACTIVE,
+        vehsl_rating=lr.rating,
+    )
+    _apply_listing_request_to_product(lr, p)
+    _sync_product_media_from_listing_request(lr, p)
 
     return p
 
@@ -1400,7 +1438,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         missing_fields_by_id = {int(obj.id): _listing_request_missing_required_product_fields(obj)}
         documents_attached_by_id = {int(obj.id): _listing_request_non_image_attachment_count(obj)}
         return Response(
-            AdminListingRequestSerializer(
+            AdminListingRequestDetailSerializer(
                 obj,
                 context={
                     "request": request,
@@ -1410,6 +1448,33 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 },
             ).data
         )
+
+    def partial_update(self, request, pk=None, *args, **kwargs):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        ser = ListingRequestUpdateSerializer(lr, data=request.data, partial=True, context={"request": request})
+        ser.is_valid(raise_exception=True)
+        lr = ser.save()
+
+        if lr.created_product_id and lr.created_product:
+            try:
+                _apply_listing_request_to_product(lr, lr.created_product)
+            except Exception:
+                pass
+
+        audit(
+            request.user,
+            action="admin_listing_request_updated",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"fields": sorted(list(request.data.keys()))[:80], "created_product_id": str(lr.created_product_id or "")},
+        )
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
+
+    def update(self, request, pk=None, *args, **kwargs):
+        return self.partial_update(request, pk=pk, *args, **kwargs)
 
     @action(detail=True, methods=["post"], url_path="review")
     def review(self, request, pk=None):
@@ -1468,7 +1533,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 target_id=str(lr.id),
                 payload={"decision": "approve", "rating": float(rating)},
             )
-            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+            return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
         meta = lr.product_meta if isinstance(lr.product_meta, dict) else {}
         if message:
@@ -1500,7 +1565,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 target_id=str(lr.id),
                 payload={"decision": "needs_changes"},
             )
-            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+            return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
         lr.rating = None
         lr.stage = ListingRequest.Stage.DONE
@@ -1512,7 +1577,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             target_id=str(lr.id),
             payload={"decision": "reject"},
         )
-        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="publish")
     def publish(self, request, pk=None):
@@ -1523,7 +1588,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         if lr.created_product_id:
             lr.stage = ListingRequest.Stage.DONE
             lr.save(update_fields=["stage", "updated_at"])
-            return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+            return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
         if lr.stage != ListingRequest.Stage.LIVE:
             return Response({"detail": "Listing must be approved (Live stage) before publish."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1587,7 +1652,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             target_id=str(lr.id),
             payload={"stage": lr.stage, "created_product_id": str(p.id), "seller_id": str(lr.seller_id)},
         )
-        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="verify_compliance")
     def verify_compliance(self, request, pk=None):
@@ -1645,7 +1710,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             target_id=str(lr.id),
             payload={"verified": verified, "inbound_created": inbound_created, "inbound_id": str(inbound_id or "")},
         )
-        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="assign_inspector")
     def assign_inspector(self, request, pk=None):
@@ -1671,7 +1736,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             target_id=str(lr.id),
             payload={"inspector_id": str(inspector.id)},
         )
-        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="complete_inspection")
     def complete_inspection(self, request, pk=None):
@@ -1694,7 +1759,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             target_id=str(lr.id),
             payload={"inspected": inspected},
         )
-        return Response(AdminListingRequestSerializer(lr, context={"request": request}).data)
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="complete_inbound")
     def complete_inbound(self, request, pk=None):
