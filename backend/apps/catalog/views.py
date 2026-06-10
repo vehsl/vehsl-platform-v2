@@ -37,6 +37,7 @@ from .models import (
 )
 from .serializers import (
     AdminProductListSerializer,
+    AdminProductDetailSerializer,
     AdminProductWriteSerializer,
     AdminListingRequestSerializer,
     AdminListingRequestDetailSerializer,
@@ -1775,20 +1776,44 @@ class ProductVariationViewSet(viewsets.ModelViewSet):
         if product_id:
             qs = qs.filter(product_id=product_id)
         user = self.request.user
-        if user.is_authenticated and user.account_type == "seller":
+        if not user or not user.is_authenticated:
+            return qs.filter(product__status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+        if getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin":
+            return qs
+        if user.account_type == "seller" or user.role == "seller":
             return qs.filter(product__seller=user)
         return qs.filter(product__status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:
-            return [permissions.IsAuthenticated(), IsSeller()]
+            return [permissions.IsAuthenticated(), (IsSeller | IsAdmin)]
         return [permissions.AllowAny()]
 
     def perform_create(self, serializer):
         product = serializer.validated_data["product"]
-        if product.seller_id != self.request.user.id:
+        user = self.request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and product.seller_id != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
         serializer.save()
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and getattr(obj.product, "seller_id", None) != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and getattr(obj.product, "seller_id", None) != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        obj.deleted_at = timezone.now()
+        obj.save(update_fields=["deleted_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class PricingTierViewSet(viewsets.ModelViewSet):
@@ -1800,20 +1825,44 @@ class PricingTierViewSet(viewsets.ModelViewSet):
         if product_id:
             qs = qs.filter(product_id=product_id)
         user = self.request.user
-        if user.is_authenticated and user.account_type == "seller":
+        if not user or not user.is_authenticated:
+            return qs.filter(product__status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+        if getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin":
+            return qs
+        if user.account_type == "seller" or user.role == "seller":
             return qs.filter(product__seller=user)
         return qs.filter(product__status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:
-            return [permissions.IsAuthenticated(), IsSeller()]
+            return [permissions.IsAuthenticated(), (IsSeller | IsAdmin)]
         return [permissions.AllowAny()]
 
     def perform_create(self, serializer):
         product = serializer.validated_data["product"]
-        if product.seller_id != self.request.user.id:
+        user = self.request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and product.seller_id != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
         serializer.save()
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and getattr(obj.product, "seller_id", None) != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and getattr(obj.product, "seller_id", None) != user.id:
+            raise permissions.PermissionDenied("You do not own this product.")
+        obj.deleted_at = timezone.now()
+        obj.save(update_fields=["deleted_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ProductMediaViewSet(viewsets.ModelViewSet):
@@ -1826,18 +1875,24 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
         if product_id:
             qs = qs.filter(product_id=product_id)
         user = self.request.user
-        if user.is_authenticated and user.account_type == "seller":
+        if not user or not user.is_authenticated:
+            return qs.filter(product__status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
+        if getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin":
+            return qs
+        if user.account_type == "seller" or user.role == "seller":
             return qs.filter(product__seller=user)
         return qs.filter(product__status__in=[Product.Status.APPROVED, Product.Status.ACTIVE])
 
     def get_permissions(self):
-        if self.action in {"create", "update", "partial_update", "destroy"}:
-            return [permissions.IsAuthenticated(), IsSeller()]
+        if self.action in {"create", "update", "partial_update", "destroy", "upload"}:
+            return [permissions.IsAuthenticated(), (IsSeller | IsAdmin)]
         return [permissions.AllowAny()]
 
     def perform_create(self, serializer):
         product = serializer.validated_data["product"]
-        if product.seller_id != self.request.user.id:
+        user = self.request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and product.seller_id != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
         serializer.save()
 
@@ -1851,7 +1906,9 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         obj: ProductMedia = self.get_object()
-        if getattr(obj.product, "seller_id", None) != request.user.id:
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and getattr(obj.product, "seller_id", None) != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
 
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data or {})
@@ -1920,7 +1977,9 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         obj: ProductMedia = self.get_object()
-        if getattr(obj.product, "seller_id", None) != request.user.id:
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and getattr(obj.product, "seller_id", None) != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
         obj.deleted_at = timezone.now()
         obj.save(update_fields=["deleted_at"])
@@ -1945,7 +2004,10 @@ class ProductMediaViewSet(viewsets.ModelViewSet):
         product = Product.objects.filter(id=pid, deleted_at__isnull=True).select_related("seller").first()
         if not product:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        if product.seller_id != request.user.id:
+        
+        user = request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and product.seller_id != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
 
         media_type = (request.data.get("media_type") or ProductMedia.MediaType.DOCUMENT).strip()
@@ -2026,30 +2088,37 @@ class WarehouseStockViewSet(viewsets.ModelViewSet):
             except Exception:
                 qs = qs.none()
         user = self.request.user
-        if user.is_authenticated and (user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin"):
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin":
             return qs
-        if user.is_authenticated and getattr(user, "account_type", "") == "seller":
+        if getattr(user, "account_type", "") == "seller" or getattr(user, "role", "") == "seller":
             return qs.filter(seller=user)
         return qs.none()
 
     def get_permissions(self):
         if self.action in {"list", "retrieve"}:
             return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated(), IsSeller()]
+        return [permissions.IsAuthenticated(), (IsSeller | IsAdmin)]
 
     def perform_create(self, serializer):
         user = self.request.user
         product = serializer.validated_data["product"]
-        if product.seller_id != user.id:
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        if not is_admin and product.seller_id != user.id:
             raise permissions.PermissionDenied("You do not own this product.")
-        serializer.save(seller=user)
+        
+        seller = product.seller if is_admin else user
+        serializer.save(seller=seller)
 
     def perform_update(self, serializer):
         user = self.request.user
         obj = serializer.instance
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
         product = serializer.validated_data.get("product") or getattr(obj, "product", None)
-        if not product or getattr(product, "seller_id", None) != user.id:
-            raise permissions.PermissionDenied("You do not own this product.")
+        if not is_admin:
+            if not product or getattr(product, "seller_id", None) != user.id:
+                raise permissions.PermissionDenied("You do not own this product.")
         serializer.save()
 
 
@@ -2059,19 +2128,29 @@ class TrademarkViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = Trademark.objects.select_related("product", "seller").filter(deleted_at__isnull=True)
         user = self.request.user
-        if user.is_authenticated and user.account_type == "seller":
-            return qs.filter(seller=user)
-        if user.is_authenticated and (user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin"):
+        if not user or not user.is_authenticated:
+            return qs.none()
+        if user.is_staff or user.is_superuser or getattr(user, "role", None) == "admin":
             return qs
+        if getattr(user, "account_type", "") == "seller" or getattr(user, "role", "") == "seller":
+            return qs.filter(seller=user)
         return qs.none()
 
     def get_permissions(self):
         if self.action in {"list", "retrieve"}:
             return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated(), IsSeller()]
+        return [permissions.IsAuthenticated(), (IsSeller | IsAdmin)]
 
     def perform_create(self, serializer):
-        serializer.save(seller=self.request.user)
+        user = self.request.user
+        is_admin = bool(getattr(user, "is_staff", False) or getattr(user, "role", None) == "admin")
+        product = serializer.validated_data.get("product")
+        
+        seller = user
+        if is_admin and product:
+            seller = product.seller
+            
+        serializer.save(seller=seller)
 
 
 class ComplianceRuleViewSet(viewsets.ModelViewSet):
@@ -2127,6 +2206,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         qs = (
             Product.objects.filter(deleted_at__isnull=True)
             .select_related("category", "category__parent", "seller", "seller__seller_profile")
+            .prefetch_related("media", "variations", "pricing_tiers")
             .annotate(
                 stock_units=Coalesce(Sum("samples__available_quantity"), Value(0), output_field=IntegerField()),
                 vehsl_rating_num=Coalesce("vehsl_rating", Value(0), output_field=DecimalField(max_digits=4, decimal_places=2)),
@@ -2181,6 +2261,8 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                     ),
                     distinct=True,
                 ),
+                review_count=Count("reviews", filter=Q(reviews__deleted_at__isnull=True), distinct=True),
+                average_rating=Avg("reviews__rating", filter=Q(reviews__deleted_at__isnull=True)),
             )
             .annotate(
                 missing_hs_code=Case(
@@ -2351,8 +2433,10 @@ class AdminProductViewSet(viewsets.GenericViewSet):
 
     def retrieve(self, request, pk=None):
         threshold = self._low_stock_threshold()
-        obj = self.get_queryset().get(pk=pk)
-        return Response(AdminProductListSerializer(obj, context={"low_stock_threshold": threshold}).data)
+        obj = self.get_queryset().filter(id=pk).first()
+        if not obj:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(AdminProductDetailSerializer(obj, context={"request": request, "low_stock_threshold": threshold}).data)
 
     def create(self, request):
         threshold = self._low_stock_threshold()
@@ -2370,16 +2454,25 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             return Response({"seller_email": "Seller not found."}, status=status.HTTP_400_BAD_REQUEST)
 
         category = Category.objects.get(id=data["category_id"])
-        product = Product(
-            seller=seller,
-            category=category,
-            name=(data.get("name") or "").strip(),
-            currency=data.get("currency") or "USD",
-            price=data.get("price"),
-            status=data.get("status") or Product.Status.ACTIVE,
-            hs_code=(data.get("hs_code") or "").strip(),
-            vehsl_rating=data.get("vehsl_rating"),
-        )
+        
+        # Create product with all fields from serializer
+        product_fields = {
+            "seller": seller,
+            "category": category,
+        }
+        
+        # Map fields from validated_data to product model
+        for field in [
+            "name", "title", "sku", "hs_code", "description", "currency", "price", 
+            "status", "origin_location", "lead_time_days", "weight_grams", 
+            "ship_time_min_days", "ship_time_max_days", "sample_available", 
+            "sample_ship_days", "vehsl_rating", "seller_rating", 
+            "ip_protection_level", "detail_config", "fulfillment_mode", "seller_stock_units"
+        ]:
+            if field in data:
+                product_fields[field] = data[field]
+
+        product = Product(**product_fields)
         product.full_clean()
         product.save()
 
@@ -2410,24 +2503,26 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         if not product:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        ser = AdminProductWriteSerializer(data=request.data, partial=True)
+        ser = AdminProductWriteSerializer(product, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        if "name" in data:
-            product.name = (data.get("name") or "").strip()
         if "category_id" in data:
             product.category_id = data["category_id"]
-        if "currency" in data:
-            product.currency = data.get("currency") or "USD"
-        if "price" in data:
-            product.price = data.get("price")
-        if "status" in data:
-            product.status = data.get("status")
-        if "hs_code" in data:
-            product.hs_code = (data.get("hs_code") or "").strip()
-        if "vehsl_rating" in data:
-            product.vehsl_rating = data.get("vehsl_rating")
+        
+        # Map all other fields from validated_data to product model
+        for field in [
+            "name", "title", "sku", "hs_code", "description", "currency", "price", 
+            "status", "origin_location", "lead_time_days", "weight_grams", 
+            "ship_time_min_days", "ship_time_max_days", "sample_available", 
+            "sample_ship_days", "vehsl_rating", "seller_rating", 
+            "ip_protection_level", "detail_config", "fulfillment_mode", "seller_stock_units"
+        ]:
+            if field in data:
+                val = data[field]
+                if isinstance(val, str):
+                    val = val.strip()
+                setattr(product, field, val)
 
         product.full_clean()
         product.save()
@@ -2494,7 +2589,8 @@ class AdminProductViewSet(viewsets.GenericViewSet):
         except Exception:
             OrderItem = None
 
-        product = AdminProductListSerializer(obj, context={"low_stock_threshold": threshold}).data
+        product = AdminProductDetailSerializer(obj, context={"request": request, "low_stock_threshold": threshold}).data
+        product_full = ProductSerializer(obj, context={"request": request}).data
 
         media = []
         try:
@@ -2643,6 +2739,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             required_documents = set()
 
         listing_request = None
+        listing_request_detail = None
         try:
             lr = ListingRequest.objects.filter(created_product_id=obj.id).order_by("-created_at").first()
             if lr:
@@ -2654,11 +2751,48 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                     "updated_at": lr.updated_at,
                     "folder_uuid": str(getattr(lr, "folder_uuid", "") or ""),
                 }
+                listing_request_detail = AdminListingRequestDetailSerializer(lr, context={"request": request}).data
         except Exception:
             listing_request = None
+            listing_request_detail = None
+
+        trademarks = []
+        try:
+            trademarks = TrademarkSerializer(
+                Trademark.objects.filter(product_id=obj.id, deleted_at__isnull=True).order_by("-created_at")[:50],
+                many=True,
+                context={"request": request},
+            ).data
+        except Exception:
+            trademarks = []
+
+        missing_fields: list[str] = []
+        origin = getattr(obj, "origin_location", None) if isinstance(getattr(obj, "origin_location", None), dict) else {}
+        detail_cfg = getattr(obj, "detail_config", None) if isinstance(getattr(obj, "detail_config", None), dict) else {}
+        if not str(getattr(obj, "sku", "") or "").strip():
+            missing_fields.append("sku")
+        if not str(getattr(obj, "hs_code", "") or "").strip():
+            missing_fields.append("hs_code")
+        if not str(getattr(obj, "description", "") or "").strip():
+            missing_fields.append("description")
+        if not str(origin.get("country") or "").strip():
+            missing_fields.append("origin_country")
+        if int(getattr(obj, "lead_time_days", 0) or 0) <= 0:
+            missing_fields.append("lead_time_days")
+        if int(getattr(obj, "weight_grams", 0) or 0) <= 0:
+            missing_fields.append("weight_grams")
+        if int(getattr(obj, "ship_time_min_days", 0) or 0) <= 0 or int(getattr(obj, "ship_time_max_days", 0) or 0) <= 0:
+            missing_fields.append("ship_time_range_days")
+        if images_count <= 0:
+            missing_fields.append("images")
+        if hero_images <= 0:
+            missing_fields.append("hero_image")
+        if not pricing_tiers and not detail_cfg.get("moq"):
+            missing_fields.append("pricing")
 
         payload = {
             "product": product,
+            "product_full": product_full,
             "seller": {
                 "id": obj.seller_id,
                 "email": getattr(obj.seller, "email", "") if getattr(obj, "seller", None) else "",
@@ -2668,6 +2802,7 @@ class AdminProductViewSet(viewsets.GenericViewSet):
             "media": media,
             "variations": variations,
             "pricing_tiers": pricing_tiers,
+            "trademarks": trademarks,
             "warehouse_stocks": warehouse_stocks,
             "compliance_rules": compliance_rules,
             "sample": sample,
@@ -2689,8 +2824,10 @@ class AdminProductViewSet(viewsets.GenericViewSet):
                 "missing_certifications": bool(docs_required_count > 0 or required_documents),
                 "destination_rules_count": destination_rules_count,
                 "legal_review_status": legal_review_status,
+                "missing_fields": missing_fields,
             },
             "listing_request": listing_request,
+            "listing_request_detail": listing_request_detail,
             "links": {
                 "listing_pipeline": f"/admin/management/listings?product={obj.id}",
                 "inspector_portal": f"/admin/inspector?product={obj.id}",

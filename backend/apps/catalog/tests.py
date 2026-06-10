@@ -208,6 +208,44 @@ class ListingRequestFlowTests(TestCase):
         self.assertEqual(product.variations.filter(deleted_at__isnull=True).count(), 1)
         self.assertEqual(product.pricing_tiers.filter(deleted_at__isnull=True).count(), 1)
 
+    def test_admin_product_detail_returns_full_product_and_source_listing_request(self):
+        lr = ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Test Category",
+            product_name="P3c",
+            company_name="Source Co",
+            description="source description",
+            monthly_capacity="300 / month",
+            currency="USD",
+            unit_price="10.00",
+            moq=7,
+            stage=ListingRequest.Stage.INSPECTION,
+            compliance_verified=True,
+            inspected=True,
+            product_meta={
+                **self._required_meta(),
+                "sku": "DETAIL-SKU",
+                "detail_config": {"specifications": [{"title": "Build", "items": [{"label": "Material", "value": "Steel"}]}]},
+                "pricing_tiers": [{"variation": None, "min_quantity": 7, "max_quantity": None, "unit_price": "9.50", "currency": "USD"}],
+            },
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
+        self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/publish/", {}, format="json")
+        lr.refresh_from_db()
+
+        res = self.client.get(f"/api/v1/admin/products/{lr.created_product_id}/detail/")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("product_full", body)
+        self.assertIn("listing_request_detail", body)
+        self.assertIn("readiness", body)
+        self.assertEqual(body["product_full"]["sku"], "DETAIL-SKU")
+        self.assertEqual(body["listing_request_detail"]["id"], lr.id)
+        self.assertIn("missing_fields", body["readiness"])
+
     def test_needs_changes_resets_flags_and_blocks_verify_until_resubmitted(self):
         lr = ListingRequest.objects.create(
             seller=self.seller,

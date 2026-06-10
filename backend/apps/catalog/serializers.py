@@ -1143,6 +1143,81 @@ class ListingRequestUpdateSerializer(ListingRequestCreateSerializer):
         return instance
 
 
+class AdminProductDetailSerializer(ProductSerializer):
+    category_slug = serializers.CharField(source="category.slug", read_only=True)
+    category_display = serializers.SerializerMethodField()
+    stock_units = serializers.IntegerField(read_only=True)
+    admin_status = serializers.SerializerMethodField()
+    images_count = serializers.IntegerField(read_only=True)
+    missing_hs_code = serializers.IntegerField(read_only=True)
+    missing_media = serializers.IntegerField(read_only=True)
+    missing_hero_image = serializers.IntegerField(read_only=True)
+    needs_compliance = serializers.BooleanField(read_only=True)
+    compliance_score = serializers.IntegerField(read_only=True)
+    compliance_rules_count = serializers.IntegerField(read_only=True)
+    compliance_docs_required_count = serializers.IntegerField(read_only=True)
+    compliance_destination_rules_count = serializers.IntegerField(read_only=True)
+    legal_review_status = serializers.SerializerMethodField()
+
+    class Meta(ProductSerializer.Meta):
+        fields = list(ProductSerializer.Meta.fields) + [
+            "category_slug",
+            "category_display",
+            "stock_units",
+            "admin_status",
+            "images_count",
+            "missing_hs_code",
+            "missing_media",
+            "missing_hero_image",
+            "needs_compliance",
+            "compliance_score",
+            "compliance_rules_count",
+            "compliance_docs_required_count",
+            "compliance_destination_rules_count",
+            "legal_review_status",
+        ]
+
+    def get_category_display(self, obj: Product):
+        cat = getattr(obj, "category", None)
+        if not cat:
+            return ""
+        parts = []
+        cur = cat
+        i = 0
+        while cur is not None and i < 3:
+            nm = (getattr(cur, "name", "") or "").strip()
+            if nm:
+                parts.append(nm)
+            cur = getattr(cur, "parent", None)
+            i += 1
+        parts = list(reversed(parts))
+        return " / ".join(parts)
+
+    def get_admin_status(self, obj: Product):
+        threshold = int(self.context.get("low_stock_threshold") or 50)
+        stock = getattr(obj, "stock_units", None)
+        try:
+            stock_val = int(stock)
+        except Exception:
+            stock_val = 0
+
+        if (obj.status or "").lower() in {"pending", "draft", "rejected"}:
+            return "review"
+        if stock_val <= 0:
+            return "out"
+        if 0 < stock_val < threshold:
+            return "low_stock"
+        return "active"
+
+    def get_legal_review_status(self, obj: Product):
+        s = (getattr(obj, "status", "") or "").lower()
+        if s in {"draft", "pending", "rejected"}:
+            return "needs_review"
+        if s == "archived":
+            return "archived"
+        return "ok"
+
+
 class AdminProductListSerializer(serializers.ModelSerializer):
     seller_name = serializers.CharField(read_only=True)
     category_name = serializers.CharField(source="category.name", read_only=True)
@@ -1236,17 +1311,41 @@ class AdminProductListSerializer(serializers.ModelSerializer):
         return "ok"
 
 
-class AdminProductWriteSerializer(serializers.Serializer):
-    name = serializers.CharField(required=True, allow_blank=False)
-    category_id = serializers.IntegerField(required=True)
+class AdminProductWriteSerializer(serializers.ModelSerializer):
+    category_id = serializers.IntegerField(required=False)
     seller_id = serializers.IntegerField(required=False)
     seller_email = serializers.EmailField(required=False, allow_blank=True)
-    currency = serializers.CharField(required=False, allow_blank=True)
-    price = serializers.DecimalField(max_digits=12, decimal_places=2, required=True)
-    status = serializers.ChoiceField(choices=Product.Status.choices, required=False)
-    hs_code = serializers.CharField(required=False, allow_blank=True)
-    vehsl_rating = serializers.DecimalField(max_digits=4, decimal_places=2, required=False, allow_null=True)
     stock_units = serializers.IntegerField(required=False, min_value=0)
+
+    class Meta:
+        model = Product
+        fields = [
+            "name",
+            "title",
+            "sku",
+            "hs_code",
+            "description",
+            "category_id",
+            "seller_id",
+            "seller_email",
+            "currency",
+            "price",
+            "status",
+            "origin_location",
+            "lead_time_days",
+            "weight_grams",
+            "ship_time_min_days",
+            "ship_time_max_days",
+            "sample_available",
+            "sample_ship_days",
+            "vehsl_rating",
+            "seller_rating",
+            "ip_protection_level",
+            "detail_config",
+            "fulfillment_mode",
+            "seller_stock_units",
+            "stock_units",
+        ]
 
     def validate_currency(self, value: str):
         val = (value or "").strip()
@@ -1257,7 +1356,8 @@ class AdminProductWriteSerializer(serializers.Serializer):
         return val.upper()
 
     def validate(self, attrs):
-        if not getattr(self, "partial", False):
+        # Only check seller if creating a new product (not partial update)
+        if not self.instance and not getattr(self, "partial", False):
             seller_id = attrs.get("seller_id")
             seller_email = (attrs.get("seller_email") or "").strip().lower()
             if not seller_id and not seller_email:
@@ -1265,7 +1365,7 @@ class AdminProductWriteSerializer(serializers.Serializer):
 
         if "category_id" in attrs:
             category_id = attrs.get("category_id")
-            if not Category.objects.filter(id=category_id).exists():
+            if category_id and not Category.objects.filter(id=category_id).exists():
                 raise serializers.ValidationError({"category_id": "Category not found."})
         return attrs
 

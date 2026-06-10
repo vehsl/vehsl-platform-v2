@@ -4921,7 +4921,7 @@ export function AdminProducts() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
               transition={{ duration: 0.2 }}
-              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              className="w-full max-w-[1180px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[90vh] overflow-y-auto"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-4 mb-6">
@@ -4945,144 +4945,562 @@ export function AdminProducts() {
               )}
 
               {!detailLoading && detailData && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
-                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Product ID</div>
-                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.id}</div>
-                    </div>
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
-                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">SKU / HS</div>
-                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.sku || "—"} · {detailData?.product?.hs_code || "—"}</div>
-                    </div>
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
-                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Price / Stock</div>
-                      <div className="text-[0.875rem] text-foreground/80">
-                        {formatMoney(detailData?.product?.currency, detailData?.product?.price)} · {formatNumber(detailData?.product?.stock_units)} units
-                      </div>
-                    </div>
-                  </div>
+                (() => {
+                  const productFull = detailData?.product_full || {};
+                  const listingRequestDetail = detailData?.listing_request_detail || null;
+                  const detailConfig = productFull?.detail_config && typeof productFull.detail_config === "object" ? productFull.detail_config : {};
+                  const specifications = Array.isArray(detailConfig?.specifications) ? detailConfig.specifications : [];
+                  const images = Array.isArray(productFull?.images) ? productFull.images : [];
+                  const media = Array.isArray(detailData?.media) ? detailData.media : [];
+                  const mediaImages = media.filter((m: any) => String(m?.media_type || "").toLowerCase() === "image" && String(m?.url || "").trim());
+                  const mediaDocs = media.filter((m: any) => String(m?.media_type || "").toLowerCase() === "document" && String(m?.url || "").trim());
+                  const videos = media.filter((m: any) => String(m?.media_type || "").toLowerCase() === "video" && String(m?.url || "").trim());
+                  const missingFields = Array.isArray(detailData?.readiness?.missing_fields) ? detailData.readiness.missing_fields : [];
+                  const variants = Array.isArray(detailData?.variations) ? detailData.variations : [];
+                  const pricingTiers = Array.isArray(detailData?.pricing_tiers) ? detailData.pricing_tiers : [];
+                  const trademarks = Array.isArray(detailData?.trademarks) ? detailData.trademarks : [];
+                  const origin = productFull?.origin_location && typeof productFull.origin_location === "object" ? productFull.origin_location : {};
+                  const requestChangesFromProduct = () => {
+                    setDetailOpen(false);
+                    openFeedbackModal(detailData?.product_full || detailData?.product);
+                  };
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Media</div>
-                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
-                        {formatNumber(detailData?.readiness?.images_count)} images · {detailData?.readiness?.has_hero_image ? "Hero OK" : "Missing hero"}
-                      </div>
-                      <div className="flex gap-2 flex-wrap">
-                        {(detailData?.media || []).slice(0, 6).map((m: any) => (
-                          <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground">
-                            {m.media_type}
-                          </a>
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-2 mt-4">
-                        <BounceButton
-                          variant="ghost"
-                          size="sm"
-                          icon={<Upload size={14} />}
-                          onClick={requestingMedia ? undefined : requestMedia}
-                          className={requestingMedia ? "opacity-70 pointer-events-none" : ""}
-                        >
-                          Request upload
-                        </BounceButton>
-                      </div>
-                    </div>
+                  return (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className={`rounded-[24px] border p-4 ${missingFields.length ? "border-amber-200/70 bg-amber-50/80" : "border-emerald-200/70 bg-emerald-50/80"}`}>
+                          <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-foreground/55">
+                            {missingFields.length ? <AlertTriangle size={14} className="text-amber-600" /> : <CheckCircle2 size={14} className="text-emerald-600" />}
+                            Missing fields
+                          </div>
+                          <div className="mt-2 text-[0.9375rem] font-semibold text-foreground/85">
+                            {missingFields.length ? `${missingFields.length} item${missingFields.length === 1 ? "" : "s"} need admin review` : "No missing fields flagged"}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {missingFields.length ? missingFields.map((field: string) => (
+                              <span key={field} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-white/80 border border-amber-200/80 text-amber-700">
+                                {prettyFieldLabel(field)}
+                              </span>
+                            )) : (
+                              <span className="text-[0.75rem] text-foreground/60">Admin can still review and ask seller for changes if the information looks weak or inconsistent.</span>
+                            )}
+                          </div>
+                        </div>
 
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Compliance</div>
-                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
-                        {detailData?.readiness?.needs_compliance ? "Needs compliance" : "Looks ready"} · HS {detailData?.readiness?.missing_hs_code ? "missing" : "ok"}
+                        <div className="rounded-[24px] border border-sky-200/70 bg-sky-50/80 p-4">
+                          <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-foreground/55">
+                            <FileText size={14} className="text-sky-600" />
+                            Compliance and docs
+                          </div>
+                          <div className="mt-2 text-[0.9375rem] font-semibold text-foreground/85">
+                            {detailData?.readiness?.needs_compliance ? "Needs compliance review" : "Ready for admin review"}
+                          </div>
+                          <div className="mt-2 text-[0.75rem] text-foreground/65">
+                            Legal review: {displayAdminValue(detailData?.readiness?.legal_review_status)} · Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)} · Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <BounceButton
+                              variant="ghost"
+                              size="sm"
+                              icon={<Upload size={14} />}
+                              onClick={requestingMedia ? undefined : requestMedia}
+                              className={requestingMedia ? "opacity-70 pointer-events-none" : ""}
+                            >
+                              Request upload
+                            </BounceButton>
+                            <BounceButton variant="ghost" size="sm" icon={<Bell size={14} />} onClick={requestChangesFromProduct}>
+                              Ask seller
+                            </BounceButton>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex gap-2 flex-wrap">
-                        {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
-                          <span key={r.id} className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground">
-                            {r.rule_type}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="mt-4 space-y-1 text-[0.75rem] text-muted-foreground/70">
-                        <div>Legal review: {detailData?.readiness?.legal_review_status || "—"}</div>
-                        <div>Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)}</div>
-                        <div>Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}</div>
-                        {detailData?.listing_request?.id && (
-                          <div>Listing request: #{detailData?.listing_request?.id} · {detailData?.listing_request?.stage}</div>
-                        )}
-                      </div>
-                      <div className="flex gap-2 flex-wrap mt-4">
-                        {detailData?.links?.listing_pipeline && (
-                          <a
-                            href={detailData.links.listing_pipeline}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
-                          >
-                            Listing pipeline
-                          </a>
-                        )}
-                        {detailData?.links?.trade_compliance && (
-                          <a
-                            href={detailData.links.trade_compliance}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
-                          >
-                            Trade compliance
-                          </a>
-                        )}
-                        {detailData?.links?.inspector_portal && (
-                          <a
-                            href={detailData.links.inspector_portal}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
-                          >
-                            Inspector portal
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
 
-                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Inventory & Quality</div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="rounded-2xl bg-card border border-border/30 p-4">
-                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Samples</div>
-                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample?.available_quantity)} available</div>
-                      </div>
-                      <div className="rounded-2xl bg-card border border-border/30 p-4">
-                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Sample requests</div>
-                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample_requests?.total)} total</div>
-                      </div>
-                      <div className="rounded-2xl bg-card border border-border/30 p-4">
-                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Quality</div>
-                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.quality?.passed)} passed · {formatNumber(detailData?.quality?.failed)} failed</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Recent orders</div>
-                    {(detailData?.recent_orders || []).length === 0 ? (
-                      <div className="text-[0.8125rem] text-muted-foreground/60">No recent orders.</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {(detailData?.recent_orders || []).map((o: any) => (
-                          <div key={`${o.order_id}-${o.order_created_at}`} className="flex items-center justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
-                            <div className="min-w-0">
-                              <div className="text-[0.8125rem] text-foreground/80 truncate">Order #{o.order_id} · {o.buyer}</div>
-                              <div className="text-[0.6875rem] text-muted-foreground/50">{o.order_status}</div>
+                      <div className="rounded-[28px] border border-border/30 bg-[linear-gradient(135deg,rgba(1,113,227,0.08),rgba(255,255,255,0.92))] p-5 sm:p-6">
+                        <div className="flex flex-col xl:flex-row gap-5 xl:items-center xl:justify-between">
+                          <div className="flex gap-4 min-w-0">
+                            <div className="w-24 h-24 rounded-[22px] overflow-hidden border border-white/70 bg-white/80 shadow-sm shrink-0">
+                              {images[0] ? (
+                                <img src={images[0]} alt={String(productFull?.name || "product")} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full grid place-items-center text-muted-foreground/35">
+                                  <Package size={24} />
+                                </div>
+                              )}
                             </div>
-                            <div className="text-[0.8125rem] text-muted-foreground/70 whitespace-nowrap">
-                              {formatNumber(o.quantity)} × {o.unit_price}
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-[1.1rem] sm:text-[1.25rem] font-bold text-foreground/90">
+                                  {productFull?.name || detailData?.product?.name || "Untitled product"}
+                                </div>
+                                <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-white/80 border border-white/80 text-foreground/70">
+                                  {String(productFull?.status || detailData?.product?.status || "—").toUpperCase()}
+                                </span>
+                                {listingRequestDetail?.id && (
+                                  <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-violet-50 border border-violet-200/80 text-violet-700">
+                                    From listing request #{listingRequestDetail.id}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 text-[0.875rem] text-muted-foreground/75">
+                                {detailData?.seller?.name || "—"} · {productFull?.category_name || detailData?.product?.category_name || "—"}
+                              </div>
+                              <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[0.75rem]">
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Price</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatMoney(productFull?.currency, productFull?.price)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Stock</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatNumber(detailData?.product?.stock_units)} units</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Currency</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.currency)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Vehsl rating</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.vehsl_rating)}</div>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        ))}
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[0.75rem] min-w-full xl:min-w-[360px]">
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">Product ID</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.id)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">SKU</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.sku)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">HS code</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.hs_code)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">Images</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{formatNumber(images.length)}</div>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </div>
+
+                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
+                        <div className="space-y-5 xl:sticky xl:top-0">
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Review summary</div>
+                            <div className="space-y-3 text-[0.8125rem]">
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Seller</span>
+                                <span className="text-right text-foreground/80">{displayAdminValue(detailData?.seller?.name)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Email</span>
+                                <span className="text-right text-foreground/80 break-all">{displayAdminValue(detailData?.seller?.email)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Category</span>
+                                <span className="text-right text-foreground/80">{displayAdminValue(productFull?.category_name)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Fulfillment</span>
+                                <span className="text-right text-foreground/80">{displayAdminValue(productFull?.fulfillment_mode)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Listing request</span>
+                                <span className="text-right text-foreground/80">
+                                  {listingRequestDetail?.id ? `#${listingRequestDetail.id} · ${listingRequestDetail.stage}` : "None"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Inventory and quality</div>
+                            <div className="grid grid-cols-1 gap-3">
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Samples</div>
+                                <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample?.available_quantity)} available</div>
+                              </div>
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Sample requests</div>
+                                <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample_requests?.total)} total</div>
+                              </div>
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Quality</div>
+                                <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.quality?.passed)} passed · {formatNumber(detailData?.quality?.failed)} failed</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Compliance</div>
+                            <div className="text-[0.8125rem] text-foreground/80">
+                              {detailData?.readiness?.needs_compliance ? "Needs compliance review" : "Looks ready"} · HS {detailData?.readiness?.missing_hs_code ? "missing" : "ok"}
+                            </div>
+                            <div className="mt-3 space-y-1 text-[0.75rem] text-muted-foreground/70">
+                              <div>Legal review: {displayAdminValue(detailData?.readiness?.legal_review_status)}</div>
+                              <div>Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)}</div>
+                              <div>Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}</div>
+                            </div>
+                            <div className="mt-4 flex gap-2 flex-wrap">
+                              {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
+                                <span key={r.id} className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground">
+                                  {r.rule_type}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="xl:col-span-2 space-y-5">
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-[0.75rem] font-semibold text-foreground/75">Media and files</div>
+                              <div className="text-[0.75rem] text-muted-foreground/65">
+                                {formatNumber(images.length)} images · {formatNumber(mediaDocs.length)} docs · {formatNumber(videos.length)} videos
+                              </div>
+                            </div>
+
+                            <div className="mt-4">
+                              <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Images</div>
+                              <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                                {images.length ? images.map((url: string, idx: number) => (
+                                  <a key={`${url}-${idx}`} href={url} target="_blank" rel="noreferrer" className="group block rounded-[20px] overflow-hidden border border-border/30 bg-background/70">
+                                    <img src={url} alt={`Product image ${idx + 1}`} className="w-full h-32 object-cover group-hover:scale-[1.02] transition-transform duration-200" />
+                                    <div className="px-3 py-2 text-[0.6875rem] text-muted-foreground/70 truncate">Product image {idx + 1}</div>
+                                  </a>
+                                )) : mediaImages.length ? mediaImages.map((m: any) => (
+                                  <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="group block rounded-[20px] overflow-hidden border border-border/30 bg-background/70">
+                                    <img src={m.url} alt={String(m.title || "Product image")} className="w-full h-32 object-cover group-hover:scale-[1.02] transition-transform duration-200" />
+                                    <div className="px-3 py-2 text-[0.6875rem] text-muted-foreground/70 truncate">{String(m.title || "Product image")}</div>
+                                  </a>
+                                )) : (
+                                  <div className="col-span-full rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No product images available.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Documents</div>
+                                <div className="mt-3 space-y-2">
+                                  {mediaDocs.length ? mediaDocs.map((m: any) => (
+                                    <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="block rounded-2xl border border-border/30 bg-background/60 px-4 py-3 text-[0.8125rem] text-foreground/80 hover:border-primary/30 hover:text-primary transition-colors">
+                                      <div className="font-semibold">{displayAdminValue(m?.title || m?.original_name || "Document")}</div>
+                                      <div className="mt-1 text-[0.6875rem] text-muted-foreground/60">{displayAdminValue(m?.content_type || "document")}</div>
+                                    </a>
+                                  )) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No documents uploaded.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Videos / extra media</div>
+                                <div className="mt-3 space-y-2">
+                                  {videos.length ? videos.map((m: any) => (
+                                    <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="block rounded-2xl border border-border/30 bg-background/60 px-4 py-3 text-[0.8125rem] text-foreground/80 hover:border-primary/30 hover:text-primary transition-colors">
+                                      <div className="font-semibold">{displayAdminValue(m?.title || "Video")}</div>
+                                      <div className="mt-1 text-[0.6875rem] text-muted-foreground/60">{displayAdminValue(m?.media_type)}</div>
+                                    </a>
+                                  )) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No extra media uploaded.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                            <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                              <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Core product info</div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[0.8125rem]">
+                                {[
+                                  ["Product ID", productFull?.id],
+                                  ["Category", productFull?.category_name],
+                                  ["SKU", productFull?.sku],
+                                  ["HS code", productFull?.hs_code],
+                                  ["Status", productFull?.status],
+                                  ["IP protection", productFull?.ip_protection_level],
+                                  ["Sample available", productFull?.sample_available],
+                                  ["Sample units", productFull?.sample_units],
+                                ].map(([label, value]) => (
+                                  <div key={String(label)} className="rounded-2xl bg-card border border-border/30 p-4">
+                                    <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">{label}</div>
+                                    <div className="text-[0.875rem] text-foreground/80">{displayAdminValue(value)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-4 rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Description</div>
+                                <div className="text-[0.875rem] text-foreground/80 whitespace-pre-wrap">
+                                  {displayAdminValue(productFull?.description)}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                              <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Supply, origin, and shipping</div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[0.8125rem]">
+                                {[
+                                  ["Price", formatMoney(productFull?.currency, productFull?.price)],
+                                  ["Available quantity", productFull?.quantity_available],
+                                  ["Lead time (days)", productFull?.lead_time_days],
+                                  ["Weight (grams)", productFull?.weight_grams],
+                                  ["Ship time min", productFull?.ship_time_min_days],
+                                  ["Ship time max", productFull?.ship_time_max_days],
+                                  ["Stock status", productFull?.stock_status],
+                                  ["Seller stock units", productFull?.seller_stock_units],
+                                ].map(([label, value]) => (
+                                  <div key={String(label)} className="rounded-2xl bg-card border border-border/30 p-4">
+                                    <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">{label}</div>
+                                    <div className="text-[0.875rem] text-foreground/80">{displayAdminValue(value)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-4 rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Origin</div>
+                                <div className="text-[0.875rem] text-foreground/80">
+                                  {[origin?.country, origin?.region, origin?.city].filter((item) => String(item || "").trim()).join(" · ") || "—"}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {(pricingTiers.length > 0 || variants.length > 0) && (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                              <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Quantity pricing</div>
+                                {pricingTiers.length ? (
+                                  <div className="overflow-hidden rounded-2xl border border-border/30">
+                                    <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-card text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                                      <div className="col-span-3">Min qty</div>
+                                      <div className="col-span-3">Max qty</div>
+                                      <div className="col-span-3">Unit price</div>
+                                      <div className="col-span-3">Variation</div>
+                                    </div>
+                                    <div className="divide-y divide-border/20 bg-background/50">
+                                      {pricingTiers.map((tier: any, idx: number) => (
+                                        <div key={`${tier?.id ?? idx}-${idx}`} className="grid grid-cols-12 gap-3 px-4 py-3 text-[0.8125rem] text-foreground/80">
+                                          <div className="col-span-3">{displayAdminValue(tier?.min_quantity)}</div>
+                                          <div className="col-span-3">{displayAdminValue(tier?.max_quantity)}</div>
+                                          <div className="col-span-3">{formatMoney(tier?.currency || productFull?.currency, tier?.unit_price)}</div>
+                                          <div className="col-span-3">{displayAdminValue(tier?.variation)}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No quantity pricing configured.
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Variants</div>
+                                {variants.length ? (
+                                  <div className="space-y-3">
+                                    {variants.map((variant: any) => (
+                                      <div key={variant.id} className="rounded-2xl bg-card border border-border/30 p-4">
+                                        <div className="text-[0.8125rem] font-semibold text-foreground/85">SKU: {displayAdminValue(variant?.sku)}</div>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          {Object.entries(variant?.attributes || {}).map(([key, value]) => (
+                                            <span key={`${key}-${value}`} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-muted/20 border border-border/30 text-foreground/70">
+                                              {prettyFieldLabel(key)}: {displayAdminValue(value)}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No variants configured.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {(specifications.length > 0 || trademarks.length > 0 || detailData?.warehouse_stocks?.length > 0) && (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                              <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Specifications</div>
+                                {specifications.length ? (
+                                  <div className="space-y-3">
+                                    {specifications.map((group: any, idx: number) => (
+                                      <div key={`${group?.title ?? idx}-${idx}`} className="rounded-2xl bg-card border border-border/30 p-4">
+                                        <div className="text-[0.8125rem] font-semibold text-foreground/85">{displayAdminValue(group?.title || group?.group || `Group ${idx + 1}`)}</div>
+                                        <div className="mt-2 space-y-1">
+                                          {(Array.isArray(group?.items) ? group.items : []).map((item: any, itemIdx: number) => (
+                                            <div key={`${item?.label ?? itemIdx}-${itemIdx}`} className="flex items-start justify-between gap-3 text-[0.75rem]">
+                                              <span className="text-muted-foreground/65">{displayAdminValue(item?.label)}</span>
+                                              <span className="text-right text-foreground/80">{displayAdminValue(item?.value)}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No specifications available.
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="space-y-5">
+                                <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Trademarks</div>
+                                  {trademarks.length ? (
+                                    <div className="space-y-3">
+                                      {trademarks.map((tm: any) => (
+                                        <div key={tm.id} className="rounded-2xl bg-card border border-border/30 p-4">
+                                          <div className="text-[0.8125rem] font-semibold text-foreground/85">{displayAdminValue(tm?.registration_number)}</div>
+                                          <div className="mt-1 text-[0.75rem] text-muted-foreground/65">Status: {displayAdminValue(tm?.status)}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No trademark records linked.
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Warehouse stock</div>
+                                  {detailData?.warehouse_stocks?.length ? (
+                                    <div className="space-y-3">
+                                      {detailData.warehouse_stocks.slice(0, 10).map((stock: any) => (
+                                        <div key={stock.id} className="rounded-2xl bg-card border border-border/30 p-4 text-[0.8125rem]">
+                                          <div className="font-semibold text-foreground/85">{displayAdminValue(stock?.warehouse_name || stock?.warehouse)}</div>
+                                          <div className="mt-1 text-muted-foreground/65">
+                                            Qty: {displayAdminValue(stock?.quantity_units)} · Reserved: {displayAdminValue(stock?.reserved_units)}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No warehouse stock rows available.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {listingRequestDetail && (
+                            <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75">Source listing request</div>
+                                  <div className="mt-1 text-[0.75rem] text-muted-foreground/60">
+                                    This lets admin compare the live product with the original seller submission.
+                                  </div>
+                                </div>
+                                <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-card border border-border/30 text-foreground/70">
+                                  #{listingRequestDetail.id} · {displayAdminValue(listingRequestDetail.stage)}
+                                </span>
+                              </div>
+                              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                {[
+                                  ["Request product", listingRequestDetail?.product_name],
+                                  ["Company", listingRequestDetail?.company_name],
+                                  ["MOQ", listingRequestDetail?.moq],
+                                  ["Request price", formatMoney(listingRequestDetail?.currency, listingRequestDetail?.unit_price)],
+                                ].map(([label, value]) => (
+                                  <div key={String(label)} className="rounded-2xl bg-card border border-border/30 p-4">
+                                    <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">{label}</div>
+                                    <div className="text-[0.875rem] text-foreground/80">{displayAdminValue(value)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                  <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Request images</div>
+                                  <div className="mt-2 grid grid-cols-2 gap-2">
+                                    {(listingRequestDetail?.photos || [])
+                                      .filter((p: any) => String(p?.content_type || "").toLowerCase().startsWith("image/"))
+                                      .slice(0, 6)
+                                      .map((p: any) => (
+                                        <a key={p.id} href={p.file_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-border/30">
+                                          <img src={p.file_url} alt={String(p.original_name || "request image")} className="w-full h-24 object-cover" />
+                                        </a>
+                                      ))}
+                                  </div>
+                                </div>
+                                <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                  <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Request missing fields</div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {Array.isArray(listingRequestDetail?.missing_fields) && listingRequestDetail.missing_fields.length ? listingRequestDetail.missing_fields.map((field: string) => (
+                                      <span key={field} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-amber-50 border border-amber-200/80 text-amber-700">
+                                        {prettyFieldLabel(field)}
+                                      </span>
+                                    )) : (
+                                      <span className="text-[0.8125rem] text-muted-foreground/60">None</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Recent orders</div>
+                            {(detailData?.recent_orders || []).length === 0 ? (
+                              <div className="text-[0.8125rem] text-muted-foreground/60">No recent orders.</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {(detailData?.recent_orders || []).map((o: any) => (
+                                  <div key={`${o.order_id}-${o.order_created_at}`} className="flex items-center justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
+                                    <div className="min-w-0">
+                                      <div className="text-[0.8125rem] text-foreground/80 truncate">Order #{o.order_id} · {o.buyer}</div>
+                                      <div className="text-[0.6875rem] text-muted-foreground/50">{o.order_status}</div>
+                                    </div>
+                                    <div className="text-[0.8125rem] text-muted-foreground/70 whitespace-nowrap">
+                                      {formatNumber(o.quantity)} × {o.unit_price}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <details className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-[0.75rem] font-semibold text-foreground/75">Raw data fallback</div>
+                                <div className="mt-1 text-[0.75rem] text-muted-foreground/60">Open if admin needs the exact API payload for investigation.</div>
+                              </div>
+                              <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/55">Expand</div>
+                            </summary>
+                            <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Product detail payload</div>
+                                <pre className="mt-2 text-[11px] leading-[1.45] text-foreground/80 whitespace-pre-wrap break-words">{JSON.stringify(detailData, null, 2)}</pre>
+                              </div>
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Serialized product</div>
+                                <pre className="mt-2 text-[11px] leading-[1.45] text-foreground/80 whitespace-pre-wrap break-words">{JSON.stringify(productFull, null, 2)}</pre>
+                              </div>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
               )}
             </motion.div>
           </motion.div>
