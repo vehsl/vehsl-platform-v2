@@ -1474,6 +1474,24 @@ export function AdminProducts() {
     return `${sym}${n.toFixed(2)}`;
   };
 
+  const prettyFieldLabel = (key: string) =>
+    (key || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (ch) => ch.toUpperCase());
+
+  const displayAdminValue = (value: any) => {
+    if (value == null || value === "") return "—";
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+    if (Array.isArray(value)) {
+      const clean = value
+        .map((item) => (typeof item === "string" || typeof item === "number" ? String(item).trim() : ""))
+        .filter(Boolean);
+      return clean.length ? clean.join(", ") : "—";
+    }
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  };
+
   const productStatusToPill = (s: string) => {
     const x = (s || "").toString().toLowerCase();
     if (x === "active") return { status: "success", label: "Active" };
@@ -1511,9 +1529,6 @@ export function AdminProducts() {
   const [approveRating, setApproveRating] = useState<string>("");
   const [approveSaving, setApproveSaving] = useState(false);
 
-  const [publishOpen, setPublishOpen] = useState(false);
-  const [publishId, setPublishId] = useState<number | null>(null);
-  const [publishRating, setPublishRating] = useState<string>("");
   const [publishSaving, setPublishSaving] = useState(false);
 
   const [readinessOpen, setReadinessOpen] = useState(false);
@@ -1523,6 +1538,13 @@ export function AdminProducts() {
   const [readinessRequiredDocs, setReadinessRequiredDocs] = useState<string[]>([]);
   const [readinessDocsAttached, setReadinessDocsAttached] = useState<number>(0);
   const [readinessSuggestedMessage, setReadinessSuggestedMessage] = useState<string>("");
+  const [readinessDetail, setReadinessDetail] = useState<any>(null);
+  const [readinessLoading, setReadinessLoading] = useState(false);
+  const [readinessError, setReadinessError] = useState<string>("");
+  const [readinessEditMode, setReadinessEditMode] = useState(false);
+  const [readinessSaving, setReadinessSaving] = useState(false);
+  const [readinessSaveError, setReadinessSaveError] = useState("");
+  const [readinessForm, setReadinessForm] = useState<any>(null);
 
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [categoryQuery, setCategoryQuery] = useState("");
@@ -1731,25 +1753,12 @@ export function AdminProducts() {
     const docsAttached = Number(lr?.documents_attached || 0) || 0;
     const needsDocs = requiredDocs.length > 0;
 
-    const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
-    const origin = meta?.origin_location && typeof meta.origin_location === "object" ? meta.origin_location : {};
-    const missing: string[] = [];
-    if (!String(meta?.sku || "").trim()) missing.push("sku");
-    if (!String(meta?.hs_code || "").trim()) missing.push("hs_code");
-    if (!String(origin?.country || "").trim()) missing.push("origin_country");
-    if (meta?.lead_time_days == null || meta?.lead_time_days === "") missing.push("lead_time_days");
-    if (meta?.weight_grams == null || meta?.weight_grams === "") missing.push("weight_grams");
-    if (meta?.ship_time_min_days == null || meta?.ship_time_min_days === "" || meta?.ship_time_max_days == null || meta?.ship_time_max_days === "") {
-      missing.push("ship_time_range_days");
-    }
-
     const needsInspection = !!lr?.inspector;
     const canPublish =
       !lr?.created_product_id &&
       String(lr?.stage || "").toLowerCase() === "live" &&
       !!lr?.compliance_verified &&
       (!needsInspection || !!lr?.inspected) &&
-      missing.length === 0 &&
       (!needsDocs || docsAttached > 0);
 
     if (!canPublish) {
@@ -1757,11 +1766,26 @@ export function AdminProducts() {
       return;
     }
 
+    if (publishSaving) return;
+    setPublishSaving(true);
     setActionError("");
     setActionSuccess("");
-    setPublishId(id);
-    setPublishRating("");
-    setPublishOpen(true);
+
+    try {
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      setActionSuccess("Published. Product created and listing request moved to Done.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      refreshProducts();
+    } catch (e: any) {
+      setActionError(e?.message || "Publish failed.");
+    } finally {
+      setPublishSaving(false);
+    }
   };
 
   const computeMissingFields = (lr: any): string[] => {
@@ -1778,6 +1802,62 @@ export function AdminProducts() {
       missing.push("ship_time_range_days");
     }
     return missing;
+  };
+
+  const buildReadinessForm = (detail: any) => {
+    const meta = detail?.product_meta && typeof detail.product_meta === "object" ? detail.product_meta : {};
+    const created = detail?.created_product_detail && typeof detail.created_product_detail === "object" ? detail.created_product_detail : {};
+    const detailConfig =
+      meta?.detail_config && typeof meta.detail_config === "object"
+        ? meta.detail_config
+        : created?.detail_config && typeof created.detail_config === "object"
+          ? created.detail_config
+          : {};
+    const origin =
+      meta?.origin_location && typeof meta.origin_location === "object"
+        ? meta.origin_location
+        : created?.origin_location && typeof created.origin_location === "object"
+          ? created.origin_location
+          : {};
+    const pricingTiers = Array.isArray(meta?.pricing_tiers)
+      ? meta.pricing_tiers
+      : Array.isArray(created?.pricing_tiers)
+        ? created.pricing_tiers.map((tier: any) => ({
+            variation: tier?.variation ?? null,
+            min_quantity: tier?.min_quantity ?? 1,
+            max_quantity: tier?.max_quantity ?? null,
+            unit_price: tier?.unit_price ?? "",
+            currency: tier?.currency || detail?.currency || "USD",
+          }))
+        : [];
+    const variations = Array.isArray(meta?.variations) ? meta.variations : [];
+
+    return {
+      product_name: (detail?.product_name || "").toString(),
+      company_name: (detail?.company_name || "").toString(),
+      category_id: detail?.category ? String(detail.category) : "",
+      description: (detail?.description || "").toString(),
+      currency: (detail?.currency || "USD").toString().toUpperCase(),
+      unit_price: detail?.unit_price != null ? String(detail.unit_price) : "",
+      moq: detail?.moq != null ? String(detail.moq) : "1",
+      sku: (meta?.sku || created?.sku || "").toString(),
+      hs_code: (meta?.hs_code || created?.hs_code || "").toString(),
+      origin_country: (origin?.country || "").toString(),
+      origin_region: (origin?.region || "").toString(),
+      origin_city: (origin?.city || "").toString(),
+      lead_time_days: meta?.lead_time_days ?? created?.lead_time_days ?? "",
+      weight_grams: meta?.weight_grams ?? created?.weight_grams ?? "",
+      ship_time_min_days: meta?.ship_time_min_days ?? created?.ship_time_min_days ?? "",
+      ship_time_max_days: meta?.ship_time_max_days ?? created?.ship_time_max_days ?? "",
+      sample_available: Boolean(meta?.sample_available ?? created?.sample_available),
+      sample_ship_days: meta?.sample_ship_days ?? created?.sample_ship_days ?? "",
+      monthly_capacity: (detail?.monthly_capacity || detailConfig?.monthly_capacity || "").toString(),
+      ip_protection_level: (meta?.ip_protection_level || created?.ip_protection_level || "").toString(),
+      trademark_registration_number: (meta?.trademark_registration_number || detailConfig?.trademark_registration_number || "").toString(),
+      pricing_tiers: JSON.stringify(pricingTiers, null, 2),
+      variations: JSON.stringify(variations, null, 2),
+      detail_config: JSON.stringify(detailConfig || {}, null, 2),
+    };
   };
 
   const openReadinessModal = (lr: any, title: string) => {
@@ -1801,7 +1881,88 @@ export function AdminProducts() {
     setReadinessRequiredDocs(requiredDocs);
     setReadinessDocsAttached(docsAttached);
     setReadinessSuggestedMessage(suggested);
+    setReadinessDetail(null);
+    setReadinessError("");
+    setReadinessLoading(true);
+    setReadinessEditMode(false);
+    setReadinessSaving(false);
+    setReadinessSaveError("");
+    setReadinessForm(null);
     setReadinessOpen(true);
+    (async () => {
+      try {
+        const data = await fetchJson(`/api/v1/admin/listing-requests/${id}/`);
+        setReadinessDetail(data);
+        setReadinessForm(buildReadinessForm(data));
+      } catch (e: any) {
+        setReadinessError(e?.message || "Failed to load full listing details.");
+      } finally {
+        setReadinessLoading(false);
+      }
+    })();
+  };
+
+  const saveReadinessEdits = async () => {
+    const id = Number(readinessDetail?.id || readinessId || 0);
+    if (!id || !readinessForm || readinessSaving) return;
+    setReadinessSaveError("");
+    setReadinessSaving(true);
+    try {
+      const parseOptionalJson = (raw: string, label: string) => {
+        const text = (raw || "").trim();
+        if (!text) return "";
+        try {
+          return JSON.stringify(JSON.parse(text));
+        } catch {
+          throw new Error(`${label} must be valid JSON.`);
+        }
+      };
+      const payload: any = {};
+      if ((readinessForm.product_name || "").trim()) payload.product_name = readinessForm.product_name.trim();
+      if ("company_name" in readinessForm) payload.company_name = (readinessForm.company_name || "").trim();
+      if (String(readinessForm.category_id || "").trim()) payload.category_id = Number(readinessForm.category_id);
+      if ("description" in readinessForm) payload.description = (readinessForm.description || "").trim();
+      if ("currency" in readinessForm) payload.currency = (readinessForm.currency || "USD").trim().toUpperCase();
+      if (String(readinessForm.unit_price || "").trim() !== "") payload.unit_price = Number(readinessForm.unit_price);
+      if (String(readinessForm.moq || "").trim() !== "") payload.moq = Number(readinessForm.moq);
+      payload.sku = (readinessForm.sku || "").trim();
+      payload.hs_code = (readinessForm.hs_code || "").trim();
+      payload.origin_country = (readinessForm.origin_country || "").trim();
+      payload.origin_region = (readinessForm.origin_region || "").trim();
+      payload.origin_city = (readinessForm.origin_city || "").trim();
+      if (String(readinessForm.lead_time_days || "").trim() !== "") payload.lead_time_days = Number(readinessForm.lead_time_days);
+      if (String(readinessForm.weight_grams || "").trim() !== "") payload.weight_grams = Number(readinessForm.weight_grams);
+      if (String(readinessForm.ship_time_min_days || "").trim() !== "") payload.ship_time_min_days = Number(readinessForm.ship_time_min_days);
+      if (String(readinessForm.ship_time_max_days || "").trim() !== "") payload.ship_time_max_days = Number(readinessForm.ship_time_max_days);
+      payload.sample_available = !!readinessForm.sample_available;
+      if (String(readinessForm.sample_ship_days || "").trim() !== "") payload.sample_ship_days = Number(readinessForm.sample_ship_days);
+      payload.monthly_capacity = (readinessForm.monthly_capacity || "").trim();
+      payload.ip_protection_level = (readinessForm.ip_protection_level || "").trim().toLowerCase();
+      payload.trademark_registration_number = (readinessForm.trademark_registration_number || "").trim();
+      payload.pricing_tiers = parseOptionalJson(readinessForm.pricing_tiers || "", "Pricing tiers");
+      payload.variations = parseOptionalJson(readinessForm.variations || "", "Variations");
+      payload.detail_config = (readinessForm.detail_config || "").trim()
+        ? JSON.parse(readinessForm.detail_config)
+        : {};
+
+      const updated = await fetchJson(`/api/v1/admin/listing-requests/${id}/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setReadinessDetail(updated);
+      setReadinessForm(buildReadinessForm(updated));
+      setReadinessEditMode(false);
+      setActionSuccess("Listing details updated successfully.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      refreshProducts();
+      await refreshStats();
+    } catch (e: any) {
+      setReadinessSaveError(e?.message || "Failed to update listing details.");
+    } finally {
+      setReadinessSaving(false);
+    }
   };
 
   const verifyCompliance = async (lr: any) => {
@@ -1885,41 +2046,6 @@ export function AdminProducts() {
     }
   };
 
-  const submitPublishModal = async () => {
-    const id = Number(publishId || 0);
-    if (!id) return;
-    if (publishSaving) return;
-    setPublishSaving(true);
-    try {
-      const raw = (publishRating || "").trim();
-      const body: any = {};
-      if (raw) {
-        const rating = Number(raw);
-        if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
-          setActionError("Rating must be between 0 and 5.");
-          return;
-        }
-        body.rating = rating;
-      }
-      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      setPublishOpen(false);
-      setPublishId(null);
-      setPublishRating("");
-      setActionSuccess("Published. Product created and listing request moved to Done.");
-      window.setTimeout(() => setActionSuccess(""), 2500);
-      refreshListingRequests();
-      refreshProducts();
-    } catch (e: any) {
-      setActionError(e?.message || "Publish failed.");
-    } finally {
-      setPublishSaving(false);
-    }
-  };
-
   const completeInspection = async (lr: any) => {
     const id = Number(lr?.id || 0);
     if (!id) return;
@@ -1936,6 +2062,24 @@ export function AdminProducts() {
       refreshListingRequests();
     } catch (e: any) {
       setActionError(e?.message || "Failed to complete inspection.");
+    }
+  };
+
+  const confirmPickupListingRequest = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/confirm_pickup/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      setActionSuccess("Sample pickup confirmed. Listing is now LIVE.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to confirm pickup.");
     }
   };
 
@@ -2702,93 +2846,6 @@ export function AdminProducts() {
           </motion.div>
         )}
 
-        {publishOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
-            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
-            onClick={(e) => {
-              if (e.target === e.currentTarget && !publishSaving) {
-                setPublishOpen(false);
-                setPublishId(null);
-                setPublishRating("");
-              }
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.97, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.98, y: 5 }}
-              transition={{ duration: 0.25 }}
-              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
-            >
-              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-[0.9375rem] font-bold text-foreground/85">Publish Listing</div>
-                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Create the marketplace product and finalize this request.</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (publishSaving) return;
-                    setPublishOpen(false);
-                    setPublishId(null);
-                    setPublishRating("");
-                  }}
-                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
-                >
-                  <X size={16} className="text-muted-foreground/70" />
-                </button>
-              </div>
-
-              <div className="p-6 space-y-4">
-                <div>
-                  <div className="text-[0.75rem] uppercase tracking-wide text-muted-foreground/60 mb-2">Rating (0–5)</div>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    max={5}
-                    step={0.1}
-                    value={publishRating}
-                    onChange={(e) => setPublishRating(e.target.value)}
-                    placeholder="Leave blank for default 4.8"
-                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30"
-                  />
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (publishSaving) return;
-                      setPublishOpen(false);
-                      setPublishId(null);
-                      setPublishRating("");
-                    }}
-                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void submitPublishModal()}
-                    disabled={publishSaving}
-                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
-                      publishSaving
-                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
-                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
-                    }`}
-                  >
-                    {publishSaving ? "Publishing…" : "Publish"}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-
         {readinessOpen && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -2805,6 +2862,13 @@ export function AdminProducts() {
                 setReadinessRequiredDocs([]);
                 setReadinessDocsAttached(0);
                 setReadinessSuggestedMessage("");
+                setReadinessDetail(null);
+                setReadinessLoading(false);
+                setReadinessError("");
+                setReadinessEditMode(false);
+                setReadinessSaving(false);
+                setReadinessSaveError("");
+                setReadinessForm(null);
               }
             }}
           >
@@ -2813,12 +2877,12 @@ export function AdminProducts() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.98, y: 5 }}
               transition={{ duration: 0.25 }}
-              className="w-full max-w-[680px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
+              className="w-full max-w-[1180px] max-h-[90vh] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden flex flex-col"
             >
               <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
                 <div>
-                  <div className="text-[0.9375rem] font-bold text-foreground/85">Publish readiness</div>
-                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">{readinessTitle || "Review what’s missing before publish."}</div>
+                  <div className="text-[1rem] font-bold text-foreground/90">Listing Request Details</div>
+                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">{readinessTitle || "Review product details, media, readiness, and seller submission data."}</div>
                 </div>
                 <button
                   type="button"
@@ -2830,6 +2894,13 @@ export function AdminProducts() {
                     setReadinessRequiredDocs([]);
                     setReadinessDocsAttached(0);
                     setReadinessSuggestedMessage("");
+                    setReadinessDetail(null);
+                    setReadinessLoading(false);
+                    setReadinessError("");
+                    setReadinessEditMode(false);
+                    setReadinessSaving(false);
+                    setReadinessSaveError("");
+                    setReadinessForm(null);
                   }}
                   className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
                 >
@@ -2837,29 +2908,727 @@ export function AdminProducts() {
                 </button>
               </div>
 
-              <div className="p-6 space-y-5">
+              <div className="flex-1 overflow-y-auto p-6 space-y-5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
-                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Missing fields</div>
-                    <div className="mt-2 text-[0.8125rem] text-foreground/80">
-                      {readinessMissing.length ? readinessMissing.join(", ") : "None"}
+                  <div className={`rounded-[24px] border p-4 ${readinessMissing.length ? "border-amber-200/70 bg-amber-50/80" : "border-emerald-200/70 bg-emerald-50/80"}`}>
+                    <div className="flex items-center gap-2">
+                      {readinessMissing.length ? (
+                        <AlertTriangle size={15} className="text-amber-600" />
+                      ) : (
+                        <CheckCircle2 size={15} className="text-emerald-600" />
+                      )}
+                      <div className="text-[0.6875rem] uppercase tracking-wide text-foreground/55">Missing fields</div>
                     </div>
+                    <div className="mt-2 text-[0.875rem] font-semibold text-foreground/85">
+                      {readinessMissing.length ? `${readinessMissing.length} item${readinessMissing.length === 1 ? "" : "s"} need review` : "No missing fields flagged"}
+                    </div>
+                    {!!readinessMissing.length && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {readinessMissing.map((field) => (
+                          <span key={field} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-white/80 border border-amber-200/80 text-amber-700">
+                            {prettyFieldLabel(field)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
-                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Documents</div>
-                    <div className="mt-2 text-[0.8125rem] text-foreground/80">
-                      {readinessRequiredDocs.length ? `${readinessDocsAttached > 0 ? "Attached" : "Missing"} (${readinessRequiredDocs.length} required)` : "Not required"}
+
+                  <div className={`rounded-[24px] border p-4 ${readinessRequiredDocs.length && readinessDocsAttached <= 0 ? "border-amber-200/70 bg-amber-50/80" : "border-sky-200/70 bg-sky-50/80"}`}>
+                    <div className="flex items-center gap-2">
+                      <FileText size={15} className={readinessRequiredDocs.length && readinessDocsAttached <= 0 ? "text-amber-600" : "text-sky-600"} />
+                      <div className="text-[0.6875rem] uppercase tracking-wide text-foreground/55">Documents</div>
+                    </div>
+                    <div className="mt-2 text-[0.875rem] font-semibold text-foreground/85">
+                      {readinessRequiredDocs.length
+                        ? readinessDocsAttached > 0
+                          ? `${readinessDocsAttached} attached`
+                          : "Required documents missing"
+                        : "No required documents"}
+                    </div>
+                    <div className="mt-1 text-[0.75rem] text-foreground/60">
+                      {readinessRequiredDocs.length ? `${readinessRequiredDocs.length} document type${readinessRequiredDocs.length === 1 ? "" : "s"} required for this category` : "This product can move without extra documents."}
                     </div>
                   </div>
                 </div>
 
                 {readinessRequiredDocs.length > 0 && (
-                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
+                  <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4">
                     <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Required documents</div>
-                    <div className="mt-2 text-[0.8125rem] text-foreground/80 break-words">
-                      {readinessRequiredDocs.join(", ")}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {readinessRequiredDocs.map((doc) => (
+                        <span key={doc} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-background/70 border border-border/40 text-foreground/70">
+                          {doc}
+                        </span>
+                      ))}
                     </div>
                   </div>
+                )}
+
+                {readinessLoading && (
+                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4 text-[0.8125rem] text-muted-foreground/70">
+                    Loading full details…
+                  </div>
+                )}
+                {readinessError && !readinessLoading && (
+                  <div className="rounded-2xl border border-border/30 bg-muted/10 p-4 text-[0.8125rem] text-muted-foreground/70">
+                    {readinessError}
+                  </div>
+                )}
+
+                {!readinessLoading && readinessDetail && (
+                  (() => {
+                    const created = readinessDetail?.created_product_detail || null;
+                    const meta = readinessDetail?.product_meta && typeof readinessDetail.product_meta === "object" ? readinessDetail.product_meta : {};
+                    const detailConfig =
+                      meta?.detail_config && typeof meta.detail_config === "object"
+                        ? meta.detail_config
+                        : created?.detail_config && typeof created.detail_config === "object"
+                          ? created.detail_config
+                          : {};
+                    const origin =
+                      meta?.origin_location && typeof meta.origin_location === "object"
+                        ? meta.origin_location
+                        : created?.origin_location && typeof created.origin_location === "object"
+                          ? created.origin_location
+                          : {};
+                    const requestAssets = Array.isArray(readinessDetail?.photos) ? readinessDetail.photos : [];
+                    const requestImages = requestAssets.filter((p: any) => String(p?.content_type || "").toLowerCase().startsWith("image/") && String(p?.file_url || "").trim());
+                    const requestDocs = requestAssets.filter((p: any) => !String(p?.content_type || "").toLowerCase().startsWith("image/") && String(p?.file_url || "").trim());
+                    const productImages = Array.isArray(created?.images) ? created.images.filter((u: any) => typeof u === "string" && u.trim()) : [];
+                    const tiers = Array.isArray(created?.pricing_tiers)
+                      ? created.pricing_tiers
+                      : Array.isArray(meta?.pricing_tiers)
+                        ? meta.pricing_tiers
+                        : [];
+                    const variants = Array.isArray(created?.variations)
+                      ? created.variations
+                      : Array.isArray(detailConfig?.variants)
+                        ? detailConfig.variants
+                        : [];
+                    const specifications = Array.isArray(detailConfig?.specifications) ? detailConfig.specifications : [];
+                    const description = String(readinessDetail?.description || meta?.description || created?.description || "").trim();
+                    const additionalMetaEntries = Object.entries(meta).filter(([key, value]) => {
+                      if (["origin_location", "detail_config", "pricing_tiers", "review_message", "sku", "hs_code", "lead_time_days", "weight_grams", "ship_time_min_days", "ship_time_max_days", "sample_available", "monthly_production_capacity", "trademark_reg_number", "ip_protection_level"].includes(key)) {
+                        return false;
+                      }
+                      if (value == null || value === "") return false;
+                      if (Array.isArray(value) && value.length === 0) return false;
+                      return true;
+                    });
+                    const allMedia = [...requestImages, ...productImages.map((url: string, index: number) => ({ id: `product-${index}`, file_url: url, original_name: `Published image ${index + 1}` }))];
+                    const closeAndRequestChanges = () => {
+                      const id = Number(readinessDetail?.id || readinessId || 0);
+                      if (!id) return;
+                      const msg = (readinessSuggestedMessage || "").trim();
+                      setReadinessOpen(false);
+                      setReadinessId(null);
+                      setReadinessTitle("");
+                      setReadinessMissing([]);
+                      setReadinessRequiredDocs([]);
+                      setReadinessDocsAttached(0);
+                      setReadinessSuggestedMessage("");
+                      setReadinessDetail(null);
+                      setReadinessLoading(false);
+                      setReadinessError("");
+                      setReadinessEditMode(false);
+                      setReadinessSaving(false);
+                      setReadinessSaveError("");
+                      setReadinessForm(null);
+                      setChangesId(id);
+                      setChangesMessage(msg);
+                      setChangesOpen(true);
+                    };
+
+                    return (
+                      <div className="space-y-5">
+                        <div className="rounded-[28px] border border-border/30 bg-[linear-gradient(135deg,rgba(1,113,227,0.08),rgba(255,255,255,0.92))] p-5 sm:p-6">
+                          <div className="flex flex-col lg:flex-row gap-5 lg:items-center lg:justify-between">
+                            <div className="flex gap-4 min-w-0">
+                              <div className="w-24 h-24 rounded-[22px] overflow-hidden border border-white/70 bg-white/80 shadow-sm shrink-0">
+                                {allMedia.length ? (
+                                  <img src={String(allMedia[0]?.file_url || allMedia[0])} alt={String(readinessDetail?.product_name || "product")} className="w-full h-full object-cover" />
+                                ) : (
+                                  <div className="w-full h-full grid place-items-center text-muted-foreground/35">
+                                    <Camera size={24} />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-[1.1rem] sm:text-[1.25rem] font-bold text-foreground/90">
+                                    {readinessDetail?.product_name || "Untitled product"}
+                                  </div>
+                                  <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-white/80 border border-white/80 text-foreground/70">
+                                    {(readinessDetail?.stage || "—").toString().toUpperCase()}
+                                  </span>
+                                  {!!created && (
+                                    <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-emerald-50 border border-emerald-200/80 text-emerald-700">
+                                      Published product exists
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-1 text-[0.875rem] text-muted-foreground/75">
+                                  {readinessDetail?.company_name || "—"} · {readinessDetail?.category_label || "—"}
+                                </div>
+                                <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[0.75rem]">
+                                  <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                    <div className="text-muted-foreground/55">Unit price</div>
+                                    <div className="mt-1 font-semibold text-foreground/85">{formatMoney(readinessDetail?.currency, readinessDetail?.unit_price)}</div>
+                                  </div>
+                                  <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                    <div className="text-muted-foreground/55">MOQ</div>
+                                    <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(readinessDetail?.moq)}</div>
+                                  </div>
+                                  <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                    <div className="text-muted-foreground/55">Currency</div>
+                                    <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(readinessDetail?.currency)}</div>
+                                  </div>
+                                  <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                    <div className="text-muted-foreground/55">Admin rating</div>
+                                    <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(readinessDetail?.rating)}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReadinessEditMode((prev) => {
+                                    const next = !prev;
+                                    if (next && readinessDetail) setReadinessForm(buildReadinessForm(readinessDetail));
+                                    if (!next) setReadinessSaveError("");
+                                    return next;
+                                  });
+                                }}
+                                className={`px-4 py-2.5 rounded-2xl text-[0.75rem] font-semibold border transition-colors ${
+                                  readinessEditMode
+                                    ? "bg-foreground text-background border-foreground"
+                                    : "bg-background/70 text-foreground/80 border-border/40 hover:border-primary/30 hover:text-primary"
+                                }`}
+                              >
+                                {readinessEditMode ? "Editing" : "Edit details"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={closeAndRequestChanges}
+                                className="px-4 py-2.5 rounded-2xl text-[0.75rem] font-semibold bg-primary text-primary-foreground hover:opacity-95"
+                              >
+                                Request changes
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {readinessEditMode && readinessForm && (
+                          <div className="rounded-[28px] border border-primary/20 bg-primary/5 p-5 sm:p-6 space-y-5">
+                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                              <div>
+                                <div className="text-[0.95rem] font-bold text-foreground/90">Edit listing data</div>
+                                <div className="mt-1 text-[0.8125rem] text-muted-foreground/70">
+                                  Update the request data here. If a published product already exists, these changes will sync there too.
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setReadinessEditMode(false);
+                                    setReadinessSaveError("");
+                                    if (readinessDetail) setReadinessForm(buildReadinessForm(readinessDetail));
+                                  }}
+                                  className="px-4 py-2.5 rounded-2xl text-[0.75rem] font-semibold bg-background/80 border border-border/40 text-foreground/75"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void saveReadinessEdits()}
+                                  disabled={readinessSaving}
+                                  className={`px-4 py-2.5 rounded-2xl text-[0.75rem] font-semibold ${
+                                    readinessSaving
+                                      ? "bg-primary/40 text-white cursor-not-allowed"
+                                      : "bg-primary text-primary-foreground hover:opacity-95"
+                                  }`}
+                                >
+                                  {readinessSaving ? "Saving..." : "Save changes"}
+                                </button>
+                              </div>
+                            </div>
+
+                            {readinessSaveError && (
+                              <div className="rounded-2xl border border-rose-200/80 bg-rose-50 px-4 py-3 text-[0.8125rem] text-rose-700">
+                                {readinessSaveError}
+                              </div>
+                            )}
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                              {[
+                                ["Product name", "product_name", "text"],
+                                ["Company name", "company_name", "text"],
+                                ["Unit price", "unit_price", "number"],
+                                ["MOQ", "moq", "number"],
+                                ["SKU", "sku", "text"],
+                                ["HS code", "hs_code", "text"],
+                                ["Origin country", "origin_country", "text"],
+                                ["Origin region", "origin_region", "text"],
+                                ["Origin city", "origin_city", "text"],
+                                ["Lead time (days)", "lead_time_days", "number"],
+                                ["Weight (grams)", "weight_grams", "number"],
+                                ["Ship time min", "ship_time_min_days", "number"],
+                                ["Ship time max", "ship_time_max_days", "number"],
+                                ["Sample ship days", "sample_ship_days", "number"],
+                                ["Monthly capacity", "monthly_capacity", "text"],
+                                ["Trademark reg. number", "trademark_registration_number", "text"],
+                              ].map(([label, key, type]) => (
+                                <label key={String(key)} className="rounded-2xl border border-border/30 bg-background/70 p-3 block">
+                                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">{label}</div>
+                                  <input
+                                    type={String(type)}
+                                    value={String(readinessForm?.[String(key)] ?? "")}
+                                    onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, [key]: e.target.value }))}
+                                    className="mt-2 w-full bg-transparent outline-none text-[0.8125rem] text-foreground/85 placeholder:text-muted-foreground/35"
+                                  />
+                                </label>
+                              ))}
+
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-3 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Category</div>
+                                <select
+                                  value={String(readinessForm?.category_id ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, category_id: e.target.value }))}
+                                  className="mt-2 w-full bg-transparent outline-none text-[0.8125rem] text-foreground/85"
+                                >
+                                  <option value="">Select category</option>
+                                  {(categories || []).map((cat: any) => (
+                                    <option key={cat.id} value={String(cat.id)}>
+                                      {String(cat.label || cat.name || cat.slug || `Category ${cat.id}`)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-3 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Currency</div>
+                                <input
+                                  type="text"
+                                  maxLength={3}
+                                  value={String(readinessForm?.currency ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, currency: e.target.value.toUpperCase() }))}
+                                  className="mt-2 w-full bg-transparent outline-none text-[0.8125rem] text-foreground/85"
+                                />
+                              </label>
+
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-3 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">IP protection</div>
+                                <select
+                                  value={String(readinessForm?.ip_protection_level ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, ip_protection_level: e.target.value }))}
+                                  className="mt-2 w-full bg-transparent outline-none text-[0.8125rem] text-foreground/85"
+                                >
+                                  <option value="">None</option>
+                                  <option value="low">Low</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="high">High</option>
+                                </select>
+                              </label>
+
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-3 flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Sample available</div>
+                                  <div className="mt-1 text-[0.75rem] text-foreground/70">Toggle product sample offering</div>
+                                </div>
+                                <input
+                                  type="checkbox"
+                                  checked={!!readinessForm?.sample_available}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, sample_available: e.target.checked }))}
+                                  className="h-4 w-4"
+                                />
+                              </label>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-4 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Description</div>
+                                <textarea
+                                  value={String(readinessForm?.description ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, description: e.target.value }))}
+                                  rows={5}
+                                  className="mt-2 w-full bg-transparent outline-none resize-none text-[0.8125rem] text-foreground/85"
+                                />
+                              </label>
+
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-4 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Detail config JSON</div>
+                                <textarea
+                                  value={String(readinessForm?.detail_config ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, detail_config: e.target.value }))}
+                                  rows={5}
+                                  className="mt-2 w-full bg-transparent outline-none resize-none text-[0.75rem] text-foreground/85 font-mono"
+                                />
+                              </label>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-4 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Pricing tiers JSON</div>
+                                <div className="mt-1 text-[0.75rem] text-muted-foreground/60">Format: array of objects with `variation`, `min_quantity`, `max_quantity`, `unit_price`, `currency`.</div>
+                                <textarea
+                                  value={String(readinessForm?.pricing_tiers ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, pricing_tiers: e.target.value }))}
+                                  rows={9}
+                                  className="mt-2 w-full bg-transparent outline-none resize-none text-[0.75rem] text-foreground/85 font-mono"
+                                />
+                              </label>
+
+                              <label className="rounded-2xl border border-border/30 bg-background/70 p-4 block">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Variations JSON</div>
+                                <div className="mt-1 text-[0.75rem] text-muted-foreground/60">Format: array of objects with `sku` and `attributes`.</div>
+                                <textarea
+                                  value={String(readinessForm?.variations ?? "")}
+                                  onChange={(e) => setReadinessForm((prev: any) => ({ ...prev, variations: e.target.value }))}
+                                  rows={9}
+                                  className="mt-2 w-full bg-transparent outline-none resize-none text-[0.75rem] text-foreground/85 font-mono"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
+                          <div className="space-y-5 xl:sticky xl:top-0">
+                            <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4">
+                              <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                                <Package size={14} />
+                                Request overview
+                              </div>
+                              <div className="mt-4 space-y-3 text-[0.8125rem]">
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-muted-foreground/60">Seller</span>
+                                  <span className="text-right text-foreground/80">{displayAdminValue(readinessDetail?.seller_label || readinessDetail?.seller_email)}</span>
+                                </div>
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-muted-foreground/60">Email</span>
+                                  <span className="text-right text-foreground/80 break-all">{displayAdminValue(readinessDetail?.seller_email)}</span>
+                                </div>
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-muted-foreground/60">Created</span>
+                                  <span className="text-right text-foreground/80">{displayAdminValue(readinessDetail?.created_at)}</span>
+                                </div>
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-muted-foreground/60">Compliance</span>
+                                  <span className="text-right text-foreground/80">{readinessDetail?.compliance_verified ? "Verified" : "Pending"}</span>
+                                </div>
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="text-muted-foreground/60">Inspection</span>
+                                  <span className="text-right text-foreground/80">{readinessDetail?.inspected ? "Completed" : readinessDetail?.inspector ? "Assigned" : "Not required"}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4">
+                              <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                                <ClipboardCheck size={14} />
+                                Admin review focus
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                <div className="rounded-2xl bg-background/50 border border-border/30 p-3">
+                                  <div className="text-[0.6875rem] text-muted-foreground/60 uppercase tracking-wide">Missing fields</div>
+                                  <div className="mt-1 text-[0.8125rem] text-foreground/80">
+                                    {readinessMissing.length ? readinessMissing.map(prettyFieldLabel).join(", ") : "None flagged"}
+                                  </div>
+                                </div>
+                                <div className="rounded-2xl bg-background/50 border border-border/30 p-3">
+                                  <div className="text-[0.6875rem] text-muted-foreground/60 uppercase tracking-wide">Seller message draft</div>
+                                  <div className="mt-1 text-[0.8125rem] text-foreground/80 whitespace-pre-wrap">
+                                    {readinessSuggestedMessage || "Nothing missing right now."}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4">
+                              <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                                <FileText size={14} />
+                                Files summary
+                              </div>
+                              <div className="mt-4 grid grid-cols-2 gap-3 text-[0.75rem]">
+                                <div className="rounded-2xl bg-background/50 border border-border/30 p-3">
+                                  <div className="text-muted-foreground/55">Request images</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatNumber(requestImages.length)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-background/50 border border-border/30 p-3">
+                                  <div className="text-muted-foreground/55">Docs uploaded</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatNumber(requestDocs.length)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-background/50 border border-border/30 p-3">
+                                  <div className="text-muted-foreground/55">Published images</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatNumber(productImages.length)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-background/50 border border-border/30 p-3">
+                                  <div className="text-muted-foreground/55">Pricing tiers</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatNumber(tiers.length)}</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="xl:col-span-2 space-y-5">
+                            <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                              <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                <Camera size={16} />
+                                Media and documents
+                              </div>
+
+                              <div className="mt-4">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Submitted images</div>
+                                <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                                  {requestImages.length ? requestImages.map((asset: any) => (
+                                    <a
+                                      key={asset.id}
+                                      href={String(asset.file_url)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="group block rounded-[20px] overflow-hidden border border-border/30 bg-background/70"
+                                    >
+                                      <img src={String(asset.file_url)} alt={String(asset.original_name || "request image")} className="w-full h-32 object-cover group-hover:scale-[1.02] transition-transform duration-200" />
+                                      <div className="px-3 py-2 text-[0.6875rem] text-muted-foreground/70 truncate">{String(asset.original_name || "Request image")}</div>
+                                    </a>
+                                  )) : (
+                                    <div className="col-span-full rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No request images uploaded.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {productImages.length > 0 && (
+                                <div className="mt-5">
+                                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Published product images</div>
+                                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                                    {productImages.map((url: string, idx: number) => (
+                                      <a key={`${url}-${idx}`} href={url} target="_blank" rel="noreferrer" className="group block rounded-[20px] overflow-hidden border border-border/30 bg-background/70">
+                                        <img src={url} alt={`Published image ${idx + 1}`} className="w-full h-32 object-cover group-hover:scale-[1.02] transition-transform duration-200" />
+                                        <div className="px-3 py-2 text-[0.6875rem] text-muted-foreground/70 truncate">Published image {idx + 1}</div>
+                                      </a>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="mt-5">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Documents</div>
+                                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {requestDocs.length ? requestDocs.map((doc: any) => (
+                                    <a
+                                      key={doc.id}
+                                      href={String(doc.file_url)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded-2xl border border-border/30 bg-background/60 px-4 py-3 text-[0.8125rem] text-foreground/80 hover:border-primary/30 hover:text-primary transition-colors"
+                                    >
+                                      <div className="font-semibold">{String(doc.original_name || "Document")}</div>
+                                      <div className="mt-1 text-[0.6875rem] text-muted-foreground/60">{String(doc.content_type || "File")}</div>
+                                    </a>
+                                  )) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No supporting documents uploaded.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                              <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                                <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                  <Hash size={16} />
+                                  Core product info
+                                </div>
+                                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[0.8125rem]">
+                                  {[
+                                    ["Product name", readinessDetail?.product_name],
+                                    ["Company name", readinessDetail?.company_name],
+                                    ["Category", readinessDetail?.category_label],
+                                    ["SKU", meta?.sku],
+                                    ["HS code", meta?.hs_code],
+                                    ["Trademark reg. number", meta?.trademark_reg_number],
+                                    ["IP protection", meta?.ip_protection_level],
+                                    ["Sample available", meta?.sample_available ?? created?.sample_available],
+                                  ].map(([label, value]) => (
+                                    <div key={String(label)} className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                      <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">{label}</div>
+                                      <div className="mt-1 text-foreground/85">{displayAdminValue(value)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-4 rounded-2xl border border-border/30 bg-background/50 p-4">
+                                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Description</div>
+                                  <div className="mt-2 text-[0.8125rem] leading-6 text-foreground/80">
+                                    {description || "No description provided."}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                                <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                  <Truck size={16} />
+                                  Pricing, supply, and shipping
+                                </div>
+                                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[0.8125rem]">
+                                  {[
+                                    ["Unit price", formatMoney(readinessDetail?.currency, readinessDetail?.unit_price)],
+                                    ["MOQ", readinessDetail?.moq],
+                                    ["Lead time (days)", meta?.lead_time_days ?? created?.lead_time_days],
+                                    ["Weight (grams)", meta?.weight_grams ?? created?.weight_grams],
+                                    ["Ship time min", meta?.ship_time_min_days ?? created?.ship_time_min_days],
+                                    ["Ship time max", meta?.ship_time_max_days ?? created?.ship_time_max_days],
+                                    ["Monthly capacity", meta?.monthly_production_capacity],
+                                    ["Published status", created?.status],
+                                  ].map(([label, value]) => (
+                                    <div key={String(label)} className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                      <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">{label}</div>
+                                      <div className="mt-1 text-foreground/85">{displayAdminValue(value)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div className="mt-4 rounded-2xl border border-border/30 bg-background/50 p-4">
+                                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Origin</div>
+                                  <div className="mt-2 flex items-center gap-2 text-[0.8125rem] text-foreground/80">
+                                    <MapPin size={14} className="text-muted-foreground/50" />
+                                    <span>
+                                      {[origin?.country, origin?.region, origin?.city].filter((item) => String(item || "").trim()).join(" · ") || "Origin not provided"}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {tiers.length > 0 && (
+                              <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                                <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                  <Star size={16} />
+                                  Quantity pricing
+                                </div>
+                                <div className="mt-4 overflow-hidden rounded-2xl border border-border/30">
+                                  <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-background/60 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                                    <div className="col-span-3">Min qty</div>
+                                    <div className="col-span-3">Max qty</div>
+                                    <div className="col-span-3">Unit price</div>
+                                    <div className="col-span-3">Variant</div>
+                                  </div>
+                                  <div className="divide-y divide-border/20 bg-card/50">
+                                    {tiers.map((tier: any, idx: number) => (
+                                      <div key={`${tier?.id ?? idx}-${idx}`} className="grid grid-cols-12 gap-3 px-4 py-3 text-[0.8125rem] text-foreground/80">
+                                        <div className="col-span-3">{displayAdminValue(tier?.min_quantity)}</div>
+                                        <div className="col-span-3">{displayAdminValue(tier?.max_quantity)}</div>
+                                        <div className="col-span-3">{formatMoney(tier?.currency || readinessDetail?.currency, tier?.unit_price)}</div>
+                                        <div className="col-span-3">{displayAdminValue(tier?.variation_name || tier?.variation_label || tier?.variation)}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {(variants.length > 0 || specifications.length > 0) && (
+                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                                <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                                  <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                    <Palette size={16} />
+                                    Variants
+                                  </div>
+                                  <div className="mt-4 space-y-3">
+                                    {variants.length ? variants.map((variant: any, idx: number) => (
+                                      <div key={`${variant?.id ?? idx}-${idx}`} className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                        <div className="text-[0.8125rem] font-semibold text-foreground/85">
+                                          {displayAdminValue(variant?.name || variant?.label || `Variant ${idx + 1}`)}
+                                        </div>
+                                        <div className="mt-1 text-[0.75rem] text-muted-foreground/65">
+                                          {[variant?.value, variant?.sku, variant?.stock_units != null ? `${variant.stock_units} units` : ""].filter(Boolean).join(" · ") || "No extra variant details"}
+                                        </div>
+                                      </div>
+                                    )) : (
+                                      <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                        No variants added.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                                  <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                    <ClipboardCheck size={16} />
+                                    Specifications
+                                  </div>
+                                  <div className="mt-4 space-y-3">
+                                    {specifications.length ? specifications.map((group: any, idx: number) => (
+                                      <div key={`${group?.group ?? idx}-${idx}`} className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                        <div className="text-[0.8125rem] font-semibold text-foreground/85">{displayAdminValue(group?.group || `Group ${idx + 1}`)}</div>
+                                        <div className="mt-2 space-y-1">
+                                          {(Array.isArray(group?.items) ? group.items : []).map((item: any, itemIdx: number) => (
+                                            <div key={`${item?.label ?? itemIdx}-${itemIdx}`} className="flex items-start justify-between gap-3 text-[0.75rem]">
+                                              <span className="text-muted-foreground/65">{displayAdminValue(item?.label)}</span>
+                                              <span className="text-right text-foreground/80">{displayAdminValue(item?.value)}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )) : (
+                                      <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                        No specifications provided.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {additionalMetaEntries.length > 0 && (
+                              <div className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                                <div className="flex items-center gap-2 text-[0.75rem] font-semibold text-foreground/75">
+                                  <Database size={16} />
+                                  Additional submitted details
+                                </div>
+                                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                                  {additionalMetaEntries.map(([key, value]) => (
+                                    <div key={key} className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                      <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">{prettyFieldLabel(key)}</div>
+                                      <div className="mt-1 text-[0.8125rem] text-foreground/85 break-words">{displayAdminValue(value)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            <details className="rounded-[24px] border border-border/30 bg-muted/10 p-4 sm:p-5">
+                              <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75">Raw data fallback</div>
+                                  <div className="mt-1 text-[0.75rem] text-muted-foreground/60">Open only if admin needs the exact payload from seller request or created product.</div>
+                                </div>
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/55">Expand</div>
+                              </summary>
+                              <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                <div className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                  <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Listing request payload</div>
+                                  <pre className="mt-2 text-[11px] leading-[1.45] text-foreground/80 whitespace-pre-wrap break-words">{JSON.stringify(readinessDetail, null, 2)}</pre>
+                                </div>
+                                {created && (
+                                  <div className="rounded-2xl border border-border/30 bg-background/50 p-3">
+                                    <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Created product payload</div>
+                                    <pre className="mt-2 text-[11px] leading-[1.45] text-foreground/80 whitespace-pre-wrap break-words">{JSON.stringify(created, null, 2)}</pre>
+                                  </div>
+                                )}
+                              </div>
+                            </details>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()
                 )}
 
                 {readinessSuggestedMessage && (
@@ -2882,6 +3651,13 @@ export function AdminProducts() {
                       setReadinessRequiredDocs([]);
                       setReadinessDocsAttached(0);
                       setReadinessSuggestedMessage("");
+                      setReadinessDetail(null);
+                      setReadinessLoading(false);
+                      setReadinessError("");
+                      setReadinessEditMode(false);
+                      setReadinessSaving(false);
+                      setReadinessSaveError("");
+                      setReadinessForm(null);
                     }}
                     className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
                   >
@@ -3003,24 +3779,25 @@ export function AdminProducts() {
             ) : (
               <div className="overflow-hidden rounded-2xl border border-border/30">
                 <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-muted/10 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
-                  <div className="col-span-3">Product</div>
-                  <div className="col-span-3">Seller</div>
+                  <div className="col-span-2">Product</div>
+                  <div className="col-span-2">Seller</div>
                   <div className="col-span-2">Stage</div>
                   <div className="col-span-1">Created</div>
                   <div className="col-span-1 text-right">Changes</div>
-                  <div className="col-span-1 text-right">Review</div>
+                  <div className="col-span-2 text-right">Review</div>
                   <div className="col-span-1 text-right">Publish</div>
+                  <div className="col-span-1 text-right">View</div>
                 </div>
                 <div className="divide-y divide-border/20">
                   {(listingRequests || []).map((lr: any) => (
                     <div key={lr.id} className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
-                      <div className="col-span-3">
-                        <div className="text-[0.875rem] font-semibold text-foreground/85">{lr.product_name || "—"}</div>
-                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.company_name || "—"}</div>
+                      <div className="col-span-2">
+                        <div className="text-[0.875rem] font-semibold text-foreground/85 truncate" title={lr.product_name}>{lr.product_name || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60 truncate">{lr.company_name || "—"}</div>
                       </div>
-                      <div className="col-span-3">
-                        <div className="text-[0.8125rem] text-foreground/80">{lr.seller_label || lr.seller_email || "—"}</div>
-                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.seller_email || "—"}</div>
+                      <div className="col-span-2">
+                        <div className="text-[0.8125rem] text-foreground/80 truncate">{lr.seller_label || lr.seller_email || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60 truncate">{lr.seller_email || "—"}</div>
                       </div>
                       <div className="col-span-2 flex items-center gap-2">
                         <StatusPill 
@@ -3067,48 +3844,33 @@ export function AdminProducts() {
                           Changes
                         </button>
                       </div>
-                      <div className="col-span-1 flex justify-end">
+                      <div className="col-span-2 flex justify-end gap-2 flex-wrap">
                         {(() => {
-                          const rawStageKey = String(lr?.stage || "").toLowerCase();
-                          const stageKey = rawStageKey === "inbound" ? "inspection" : rawStageKey;
-                          const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
-                          const reviewMessage = (meta?.review_message || "").toString().trim();
-                          const needsInspection = !!lr?.inspector;
+                          const stageKey = String(lr?.stage || "").toLowerCase();
                           const isDone = stageKey === "done" || !!lr?.created_product_id;
-                          const missingForApproval = computeMissingFields(lr);
-                          const requiredDocs = Array.isArray(lr?.required_documents)
-                            ? lr.required_documents.filter((x: any) => typeof x === "string")
-                            : [];
-                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
-                          const needsDocs = requiredDocs.length > 0;
-                          const canApprove =
-                            !!lr?.compliance_verified &&
-                            (!needsInspection || !!lr?.inspected) &&
-                            stageKey === "inspection" &&
-                            missingForApproval.length === 0 &&
-                            (!needsDocs || docsAttached > 0);
-
-                          if (!isDone && stageKey === "samples" && !!reviewMessage) {
-                            return (
-                              <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap" title={reviewMessage}>
-                                Awaiting seller
-                              </div>
-                            );
-                          }
-
-                          if (
-                            !isDone &&
-                            !lr?.compliance_verified &&
-                            (stageKey === "compliance" || stageKey === "inspection" || (stageKey === "samples" && !reviewMessage))
-                          ) {
+                          
+                          if (lr.can_verify_compliance) {
                             return (
                               <button
                                 type="button"
                                 onClick={() => verifyCompliance(lr)}
                                 className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
-                                title="Verify Compliance (moves listing to Inspection stage)"
+                                title="Verify Compliance"
                               >
                                 Verify
+                              </button>
+                            );
+                          }
+
+                          if (lr.can_confirm_pickup) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => confirmPickupListingRequest(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 hover:bg-indigo-500/15 transition-colors"
+                                title="Confirm Sample Pickup"
+                              >
+                                Confirm Pickup
                               </button>
                             );
                           }
@@ -3126,81 +3888,39 @@ export function AdminProducts() {
                             );
                           }
 
+                          const requiredDocs = Array.isArray(lr?.required_documents) ? lr.required_documents : [];
+                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+                          const needsDocs = requiredDocs.length > 0;
+                          const canApprove = !!lr?.compliance_verified && stageKey === "inspection" && (!needsDocs || docsAttached > 0);
+
                           if (!isDone && canApprove) {
                             return (
                               <button
                                 type="button"
                                 onClick={() => approveListingRequest(lr)}
                                 className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
-                                title="Approve (sets rating and moves listing to Approved stage)"
+                                title="Approve Listing"
                               >
                                 Approve
                               </button>
                             );
                           }
 
-                          if (!isDone && stageKey === "inspection") {
-                            const blocked =
-                              (!!lr?.compliance_verified && (!needsInspection || !!lr?.inspected)) &&
-                              (missingForApproval.length > 0 || (needsDocs && docsAttached <= 0));
-                            if (blocked) {
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={() => openReadinessModal(lr, "Needs seller fixes before approval")}
-                                  className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                                  title="See what is missing and request changes"
-                                >
-                                  Needs fixes
-                                </button>
-                              );
-                            }
-                          }
-
-                          if (stageKey === "live") {
-                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Approved</div>;
-                          }
-                          if (isDone) {
-                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Done</div>;
-                          }
+                          if (stageKey === "live") return <div className="text-[0.75rem] text-muted-foreground/50">Approved</div>;
+                          if (isDone) return <div className="text-[0.75rem] text-muted-foreground/50">Done</div>;
+                          
                           return <div className="text-[0.75rem] text-muted-foreground/50">—</div>;
                         })()}
                       </div>
-                      <div className="col-span-1 flex justify-end items-end flex-col">
+                      <div className="col-span-1 flex justify-end">
                         {(() => {
-                          const missing = computeMissingFields(lr);
-                          const requiredDocs = Array.isArray(lr?.required_documents)
-                            ? lr.required_documents.filter((x: any) => typeof x === "string")
-                            : [];
-                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+                          const canPublish = !!lr.can_publish;
+                          const isDone = String(lr?.stage || "").toLowerCase() === "done" || !!lr?.created_product_id;
+                          
+                          if (isDone) return <div className="text-[0.75rem] text-muted-foreground/50">Published</div>;
 
-                          const needsInspection = !!lr?.inspector;
-                          const needsDocs = requiredDocs.length > 0;
-                          const canPublish =
-                            !lr?.created_product_id &&
-                            String(lr?.stage || "").toLowerCase() === "live" &&
-                            !!lr?.compliance_verified &&
-                            (!needsInspection || !!lr?.inspected) &&
-                            missing.length === 0 &&
-                            (!needsDocs || docsAttached > 0);
-
-                          const showPublish = !lr?.created_product_id && String(lr?.stage || "").toLowerCase() !== "done";
-                          const title = lr?.created_product_id
-                            ? "Already published"
-                            : String(lr?.stage || "").toLowerCase() !== "live"
-                              ? "Needs approval (Live stage) before publish"
-                              : !lr?.compliance_verified
-                                ? "Needs Compliance Verification"
-                                : needsInspection && !lr?.inspected
-                                  ? "Needs Inspection Completion"
-                                : needsDocs && docsAttached <= 0
-                                  ? `Missing required documents (${requiredDocs.join(", ")})`
-                                  : missing.length
-                                    ? `Missing required fields (${missing.join(", ")})`
-                                    : "Publish to Marketplace";
-
-                          return showPublish ? (
-                            <>
+                          return (
+                            <div className="flex flex-col items-end">
                               <button
                                 type="button"
                                 onClick={() => publishListingRequest(lr)}
@@ -3210,30 +3930,38 @@ export function AdminProducts() {
                                     ? "bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15"
                                     : "bg-muted/10 border border-border/20 text-muted-foreground/40 cursor-not-allowed"
                                 }`}
-                                title={title}
                               >
                                 Publish
                               </button>
-                              {!canPublish && (
+                              {!canPublish && lr.stage === "live" && (
                                 <button
                                   type="button"
-                                  onClick={() => openReadinessModal(lr, title)}
+                                  onClick={() => openReadinessModal(lr, "Needs compliance checks before publish")}
                                   className="mt-1 text-[0.6875rem] font-semibold text-primary/70 hover:text-primary underline underline-offset-4"
                                 >
                                   Why disabled?
                                 </button>
                               )}
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => openReadinessModal(lr, "Already published")}
-                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              View
-                            </button>
+                            </div>
                           );
                         })()}
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (lr.created_product_id) {
+                              setListingRequestStageFilter("all");
+                              setSearch(lr.product_name);
+                              setMode("products");
+                            } else {
+                              openReadinessModal(lr, "View listing details");
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          View
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -4057,7 +4785,7 @@ export function AdminProducts() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
               transition={{ duration: 0.2 }}
-              className="w-full max-w-[860px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+              className="w-full max-w-[1180px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8 max-h-[90vh] overflow-y-auto"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-4 mb-6">
@@ -4081,144 +4809,562 @@ export function AdminProducts() {
               )}
 
               {!detailLoading && detailData && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
-                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Product ID</div>
-                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.id}</div>
-                    </div>
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
-                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">SKU / HS</div>
-                      <div className="text-[0.875rem] text-foreground/80">{detailData?.product?.sku || "—"} · {detailData?.product?.hs_code || "—"}</div>
-                    </div>
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-4">
-                      <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Price / Stock</div>
-                      <div className="text-[0.875rem] text-foreground/80">
-                        {formatMoney(detailData?.product?.currency, detailData?.product?.price)} · {formatNumber(detailData?.product?.stock_units)} units
-                      </div>
-                    </div>
-                  </div>
+                (() => {
+                  const productFull = detailData?.product_full || {};
+                  const listingRequestDetail = detailData?.listing_request_detail || null;
+                  const detailConfig = productFull?.detail_config && typeof productFull.detail_config === "object" ? productFull.detail_config : {};
+                  const specifications = Array.isArray(detailConfig?.specifications) ? detailConfig.specifications : [];
+                  const images = Array.isArray(productFull?.images) ? productFull.images : [];
+                  const media = Array.isArray(detailData?.media) ? detailData.media : [];
+                  const mediaImages = media.filter((m: any) => String(m?.media_type || "").toLowerCase() === "image" && String(m?.url || "").trim());
+                  const mediaDocs = media.filter((m: any) => String(m?.media_type || "").toLowerCase() === "document" && String(m?.url || "").trim());
+                  const videos = media.filter((m: any) => String(m?.media_type || "").toLowerCase() === "video" && String(m?.url || "").trim());
+                  const missingFields = Array.isArray(detailData?.readiness?.missing_fields) ? detailData.readiness.missing_fields : [];
+                  const variants = Array.isArray(detailData?.variations) ? detailData.variations : [];
+                  const pricingTiers = Array.isArray(detailData?.pricing_tiers) ? detailData.pricing_tiers : [];
+                  const trademarks = Array.isArray(detailData?.trademarks) ? detailData.trademarks : [];
+                  const origin = productFull?.origin_location && typeof productFull.origin_location === "object" ? productFull.origin_location : {};
+                  const requestChangesFromProduct = () => {
+                    setDetailOpen(false);
+                    openFeedbackModal(detailData?.product_full || detailData?.product);
+                  };
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Media</div>
-                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
-                        {formatNumber(detailData?.readiness?.images_count)} images · {detailData?.readiness?.has_hero_image ? "Hero OK" : "Missing hero"}
-                      </div>
-                      <div className="flex gap-2 flex-wrap">
-                        {(detailData?.media || []).slice(0, 6).map((m: any) => (
-                          <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground">
-                            {m.media_type}
-                          </a>
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-2 mt-4">
-                        <BounceButton
-                          variant="ghost"
-                          size="sm"
-                          icon={<Upload size={14} />}
-                          onClick={requestingMedia ? undefined : requestMedia}
-                          className={requestingMedia ? "opacity-70 pointer-events-none" : ""}
-                        >
-                          Request upload
-                        </BounceButton>
-                      </div>
-                    </div>
+                  return (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className={`rounded-[24px] border p-4 ${missingFields.length ? "border-amber-200/70 bg-amber-50/80" : "border-emerald-200/70 bg-emerald-50/80"}`}>
+                          <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-foreground/55">
+                            {missingFields.length ? <AlertTriangle size={14} className="text-amber-600" /> : <CheckCircle2 size={14} className="text-emerald-600" />}
+                            Missing fields
+                          </div>
+                          <div className="mt-2 text-[0.9375rem] font-semibold text-foreground/85">
+                            {missingFields.length ? `${missingFields.length} item${missingFields.length === 1 ? "" : "s"} need admin review` : "No missing fields flagged"}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {missingFields.length ? missingFields.map((field: string) => (
+                              <span key={field} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-white/80 border border-amber-200/80 text-amber-700">
+                                {prettyFieldLabel(field)}
+                              </span>
+                            )) : (
+                              <span className="text-[0.75rem] text-foreground/60">Admin can still review and ask seller for changes if the information looks weak or inconsistent.</span>
+                            )}
+                          </div>
+                        </div>
 
-                    <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                      <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Compliance</div>
-                      <div className="text-[0.8125rem] text-foreground/80 mb-3">
-                        {detailData?.readiness?.needs_compliance ? "Needs compliance" : "Looks ready"} · HS {detailData?.readiness?.missing_hs_code ? "missing" : "ok"}
+                        <div className="rounded-[24px] border border-sky-200/70 bg-sky-50/80 p-4">
+                          <div className="flex items-center gap-2 text-[0.6875rem] uppercase tracking-wide text-foreground/55">
+                            <FileText size={14} className="text-sky-600" />
+                            Compliance and docs
+                          </div>
+                          <div className="mt-2 text-[0.9375rem] font-semibold text-foreground/85">
+                            {detailData?.readiness?.needs_compliance ? "Needs compliance review" : "Ready for admin review"}
+                          </div>
+                          <div className="mt-2 text-[0.75rem] text-foreground/65">
+                            Legal review: {displayAdminValue(detailData?.readiness?.legal_review_status)} · Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)} · Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <BounceButton
+                              variant="ghost"
+                              size="sm"
+                              icon={<Upload size={14} />}
+                              onClick={requestingMedia ? undefined : requestMedia}
+                              className={requestingMedia ? "opacity-70 pointer-events-none" : ""}
+                            >
+                              Request upload
+                            </BounceButton>
+                            <BounceButton variant="ghost" size="sm" icon={<Bell size={14} />} onClick={requestChangesFromProduct}>
+                              Ask seller
+                            </BounceButton>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex gap-2 flex-wrap">
-                        {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
-                          <span key={r.id} className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground">
-                            {r.rule_type}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="mt-4 space-y-1 text-[0.75rem] text-muted-foreground/70">
-                        <div>Legal review: {detailData?.readiness?.legal_review_status || "—"}</div>
-                        <div>Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)}</div>
-                        <div>Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}</div>
-                        {detailData?.listing_request?.id && (
-                          <div>Listing request: #{detailData?.listing_request?.id} · {detailData?.listing_request?.stage}</div>
-                        )}
-                      </div>
-                      <div className="flex gap-2 flex-wrap mt-4">
-                        {detailData?.links?.listing_pipeline && (
-                          <a
-                            href={detailData.links.listing_pipeline}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
-                          >
-                            Listing pipeline
-                          </a>
-                        )}
-                        {detailData?.links?.trade_compliance && (
-                          <a
-                            href={detailData.links.trade_compliance}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
-                          >
-                            Trade compliance
-                          </a>
-                        )}
-                        {detailData?.links?.inspector_portal && (
-                          <a
-                            href={detailData.links.inspector_portal}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground hover:text-foreground"
-                          >
-                            Inspector portal
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
 
-                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Inventory & Quality</div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="rounded-2xl bg-card border border-border/30 p-4">
-                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Samples</div>
-                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample?.available_quantity)} available</div>
-                      </div>
-                      <div className="rounded-2xl bg-card border border-border/30 p-4">
-                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Sample requests</div>
-                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample_requests?.total)} total</div>
-                      </div>
-                      <div className="rounded-2xl bg-card border border-border/30 p-4">
-                        <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Quality</div>
-                        <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.quality?.passed)} passed · {formatNumber(detailData?.quality?.failed)} failed</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-muted/10 border border-border/20 p-5">
-                    <div className="text-[0.75rem] text-muted-foreground/60 mb-3">Recent orders</div>
-                    {(detailData?.recent_orders || []).length === 0 ? (
-                      <div className="text-[0.8125rem] text-muted-foreground/60">No recent orders.</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {(detailData?.recent_orders || []).map((o: any) => (
-                          <div key={`${o.order_id}-${o.order_created_at}`} className="flex items-center justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
-                            <div className="min-w-0">
-                              <div className="text-[0.8125rem] text-foreground/80 truncate">Order #{o.order_id} · {o.buyer}</div>
-                              <div className="text-[0.6875rem] text-muted-foreground/50">{o.order_status}</div>
+                      <div className="rounded-[28px] border border-border/30 bg-[linear-gradient(135deg,rgba(1,113,227,0.08),rgba(255,255,255,0.92))] p-5 sm:p-6">
+                        <div className="flex flex-col xl:flex-row gap-5 xl:items-center xl:justify-between">
+                          <div className="flex gap-4 min-w-0">
+                            <div className="w-24 h-24 rounded-[22px] overflow-hidden border border-white/70 bg-white/80 shadow-sm shrink-0">
+                              {images[0] ? (
+                                <img src={images[0]} alt={String(productFull?.name || "product")} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full grid place-items-center text-muted-foreground/35">
+                                  <Package size={24} />
+                                </div>
+                              )}
                             </div>
-                            <div className="text-[0.8125rem] text-muted-foreground/70 whitespace-nowrap">
-                              {formatNumber(o.quantity)} × {o.unit_price}
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-[1.1rem] sm:text-[1.25rem] font-bold text-foreground/90">
+                                  {productFull?.name || detailData?.product?.name || "Untitled product"}
+                                </div>
+                                <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-white/80 border border-white/80 text-foreground/70">
+                                  {String(productFull?.status || detailData?.product?.status || "—").toUpperCase()}
+                                </span>
+                                {listingRequestDetail?.id && (
+                                  <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-violet-50 border border-violet-200/80 text-violet-700">
+                                    From listing request #{listingRequestDetail.id}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 text-[0.875rem] text-muted-foreground/75">
+                                {detailData?.seller?.name || "—"} · {productFull?.category_name || detailData?.product?.category_name || "—"}
+                              </div>
+                              <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[0.75rem]">
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Price</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatMoney(productFull?.currency, productFull?.price)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Stock</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{formatNumber(detailData?.product?.stock_units)} units</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Currency</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.currency)}</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/80 border border-white/80 px-3 py-2">
+                                  <div className="text-muted-foreground/55">Vehsl rating</div>
+                                  <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.vehsl_rating)}</div>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        ))}
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[0.75rem] min-w-full xl:min-w-[360px]">
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">Product ID</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.id)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">SKU</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.sku)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">HS code</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{displayAdminValue(productFull?.hs_code)}</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/70 bg-white/80 px-3 py-2">
+                              <div className="text-muted-foreground/55">Images</div>
+                              <div className="mt-1 font-semibold text-foreground/85">{formatNumber(images.length)}</div>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </div>
+
+                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
+                        <div className="space-y-5 xl:sticky xl:top-0">
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Review summary</div>
+                            <div className="space-y-3 text-[0.8125rem]">
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Seller</span>
+                                <span className="text-right text-foreground/80">{displayAdminValue(detailData?.seller?.name)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Email</span>
+                                <span className="text-right text-foreground/80 break-all">{displayAdminValue(detailData?.seller?.email)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Category</span>
+                                <span className="text-right text-foreground/80">{displayAdminValue(productFull?.category_name)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Fulfillment</span>
+                                <span className="text-right text-foreground/80">{displayAdminValue(productFull?.fulfillment_mode)}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-3">
+                                <span className="text-muted-foreground/60">Listing request</span>
+                                <span className="text-right text-foreground/80">
+                                  {listingRequestDetail?.id ? `#${listingRequestDetail.id} · ${listingRequestDetail.stage}` : "None"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Inventory and quality</div>
+                            <div className="grid grid-cols-1 gap-3">
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Samples</div>
+                                <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample?.available_quantity)} available</div>
+                              </div>
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Sample requests</div>
+                                <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.sample_requests?.total)} total</div>
+                              </div>
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Quality</div>
+                                <div className="text-[0.875rem] text-foreground/80">{formatNumber(detailData?.quality?.passed)} passed · {formatNumber(detailData?.quality?.failed)} failed</div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Compliance</div>
+                            <div className="text-[0.8125rem] text-foreground/80">
+                              {detailData?.readiness?.needs_compliance ? "Needs compliance review" : "Looks ready"} · HS {detailData?.readiness?.missing_hs_code ? "missing" : "ok"}
+                            </div>
+                            <div className="mt-3 space-y-1 text-[0.75rem] text-muted-foreground/70">
+                              <div>Legal review: {displayAdminValue(detailData?.readiness?.legal_review_status)}</div>
+                              <div>Docs required: {formatNumber(detailData?.readiness?.certifications_required_count)}</div>
+                              <div>Blocked destinations: {formatNumber(detailData?.readiness?.blocked_destinations_count)}</div>
+                            </div>
+                            <div className="mt-4 flex gap-2 flex-wrap">
+                              {(detailData?.compliance_rules || []).slice(0, 8).map((r: any) => (
+                                <span key={r.id} className="px-3 py-2 rounded-xl bg-card border border-border/30 text-[0.75rem] text-muted-foreground">
+                                  {r.rule_type}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="xl:col-span-2 space-y-5">
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-[0.75rem] font-semibold text-foreground/75">Media and files</div>
+                              <div className="text-[0.75rem] text-muted-foreground/65">
+                                {formatNumber(images.length)} images · {formatNumber(mediaDocs.length)} docs · {formatNumber(videos.length)} videos
+                              </div>
+                            </div>
+
+                            <div className="mt-4">
+                              <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Images</div>
+                              <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                                {images.length ? images.map((url: string, idx: number) => (
+                                  <a key={`${url}-${idx}`} href={url} target="_blank" rel="noreferrer" className="group block rounded-[20px] overflow-hidden border border-border/30 bg-background/70">
+                                    <img src={url} alt={`Product image ${idx + 1}`} className="w-full h-32 object-cover group-hover:scale-[1.02] transition-transform duration-200" />
+                                    <div className="px-3 py-2 text-[0.6875rem] text-muted-foreground/70 truncate">Product image {idx + 1}</div>
+                                  </a>
+                                )) : mediaImages.length ? mediaImages.map((m: any) => (
+                                  <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="group block rounded-[20px] overflow-hidden border border-border/30 bg-background/70">
+                                    <img src={m.url} alt={String(m.title || "Product image")} className="w-full h-32 object-cover group-hover:scale-[1.02] transition-transform duration-200" />
+                                    <div className="px-3 py-2 text-[0.6875rem] text-muted-foreground/70 truncate">{String(m.title || "Product image")}</div>
+                                  </a>
+                                )) : (
+                                  <div className="col-span-full rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No product images available.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Documents</div>
+                                <div className="mt-3 space-y-2">
+                                  {mediaDocs.length ? mediaDocs.map((m: any) => (
+                                    <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="block rounded-2xl border border-border/30 bg-background/60 px-4 py-3 text-[0.8125rem] text-foreground/80 hover:border-primary/30 hover:text-primary transition-colors">
+                                      <div className="font-semibold">{displayAdminValue(m?.title || m?.original_name || "Document")}</div>
+                                      <div className="mt-1 text-[0.6875rem] text-muted-foreground/60">{displayAdminValue(m?.content_type || "document")}</div>
+                                    </a>
+                                  )) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No documents uploaded.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Videos / extra media</div>
+                                <div className="mt-3 space-y-2">
+                                  {videos.length ? videos.map((m: any) => (
+                                    <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="block rounded-2xl border border-border/30 bg-background/60 px-4 py-3 text-[0.8125rem] text-foreground/80 hover:border-primary/30 hover:text-primary transition-colors">
+                                      <div className="font-semibold">{displayAdminValue(m?.title || "Video")}</div>
+                                      <div className="mt-1 text-[0.6875rem] text-muted-foreground/60">{displayAdminValue(m?.media_type)}</div>
+                                    </a>
+                                  )) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No extra media uploaded.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                            <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                              <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Core product info</div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[0.8125rem]">
+                                {[
+                                  ["Product ID", productFull?.id],
+                                  ["Category", productFull?.category_name],
+                                  ["SKU", productFull?.sku],
+                                  ["HS code", productFull?.hs_code],
+                                  ["Status", productFull?.status],
+                                  ["IP protection", productFull?.ip_protection_level],
+                                  ["Sample available", productFull?.sample_available],
+                                  ["Sample units", productFull?.sample_units],
+                                ].map(([label, value]) => (
+                                  <div key={String(label)} className="rounded-2xl bg-card border border-border/30 p-4">
+                                    <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">{label}</div>
+                                    <div className="text-[0.875rem] text-foreground/80">{displayAdminValue(value)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-4 rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Description</div>
+                                <div className="text-[0.875rem] text-foreground/80 whitespace-pre-wrap">
+                                  {displayAdminValue(productFull?.description)}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                              <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Supply, origin, and shipping</div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[0.8125rem]">
+                                {[
+                                  ["Price", formatMoney(productFull?.currency, productFull?.price)],
+                                  ["Available quantity", productFull?.quantity_available],
+                                  ["Lead time (days)", productFull?.lead_time_days],
+                                  ["Weight (grams)", productFull?.weight_grams],
+                                  ["Ship time min", productFull?.ship_time_min_days],
+                                  ["Ship time max", productFull?.ship_time_max_days],
+                                  ["Stock status", productFull?.stock_status],
+                                  ["Seller stock units", productFull?.seller_stock_units],
+                                ].map(([label, value]) => (
+                                  <div key={String(label)} className="rounded-2xl bg-card border border-border/30 p-4">
+                                    <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">{label}</div>
+                                    <div className="text-[0.875rem] text-foreground/80">{displayAdminValue(value)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-4 rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Origin</div>
+                                <div className="text-[0.875rem] text-foreground/80">
+                                  {[origin?.country, origin?.region, origin?.city].filter((item) => String(item || "").trim()).join(" · ") || "—"}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {(pricingTiers.length > 0 || variants.length > 0) && (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                              <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Quantity pricing</div>
+                                {pricingTiers.length ? (
+                                  <div className="overflow-hidden rounded-2xl border border-border/30">
+                                    <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-card text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
+                                      <div className="col-span-3">Min qty</div>
+                                      <div className="col-span-3">Max qty</div>
+                                      <div className="col-span-3">Unit price</div>
+                                      <div className="col-span-3">Variation</div>
+                                    </div>
+                                    <div className="divide-y divide-border/20 bg-background/50">
+                                      {pricingTiers.map((tier: any, idx: number) => (
+                                        <div key={`${tier?.id ?? idx}-${idx}`} className="grid grid-cols-12 gap-3 px-4 py-3 text-[0.8125rem] text-foreground/80">
+                                          <div className="col-span-3">{displayAdminValue(tier?.min_quantity)}</div>
+                                          <div className="col-span-3">{displayAdminValue(tier?.max_quantity)}</div>
+                                          <div className="col-span-3">{formatMoney(tier?.currency || productFull?.currency, tier?.unit_price)}</div>
+                                          <div className="col-span-3">{displayAdminValue(tier?.variation)}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No quantity pricing configured.
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Variants</div>
+                                {variants.length ? (
+                                  <div className="space-y-3">
+                                    {variants.map((variant: any) => (
+                                      <div key={variant.id} className="rounded-2xl bg-card border border-border/30 p-4">
+                                        <div className="text-[0.8125rem] font-semibold text-foreground/85">SKU: {displayAdminValue(variant?.sku)}</div>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          {Object.entries(variant?.attributes || {}).map(([key, value]) => (
+                                            <span key={`${key}-${value}`} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-muted/20 border border-border/30 text-foreground/70">
+                                              {prettyFieldLabel(key)}: {displayAdminValue(value)}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No variants configured.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {(specifications.length > 0 || trademarks.length > 0 || detailData?.warehouse_stocks?.length > 0) && (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                              <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Specifications</div>
+                                {specifications.length ? (
+                                  <div className="space-y-3">
+                                    {specifications.map((group: any, idx: number) => (
+                                      <div key={`${group?.title ?? idx}-${idx}`} className="rounded-2xl bg-card border border-border/30 p-4">
+                                        <div className="text-[0.8125rem] font-semibold text-foreground/85">{displayAdminValue(group?.title || group?.group || `Group ${idx + 1}`)}</div>
+                                        <div className="mt-2 space-y-1">
+                                          {(Array.isArray(group?.items) ? group.items : []).map((item: any, itemIdx: number) => (
+                                            <div key={`${item?.label ?? itemIdx}-${itemIdx}`} className="flex items-start justify-between gap-3 text-[0.75rem]">
+                                              <span className="text-muted-foreground/65">{displayAdminValue(item?.label)}</span>
+                                              <span className="text-right text-foreground/80">{displayAdminValue(item?.value)}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                    No specifications available.
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="space-y-5">
+                                <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Trademarks</div>
+                                  {trademarks.length ? (
+                                    <div className="space-y-3">
+                                      {trademarks.map((tm: any) => (
+                                        <div key={tm.id} className="rounded-2xl bg-card border border-border/30 p-4">
+                                          <div className="text-[0.8125rem] font-semibold text-foreground/85">{displayAdminValue(tm?.registration_number)}</div>
+                                          <div className="mt-1 text-[0.75rem] text-muted-foreground/65">Status: {displayAdminValue(tm?.status)}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No trademark records linked.
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Warehouse stock</div>
+                                  {detailData?.warehouse_stocks?.length ? (
+                                    <div className="space-y-3">
+                                      {detailData.warehouse_stocks.slice(0, 10).map((stock: any) => (
+                                        <div key={stock.id} className="rounded-2xl bg-card border border-border/30 p-4 text-[0.8125rem]">
+                                          <div className="font-semibold text-foreground/85">{displayAdminValue(stock?.warehouse_name || stock?.warehouse)}</div>
+                                          <div className="mt-1 text-muted-foreground/65">
+                                            Qty: {displayAdminValue(stock?.quantity_units)} · Reserved: {displayAdminValue(stock?.reserved_units)}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-2xl border border-dashed border-border/40 bg-background/40 p-4 text-[0.8125rem] text-muted-foreground/65">
+                                      No warehouse stock rows available.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {listingRequestDetail && (
+                            <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-[0.75rem] font-semibold text-foreground/75">Source listing request</div>
+                                  <div className="mt-1 text-[0.75rem] text-muted-foreground/60">
+                                    This lets admin compare the live product with the original seller submission.
+                                  </div>
+                                </div>
+                                <span className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-card border border-border/30 text-foreground/70">
+                                  #{listingRequestDetail.id} · {displayAdminValue(listingRequestDetail.stage)}
+                                </span>
+                              </div>
+                              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                {[
+                                  ["Request product", listingRequestDetail?.product_name],
+                                  ["Company", listingRequestDetail?.company_name],
+                                  ["MOQ", listingRequestDetail?.moq],
+                                  ["Request price", formatMoney(listingRequestDetail?.currency, listingRequestDetail?.unit_price)],
+                                ].map(([label, value]) => (
+                                  <div key={String(label)} className="rounded-2xl bg-card border border-border/30 p-4">
+                                    <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">{label}</div>
+                                    <div className="text-[0.875rem] text-foreground/80">{displayAdminValue(value)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                  <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Request images</div>
+                                  <div className="mt-2 grid grid-cols-2 gap-2">
+                                    {(listingRequestDetail?.photos || [])
+                                      .filter((p: any) => String(p?.content_type || "").toLowerCase().startsWith("image/"))
+                                      .slice(0, 6)
+                                      .map((p: any) => (
+                                        <a key={p.id} href={p.file_url} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-border/30">
+                                          <img src={p.file_url} alt={String(p.original_name || "request image")} className="w-full h-24 object-cover" />
+                                        </a>
+                                      ))}
+                                  </div>
+                                </div>
+                                <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                  <div className="text-[0.6875rem] text-muted-foreground/50 mb-1">Request missing fields</div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {Array.isArray(listingRequestDetail?.missing_fields) && listingRequestDetail.missing_fields.length ? listingRequestDetail.missing_fields.map((field: string) => (
+                                      <span key={field} className="px-2.5 py-1 rounded-full text-[0.6875rem] font-semibold bg-amber-50 border border-amber-200/80 text-amber-700">
+                                        {prettyFieldLabel(field)}
+                                      </span>
+                                    )) : (
+                                      <span className="text-[0.8125rem] text-muted-foreground/60">None</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <div className="text-[0.75rem] font-semibold text-foreground/75 mb-3">Recent orders</div>
+                            {(detailData?.recent_orders || []).length === 0 ? (
+                              <div className="text-[0.8125rem] text-muted-foreground/60">No recent orders.</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {(detailData?.recent_orders || []).map((o: any) => (
+                                  <div key={`${o.order_id}-${o.order_created_at}`} className="flex items-center justify-between gap-4 px-4 py-3 rounded-2xl bg-card border border-border/30">
+                                    <div className="min-w-0">
+                                      <div className="text-[0.8125rem] text-foreground/80 truncate">Order #{o.order_id} · {o.buyer}</div>
+                                      <div className="text-[0.6875rem] text-muted-foreground/50">{o.order_status}</div>
+                                    </div>
+                                    <div className="text-[0.8125rem] text-muted-foreground/70 whitespace-nowrap">
+                                      {formatNumber(o.quantity)} × {o.unit_price}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <details className="rounded-[24px] bg-muted/10 border border-border/20 p-5">
+                            <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-[0.75rem] font-semibold text-foreground/75">Raw data fallback</div>
+                                <div className="mt-1 text-[0.75rem] text-muted-foreground/60">Open if admin needs the exact API payload for investigation.</div>
+                              </div>
+                              <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/55">Expand</div>
+                            </summary>
+                            <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Product detail payload</div>
+                                <pre className="mt-2 text-[11px] leading-[1.45] text-foreground/80 whitespace-pre-wrap break-words">{JSON.stringify(detailData, null, 2)}</pre>
+                              </div>
+                              <div className="rounded-2xl bg-card border border-border/30 p-4">
+                                <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">Serialized product</div>
+                                <pre className="mt-2 text-[11px] leading-[1.45] text-foreground/80 whitespace-pre-wrap break-words">{JSON.stringify(productFull, null, 2)}</pre>
+                              </div>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
               )}
             </motion.div>
           </motion.div>

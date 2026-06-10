@@ -3264,23 +3264,51 @@ export function WarehouseView() {
                                                     const when = ev?.occurred_at ? new Date(ev.occurred_at).toLocaleString() : '';
                                                     const actor = asString(ev?.actor);
                                                     const action = asString(ev?.action);
+                                                    const payload = ev?.payload || {};
                                                     const label =
                                                         action === 'seller_listing_request_submitted' ? 'Submitted' :
                                                         action === 'seller_listing_request_updated' ? 'Updated' :
                                                         action === 'seller_listing_request_resubmitted' ? 'Resubmitted' :
                                                         action === 'admin_listing_request_compliance_verified' ? 'Compliance verified' :
+                                                        action === 'admin_listing_request_picked_up' ? 'Sample picked up' :
                                                         action === 'admin_listing_request_inspected' ? 'Inspection complete' :
                                                         action === 'admin_listing_request_reviewed' ? 'Review decision' :
                                                         action === 'admin_listing_request_published' ? 'Published' :
                                                         action;
+                                                    
+                                                    const stage = asString(payload?.stage);
+                                                    const decision = asString(payload?.decision);
+                                                    const message = asString(payload?.message || payload?.notes);
+
                                                     return (
                                                         <div key={asString(ev?.id)} className="px-4 py-3 border-b border-black/[0.04] last:border-b-0">
                                                             <div className="flex items-start justify-between gap-3">
-                                                                <div className="min-w-0">
-                                                                    <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">{label}</div>
+                                                                <div className="min-w-0 flex-1">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <div className="text-[12px] font-bold text-[#1A1A1A]/75 truncate">{label}</div>
+                                                                        {stage && (
+                                                                            <span className="px-1.5 py-0.5 rounded-md bg-black/[0.04] text-[9px] font-black uppercase tracking-[1px] text-[#1A1A1A]/40">
+                                                                                {stage}
+                                                                            </span>
+                                                                        )}
+                                                                        {decision && (
+                                                                            <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-[1px] ${
+                                                                                decision === 'approve' ? 'bg-[#30A46C]/10 text-[#30A46C]' : 
+                                                                                decision === 'needs_changes' ? 'bg-[#FFB224]/10 text-[#FFB224]' : 
+                                                                                'bg-[#E5484D]/10 text-[#E5484D]'
+                                                                            }`}>
+                                                                                {decision.replace('_', ' ')}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
                                                                     <div className="text-[11px] font-medium text-[#1A1A1A]/35 mt-0.5 truncate">
                                                                         {actor ? `${actor} · ${when}` : when}
                                                                     </div>
+                                                                    {message && (
+                                                                        <div className="mt-2 p-2.5 rounded-xl bg-black/[0.02] border border-black/[0.04] text-[11px] font-medium text-[#1A1A1A]/60 italic whitespace-pre-wrap">
+                                                                            &ldquo;{message}&rdquo;
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         </div>
