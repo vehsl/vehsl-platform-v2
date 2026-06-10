@@ -1431,12 +1431,6 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 return Response({"detail": "Inspection must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
             if lr.stage not in {ListingRequest.Stage.INSPECTION, ListingRequest.Stage.INBOUND}:
                 return Response({"detail": "Listing must be in Inspection stage before approval."}, status=status.HTTP_400_BAD_REQUEST)
-            missing = _listing_request_missing_required_product_fields(lr)
-            if missing:
-                return Response(
-                    {"detail": "Listing request is missing required product fields.", "missing": missing},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
             required_documents = _listing_request_required_documents(lr)
             if required_documents and _listing_request_non_image_attachment_count(lr) <= 0:
                 return Response(
@@ -1533,13 +1527,6 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
 
         if lr.stage != ListingRequest.Stage.LIVE:
             return Response({"detail": "Listing must be approved (Live stage) before publish."}, status=status.HTTP_400_BAD_REQUEST)
-
-        missing = _listing_request_missing_required_product_fields(lr)
-        if missing:
-            return Response(
-                {"detail": "Listing request is missing required product fields.", "missing": missing},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         required_documents = _listing_request_required_documents(lr)
 

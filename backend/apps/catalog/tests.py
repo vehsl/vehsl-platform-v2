@@ -56,7 +56,7 @@ class ListingRequestFlowTests(TestCase):
         self.assertTrue(lr.compliance_verified)
         self.assertEqual(lr.stage, ListingRequest.Stage.INSPECTION)
 
-    def test_approve_requires_required_fields(self):
+    def test_approve_allows_missing_optional_product_meta_fields(self):
         lr = ListingRequest.objects.create(
             seller=self.seller,
             category=self.category,
@@ -72,17 +72,33 @@ class ListingRequestFlowTests(TestCase):
 
         self.client.force_authenticate(user=self.admin)
         res = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
-        self.assertEqual(res.status_code, 400)
-        data = res.json()
-        self.assertIn("missing", data)
-        self.assertIn("sku", data["missing"])
-
-        lr.product_meta = self._required_meta()
-        lr.save(update_fields=["product_meta", "updated_at"])
-        res2 = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
-        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res.status_code, 200)
         lr.refresh_from_db()
         self.assertEqual(lr.stage, ListingRequest.Stage.LIVE)
+
+    def test_publish_allows_missing_optional_product_meta_fields(self):
+        lr = ListingRequest.objects.create(
+            seller=self.seller,
+            category=self.category,
+            category_label="Test Category",
+            product_name="P2b",
+            unit_price="10.00",
+            moq=1,
+            stage=ListingRequest.Stage.INSPECTION,
+            compliance_verified=True,
+            inspected=True,
+            product_meta={},
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        approve = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/review/", {"decision": "approve"}, format="json")
+        self.assertEqual(approve.status_code, 200)
+
+        publish = self.client.post(f"/api/v1/admin/listing-requests/{lr.id}/publish/", {}, format="json")
+        self.assertEqual(publish.status_code, 200)
+        lr.refresh_from_db()
+        self.assertEqual(lr.stage, ListingRequest.Stage.DONE)
+        self.assertIsNotNone(lr.created_product_id)
 
     def test_publish_only_from_live_and_creates_product(self):
         lr = ListingRequest.objects.create(

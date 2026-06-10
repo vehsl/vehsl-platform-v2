@@ -528,13 +528,7 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         && product.name.trim().length > 0
         && product.price.trim().length > 0
         && product.companyName.trim().length > 0
-        && product.sku.trim().length > 0
-        && product.hsCode.trim().length > 0
-        && product.originCountry.trim().length > 0
-        && product.leadTimeDays.trim().length > 0
-        && product.weightGrams.trim().length > 0
-        && product.shipTimeMinDays.trim().length > 0
-        && product.shipTimeMaxDays.trim().length > 0;
+        && !!product.categoryId;
     const canSaveSampleAddress = sample.address.trim().length > 6 && sample.contactName.trim().length > 1;
 
     // ── Handlers ────────────────────────────────────────────────────────────
@@ -647,18 +641,6 @@ export function NewSellerOnboarding({ sellerName = 'Noah', onComplete, initialSt
         if (!product.companyName.trim()) { setCompanyError(true); hasErr = true; }
         if (hasErr) {
             toast('Almost there', { description: 'Fill in the required fields to submit your request' });
-            return;
-        }
-        const missing: string[] = [];
-        if (!product.sku.trim()) missing.push('SKU');
-        if (!product.hsCode.trim()) missing.push('HS code');
-        if (!product.originCountry.trim()) missing.push('Origin country');
-        if (!product.leadTimeDays.trim()) missing.push('Lead time');
-        if (!product.weightGrams.trim()) missing.push('Weight (grams)');
-        if (!product.shipTimeMinDays.trim() || !product.shipTimeMaxDays.trim()) missing.push('Ship time range');
-        if (missing.length) {
-            setDetailsOpen(true);
-            toast('Missing required product details', { description: missing.join(', ') });
             return;
         }
         wBounce(el);
