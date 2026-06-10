@@ -694,6 +694,9 @@ class AdminListingRequestSerializer(ListingRequestSerializer):
     missing_fields = serializers.SerializerMethodField()
     required_documents = serializers.SerializerMethodField()
     documents_attached = serializers.SerializerMethodField()
+    can_verify_compliance = serializers.SerializerMethodField()
+    can_confirm_pickup = serializers.SerializerMethodField()
+    can_publish = serializers.SerializerMethodField()
 
     class Meta(ListingRequestSerializer.Meta):
         fields = [
@@ -703,7 +706,19 @@ class AdminListingRequestSerializer(ListingRequestSerializer):
             "missing_fields",
             "required_documents",
             "documents_attached",
+            "can_verify_compliance",
+            "can_confirm_pickup",
+            "can_publish",
         ] + list(ListingRequestSerializer.Meta.fields)
+
+    def get_can_verify_compliance(self, obj: ListingRequest):
+        return obj.stage == ListingRequest.Stage.COMPLIANCE and not obj.compliance_verified
+
+    def get_can_confirm_pickup(self, obj: ListingRequest):
+        return obj.stage == ListingRequest.Stage.SAMPLES
+
+    def get_can_publish(self, obj: ListingRequest):
+        return obj.stage == ListingRequest.Stage.LIVE and obj.compliance_verified and not obj.created_product_id
 
     def get_seller_label(self, obj: ListingRequest):
         seller = getattr(obj, "seller", None)

@@ -1529,9 +1529,6 @@ export function AdminProducts() {
   const [approveRating, setApproveRating] = useState<string>("");
   const [approveSaving, setApproveSaving] = useState(false);
 
-  const [publishOpen, setPublishOpen] = useState(false);
-  const [publishId, setPublishId] = useState<number | null>(null);
-  const [publishRating, setPublishRating] = useState<string>("");
   const [publishSaving, setPublishSaving] = useState(false);
 
   const [readinessOpen, setReadinessOpen] = useState(false);
@@ -1769,11 +1766,26 @@ export function AdminProducts() {
       return;
     }
 
+    if (publishSaving) return;
+    setPublishSaving(true);
     setActionError("");
     setActionSuccess("");
-    setPublishId(id);
-    setPublishRating("");
-    setPublishOpen(true);
+
+    try {
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      setActionSuccess("Published. Product created and listing request moved to Done.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+      refreshProducts();
+    } catch (e: any) {
+      setActionError(e?.message || "Publish failed.");
+    } finally {
+      setPublishSaving(false);
+    }
   };
 
   const computeMissingFields = (lr: any): string[] => {
@@ -2034,41 +2046,6 @@ export function AdminProducts() {
     }
   };
 
-  const submitPublishModal = async () => {
-    const id = Number(publishId || 0);
-    if (!id) return;
-    if (publishSaving) return;
-    setPublishSaving(true);
-    try {
-      const raw = (publishRating || "").trim();
-      const body: any = {};
-      if (raw) {
-        const rating = Number(raw);
-        if (!Number.isFinite(rating) || rating < 0 || rating > 5) {
-          setActionError("Rating must be between 0 and 5.");
-          return;
-        }
-        body.rating = rating;
-      }
-      await fetchJson(`/api/v1/admin/listing-requests/${id}/publish/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      setPublishOpen(false);
-      setPublishId(null);
-      setPublishRating("");
-      setActionSuccess("Published. Product created and listing request moved to Done.");
-      window.setTimeout(() => setActionSuccess(""), 2500);
-      refreshListingRequests();
-      refreshProducts();
-    } catch (e: any) {
-      setActionError(e?.message || "Publish failed.");
-    } finally {
-      setPublishSaving(false);
-    }
-  };
-
   const completeInspection = async (lr: any) => {
     const id = Number(lr?.id || 0);
     if (!id) return;
@@ -2085,6 +2062,24 @@ export function AdminProducts() {
       refreshListingRequests();
     } catch (e: any) {
       setActionError(e?.message || "Failed to complete inspection.");
+    }
+  };
+
+  const confirmPickupListingRequest = async (lr: any) => {
+    const id = Number(lr?.id || 0);
+    if (!id) return;
+    try {
+      setActionError("");
+      setActionSuccess("");
+      await fetchJson(`/api/v1/admin/listing-requests/${id}/confirm_pickup/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      setActionSuccess("Sample pickup confirmed. Listing is now LIVE.");
+      window.setTimeout(() => setActionSuccess(""), 2500);
+      refreshListingRequests();
+    } catch (e: any) {
+      setActionError(e?.message || "Failed to confirm pickup.");
     }
   };
 
@@ -2844,93 +2839,6 @@ export function AdminProducts() {
                     }`}
                   >
                     {approveSaving ? "Approving…" : "Approve"}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-
-        {publishOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[80] flex items-center justify-center p-5"
-            style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(8px)" }}
-            onClick={(e) => {
-              if (e.target === e.currentTarget && !publishSaving) {
-                setPublishOpen(false);
-                setPublishId(null);
-                setPublishRating("");
-              }
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.97, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.98, y: 5 }}
-              transition={{ duration: 0.25 }}
-              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/30 shadow-2xl overflow-hidden"
-            >
-              <div className="px-6 py-5 border-b border-border/20 flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-[0.9375rem] font-bold text-foreground/85">Publish Listing</div>
-                  <div className="text-[0.8125rem] text-muted-foreground/70 mt-0.5">Create the marketplace product and finalize this request.</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (publishSaving) return;
-                    setPublishOpen(false);
-                    setPublishId(null);
-                    setPublishRating("");
-                  }}
-                  className="w-9 h-9 rounded-full bg-muted/30 hover:bg-muted/40 grid place-items-center"
-                >
-                  <X size={16} className="text-muted-foreground/70" />
-                </button>
-              </div>
-
-              <div className="p-6 space-y-4">
-                <div>
-                  <div className="text-[0.75rem] uppercase tracking-wide text-muted-foreground/60 mb-2">Rating (0–5)</div>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    max={5}
-                    step={0.1}
-                    value={publishRating}
-                    onChange={(e) => setPublishRating(e.target.value)}
-                    placeholder="Leave blank for default 4.8"
-                    className="w-full px-4 py-3 rounded-2xl bg-muted/20 border border-border/30 text-[0.875rem] text-foreground/80 placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30"
-                  />
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (publishSaving) return;
-                      setPublishOpen(false);
-                      setPublishId(null);
-                      setPublishRating("");
-                    }}
-                    className="px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void submitPublishModal()}
-                    disabled={publishSaving}
-                    className={`px-4 py-2.5 rounded-2xl text-[0.8125rem] font-semibold border ${
-                      publishSaving
-                        ? "bg-muted/10 border-border/20 text-muted-foreground/40 cursor-not-allowed"
-                        : "bg-primary/10 border-primary/20 text-primary hover:bg-primary/15"
-                    }`}
-                  >
-                    {publishSaving ? "Publishing…" : "Publish"}
                   </button>
                 </div>
               </div>
@@ -3871,24 +3779,25 @@ export function AdminProducts() {
             ) : (
               <div className="overflow-hidden rounded-2xl border border-border/30">
                 <div className="grid grid-cols-12 gap-3 px-4 py-3 bg-muted/10 text-[0.6875rem] uppercase tracking-wide text-muted-foreground/60">
-                  <div className="col-span-3">Product</div>
-                  <div className="col-span-3">Seller</div>
+                  <div className="col-span-2">Product</div>
+                  <div className="col-span-2">Seller</div>
                   <div className="col-span-2">Stage</div>
                   <div className="col-span-1">Created</div>
                   <div className="col-span-1 text-right">Changes</div>
-                  <div className="col-span-1 text-right">Review</div>
+                  <div className="col-span-2 text-right">Review</div>
                   <div className="col-span-1 text-right">Publish</div>
+                  <div className="col-span-1 text-right">View</div>
                 </div>
                 <div className="divide-y divide-border/20">
                   {(listingRequests || []).map((lr: any) => (
                     <div key={lr.id} className="grid grid-cols-12 gap-3 px-4 py-3 items-center">
-                      <div className="col-span-3">
-                        <div className="text-[0.875rem] font-semibold text-foreground/85">{lr.product_name || "—"}</div>
-                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.company_name || "—"}</div>
+                      <div className="col-span-2">
+                        <div className="text-[0.875rem] font-semibold text-foreground/85 truncate" title={lr.product_name}>{lr.product_name || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60 truncate">{lr.company_name || "—"}</div>
                       </div>
-                      <div className="col-span-3">
-                        <div className="text-[0.8125rem] text-foreground/80">{lr.seller_label || lr.seller_email || "—"}</div>
-                        <div className="text-[0.75rem] text-muted-foreground/60">{lr.seller_email || "—"}</div>
+                      <div className="col-span-2">
+                        <div className="text-[0.8125rem] text-foreground/80 truncate">{lr.seller_label || lr.seller_email || "—"}</div>
+                        <div className="text-[0.75rem] text-muted-foreground/60 truncate">{lr.seller_email || "—"}</div>
                       </div>
                       <div className="col-span-2 flex items-center gap-2">
                         <StatusPill 
@@ -3935,47 +3844,33 @@ export function AdminProducts() {
                           Changes
                         </button>
                       </div>
-                      <div className="col-span-1 flex justify-end">
+                      <div className="col-span-2 flex justify-end gap-2 flex-wrap">
                         {(() => {
-                          const rawStageKey = String(lr?.stage || "").toLowerCase();
-                          const stageKey = rawStageKey === "inbound" ? "inspection" : rawStageKey;
-                          const meta = lr?.product_meta && typeof lr.product_meta === "object" ? lr.product_meta : {};
-                          const reviewMessage = (meta?.review_message || "").toString().trim();
-                          const needsInspection = !!lr?.inspector;
+                          const stageKey = String(lr?.stage || "").toLowerCase();
                           const isDone = stageKey === "done" || !!lr?.created_product_id;
-                          const missingForApproval = computeMissingFields(lr);
-                          const requiredDocs = Array.isArray(lr?.required_documents)
-                            ? lr.required_documents.filter((x: any) => typeof x === "string")
-                            : [];
-                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
-                          const needsDocs = requiredDocs.length > 0;
-                          const canApprove =
-                            !!lr?.compliance_verified &&
-                            (!needsInspection || !!lr?.inspected) &&
-                            stageKey === "inspection" &&
-                            (!needsDocs || docsAttached > 0);
-
-                          if (!isDone && stageKey === "samples" && !!reviewMessage) {
-                            return (
-                              <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap" title={reviewMessage}>
-                                Awaiting seller
-                              </div>
-                            );
-                          }
-
-                          if (
-                            !isDone &&
-                            !lr?.compliance_verified &&
-                            (stageKey === "compliance" || stageKey === "inspection" || (stageKey === "samples" && !reviewMessage))
-                          ) {
+                          
+                          if (lr.can_verify_compliance) {
                             return (
                               <button
                                 type="button"
                                 onClick={() => verifyCompliance(lr)}
                                 className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
-                                title="Verify Compliance (moves listing to Inspection stage)"
+                                title="Verify Compliance"
                               >
                                 Verify
+                              </button>
+                            );
+                          }
+
+                          if (lr.can_confirm_pickup) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => confirmPickupListingRequest(lr)}
+                                className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 hover:bg-indigo-500/15 transition-colors"
+                                title="Confirm Sample Pickup"
+                              >
+                                Confirm Pickup
                               </button>
                             );
                           }
@@ -3993,78 +3888,39 @@ export function AdminProducts() {
                             );
                           }
 
+                          const requiredDocs = Array.isArray(lr?.required_documents) ? lr.required_documents : [];
+                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+                          const needsDocs = requiredDocs.length > 0;
+                          const canApprove = !!lr?.compliance_verified && stageKey === "inspection" && (!needsDocs || docsAttached > 0);
+
                           if (!isDone && canApprove) {
                             return (
                               <button
                                 type="button"
                                 onClick={() => approveListingRequest(lr)}
                                 className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15 transition-colors"
-                                title="Approve (sets rating and moves listing to Approved stage)"
+                                title="Approve Listing"
                               >
                                 Approve
                               </button>
                             );
                           }
 
-                          if (!isDone && stageKey === "inspection") {
-                            const blocked =
-                              (!!lr?.compliance_verified && (!needsInspection || !!lr?.inspected)) &&
-                              (needsDocs && docsAttached <= 0);
-                            if (blocked) {
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={() => openReadinessModal(lr, "Missing compliance documents before approval")}
-                                  className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                                  title="See what is missing and request changes"
-                                >
-                                  Needs docs
-                                </button>
-                              );
-                            }
-                          }
-
-                          if (stageKey === "live") {
-                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Approved</div>;
-                          }
-                          if (isDone) {
-                            return <div className="text-[0.75rem] text-muted-foreground/50 whitespace-nowrap">Done</div>;
-                          }
+                          if (stageKey === "live") return <div className="text-[0.75rem] text-muted-foreground/50">Approved</div>;
+                          if (isDone) return <div className="text-[0.75rem] text-muted-foreground/50">Done</div>;
+                          
                           return <div className="text-[0.75rem] text-muted-foreground/50">—</div>;
                         })()}
                       </div>
-                      <div className="col-span-1 flex justify-end items-end flex-col">
+                      <div className="col-span-1 flex justify-end">
                         {(() => {
-                          const missing = computeMissingFields(lr);
-                          const requiredDocs = Array.isArray(lr?.required_documents)
-                            ? lr.required_documents.filter((x: any) => typeof x === "string")
-                            : [];
-                          const docsAttached = Number(lr?.documents_attached || 0) || 0;
+                          const canPublish = !!lr.can_publish;
+                          const isDone = String(lr?.stage || "").toLowerCase() === "done" || !!lr?.created_product_id;
+                          
+                          if (isDone) return <div className="text-[0.75rem] text-muted-foreground/50">Published</div>;
 
-                          const needsInspection = !!lr?.inspector;
-                          const needsDocs = requiredDocs.length > 0;
-                          const canPublish =
-                            !lr?.created_product_id &&
-                            String(lr?.stage || "").toLowerCase() === "live" &&
-                            !!lr?.compliance_verified &&
-                            (!needsInspection || !!lr?.inspected) &&
-                            (!needsDocs || docsAttached > 0);
-
-                          const showPublish = !lr?.created_product_id && String(lr?.stage || "").toLowerCase() !== "done";
-                          const title = lr?.created_product_id
-                            ? "Already published"
-                            : String(lr?.stage || "").toLowerCase() !== "live"
-                              ? "Needs approval (Live stage) before publish"
-                              : !lr?.compliance_verified
-                                ? "Needs Compliance Verification"
-                                : needsInspection && !lr?.inspected
-                                  ? "Needs Inspection Completion"
-                                : needsDocs && docsAttached <= 0
-                                  ? `Missing required documents (${requiredDocs.join(", ")})`
-                                    : "Publish to Marketplace";
-
-                          return showPublish ? (
-                            <>
+                          return (
+                            <div className="flex flex-col items-end">
                               <button
                                 type="button"
                                 onClick={() => publishListingRequest(lr)}
@@ -4074,30 +3930,38 @@ export function AdminProducts() {
                                     ? "bg-primary/10 border border-primary/20 text-primary hover:bg-primary/15"
                                     : "bg-muted/10 border border-border/20 text-muted-foreground/40 cursor-not-allowed"
                                 }`}
-                                title={title}
                               >
                                 Publish
                               </button>
-                              {!canPublish && (
+                              {!canPublish && lr.stage === "live" && (
                                 <button
                                   type="button"
-                                  onClick={() => openReadinessModal(lr, title)}
+                                  onClick={() => openReadinessModal(lr, "Needs compliance checks before publish")}
                                   className="mt-1 text-[0.6875rem] font-semibold text-primary/70 hover:text-primary underline underline-offset-4"
                                 >
                                   Why disabled?
                                 </button>
                               )}
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => openReadinessModal(lr, "Already published")}
-                              className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              View
-                            </button>
+                            </div>
                           );
                         })()}
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (lr.created_product_id) {
+                              setListingRequestStageFilter("all");
+                              setSearch(lr.product_name);
+                              setMode("products");
+                            } else {
+                              openReadinessModal(lr, "View listing details");
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-xl text-[0.75rem] font-semibold bg-muted/20 border border-border/30 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          View
+                        </button>
                       </div>
                     </div>
                   ))}

@@ -1495,8 +1495,8 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 return Response({"detail": "Compliance must be verified before approval."}, status=status.HTTP_400_BAD_REQUEST)
             if lr.inspector and not lr.inspected:
                 return Response({"detail": "Inspection must be completed before approval."}, status=status.HTTP_400_BAD_REQUEST)
-            if lr.stage not in {ListingRequest.Stage.INSPECTION, ListingRequest.Stage.INBOUND}:
-                return Response({"detail": "Listing must be in Inspection stage before approval."}, status=status.HTTP_400_BAD_REQUEST)
+            if lr.stage not in {ListingRequest.Stage.SAMPLES, ListingRequest.Stage.INBOUND}:
+                return Response({"detail": "Listing must be in Samples or Inbound stage before approval."}, status=status.HTTP_400_BAD_REQUEST)
             required_documents = _listing_request_required_documents(lr)
             if required_documents and _listing_request_non_image_attachment_count(lr) <= 0:
                 return Response(
@@ -1564,7 +1564,7 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
                 action="admin_listing_request_reviewed",
                 target_type="listing_request",
                 target_id=str(lr.id),
-                payload={"decision": "needs_changes"},
+                payload={"decision": "needs_changes", "message": message, "stage": lr.stage},
             )
             return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
@@ -1677,8 +1677,16 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
         lr.compliance_verified = verified
         lr.compliance_notes = notes
         if verified:
-            lr.stage = ListingRequest.Stage.INSPECTION
+            lr.stage = ListingRequest.Stage.SAMPLES
         lr.save(update_fields=["compliance_verified", "compliance_notes", "stage", "updated_at"])
+
+        audit(
+            request.user,
+            action="admin_listing_request_compliance_verified",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"verified": verified, "notes": notes, "stage": lr.stage},
+        )
 
         inbound_created = False
         inbound_id = None
@@ -1735,7 +1743,44 @@ class AdminListingRequestViewSet(viewsets.GenericViewSet):
             action="admin_listing_request_inspector_assigned",
             target_type="listing_request",
             target_id=str(lr.id),
-            payload={"inspector_id": str(inspector.id)},
+            payload={"inspector_id": str(inspector_id)},
+        )
+        return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm_pickup")
+    def confirm_pickup(self, request, pk=None):
+        lr = self.get_queryset().filter(pk=pk).first()
+        if not lr:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if lr.stage != ListingRequest.Stage.SAMPLES:
+            return Response({"detail": "Listing must be in Samples stage to confirm pickup."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lr.stage = ListingRequest.Stage.LIVE
+        lr.save(update_fields=["stage", "updated_at"])
+
+        try:
+            Notification.objects.create(
+                user=lr.seller,
+                channel=Notification.Channel.IN_APP,
+                event_type="listing_request_picked_up",
+                payload={
+                    "title": "Sample Picked Up",
+                    "body": f'Sample for "{(lr.product_name or "").strip()}" has been picked up. Your listing is now LIVE.',
+                    "listing_request_id": str(lr.id),
+                    "stage": lr.stage,
+                },
+                status=Notification.Status.QUEUED,
+            )
+        except Exception:
+            pass
+
+        audit(
+            request.user,
+            action="admin_listing_request_picked_up",
+            target_type="listing_request",
+            target_id=str(lr.id),
+            payload={"stage": lr.stage},
         )
         return Response(AdminListingRequestDetailSerializer(lr, context={"request": request}).data)
 
