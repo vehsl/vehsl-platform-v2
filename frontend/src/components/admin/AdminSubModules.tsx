@@ -597,6 +597,10 @@ export function AdminUsers() {
   const cardWrap = (active: boolean) =>
     `rounded-[1.25rem] transition-all focus:outline-none ${active ? "ring-2 ring-primary/30" : "ring-2 ring-transparent"}`;
 
+  // #region debug-point A:admin-users-delete-modal-state
+  fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "deleteopen-not-defined", runId: "pre-fix", hypothesisId: "A", location: "frontend/src/components/admin/AdminSubModules.tsx:600", msg: "[DEBUG] AdminUsers render state for delete modal", data: { route: typeof window !== "undefined" ? window.location.pathname : "", deleteOpenType: typeof deleteOpen, setDeleteOpenType: typeof setDeleteOpen, deleteProductIdType: typeof deleteProductId, deleteProductNameType: typeof deleteProductName, deleteSavingType: typeof deleteSaving, submitDeleteType: typeof submitDelete, resetLinkOpenType: typeof resetLinkOpen }, ts: Date.now() }) }).catch(() => {});
+  // #endregion
+
   return (
     <motion.div variants={stagger.container} initial="hidden" animate="visible" className="space-y-8 max-w-[1100px]">
       <motion.div variants={stagger.item} className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -1283,58 +1287,6 @@ export function AdminUsers() {
                   icon={<Copy size={14} />}
                 >
                   Copy link
-                </BounceButton>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {deleteOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30"
-            onClick={() => setDeleteOpen(false)}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 10, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.98 }}
-              transition={{ duration: 0.2 }}
-              className="w-full max-w-[520px] rounded-3xl bg-card border border-border/40 shadow-[0_24px_80px_rgba(0,0,0,0.25)] p-6 sm:p-8"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-4 mb-4">
-                <div className="min-w-0">
-                  <h2 className="text-foreground tracking-tight mb-1 truncate">Delete product</h2>
-                  <p className="text-muted-foreground text-[0.8125rem] truncate">
-                    #{deleteProductId || "—"} · {deleteProductName || "Product"}
-                  </p>
-                </div>
-                <button className="p-2 rounded-2xl hover:bg-muted/20 text-muted-foreground/60" onClick={() => setDeleteOpen(false)}>
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="rounded-2xl bg-[#E5484D]/5 border border-[#E5484D]/10 p-4 text-[0.8125rem] text-[#E5484D]/80">
-                This removes the product from the marketplace and hides it across the system. This action cannot be undone.
-              </div>
-
-              <div className="flex justify-end gap-2 mt-6">
-                <BounceButton variant="ghost" size="sm" onClick={() => setDeleteOpen(false)}>
-                  Cancel
-                </BounceButton>
-                <BounceButton
-                  variant="primary"
-                  size="sm"
-                  onClick={deleteSaving ? undefined : submitDelete}
-                  className={deleteSaving ? "opacity-70 pointer-events-none bg-[#E5484D]/80" : "bg-[#E5484D] hover:bg-[#D63E44]"}
-                  icon={deleteSaving ? <Clock size={14} /> : <Trash2 size={14} />}
-                >
-                  {deleteSaving ? "Deleting…" : "Delete"}
                 </BounceButton>
               </div>
             </motion.div>

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import hashlib
 
+from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.core.cache import cache
@@ -379,6 +381,48 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"notification:{self.pk}"
+
+
+def _email_verification_code_hash(email: str, purpose: str, code: str) -> str:
+    seed = f"{settings.SECRET_KEY}:{(email or '').strip().lower()}:{(purpose or '').strip().lower()}:{(code or '').strip()}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+class EmailVerificationCode(models.Model):
+    class Purpose(models.TextChoices):
+        SIGNUP = "signup", "Signup"
+
+    email = models.EmailField()
+    purpose = models.CharField(max_length=32, choices=Purpose.choices, default=Purpose.SIGNUP)
+    code_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    sent_at = models.DateTimeField(auto_now=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["email", "purpose"]),
+            models.Index(fields=["purpose", "expires_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["email", "purpose"], name="uniq_email_verification_email_purpose"),
+        ]
+
+    def set_code(self, code: str) -> None:
+        self.code_hash = _email_verification_code_hash(self.email, self.purpose, code)
+
+    def matches(self, code: str) -> bool:
+        expected = _email_verification_code_hash(self.email, self.purpose, code)
+        return expected == (self.code_hash or "")
+
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    def __str__(self):
+        return f"email_verification:{self.email}:{self.purpose}"
 
 
 class AdminUiNotificationState(models.Model):

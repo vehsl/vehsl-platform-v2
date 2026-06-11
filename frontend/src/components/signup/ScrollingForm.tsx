@@ -47,6 +47,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { SignupData, SectionId } from "./SignupFlow";
+import { getApiBase } from "@/lib/api";
 
 /* ═══════════════════════════════════════
    Constants
@@ -172,6 +173,9 @@ export function ScrollingForm({
   const [interactionCount, setInteractionCount] = useState(0);
   const bounceIntensity = Math.min(1 + interactionCount * 0.04, 1.6);
   const [emailCodeSent, setEmailCodeSent] = useState(false);
+  const [sendingEmailCode, setSendingEmailCode] = useState(false);
+  const [verifyingEmailCode, setVerifyingEmailCode] = useState(false);
+  const [emailCodeError, setEmailCodeError] = useState("");
   // const [showLivenessModal, setShowLivenessModal] = useState(false);
   const [creatingAccount, setCreatingAccount] = useState(false);
 
@@ -245,6 +249,89 @@ export function ScrollingForm({
     setTimeout(() => scrollTo(s), 100);
   }, [onSectionEdit, scrollTo]);
 
+  const handleRequestEmailCode = useCallback(async () => {
+    const email = (data.email || "").trim().toLowerCase();
+    if (!isValidEmail(email) || sendingEmailCode) return;
+
+    try {
+      setSendingEmailCode(true);
+      setEmailCodeError("");
+
+      const res = await fetch(`${getApiBase()}/api/v1/auth/email-verification/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg =
+          payload?.detail ||
+          payload?.email?.[0] ||
+          payload?.email ||
+          "Unable to send verification code.";
+        setEmailCodeSent(false);
+        toast.error(typeof msg === "string" ? msg : "Unable to send verification code.");
+        return;
+      }
+
+      updateData({
+        email: email,
+        emailCode: "",
+        emailVerified: false,
+        emailVerificationToken: "",
+      });
+      setEmailCodeSent(true);
+      toast.success("Verification code sent to your email.");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unable to send verification code.";
+      toast.error(message);
+    } finally {
+      setSendingEmailCode(false);
+    }
+  }, [data.email, sendingEmailCode, updateData]);
+
+  const handleVerifyEmailCode = useCallback(async (code: string) => {
+    const email = (data.email || "").trim().toLowerCase();
+    if (!isValidEmail(email) || code.length !== 6 || verifyingEmailCode) return;
+
+    try {
+      setVerifyingEmailCode(true);
+      setEmailCodeError("");
+
+      const res = await fetch(`${getApiBase()}/api/v1/auth/email-verification/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code }),
+      });
+      const payload = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const msg = payload?.detail || "Invalid verification code.";
+        updateData({ emailVerified: false, emailVerificationToken: "" });
+        setEmailCodeError(typeof msg === "string" ? msg : "Invalid verification code.");
+        toast.error(typeof msg === "string" ? msg : "Invalid verification code.");
+        return;
+      }
+
+      updateData({
+        email: email,
+        emailCode: code,
+        emailVerified: true,
+        emailVerificationToken: payload?.verification_token || "",
+      });
+      setEmailCodeError("");
+      handleDone("email");
+      toast.success("Email verified.");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unable to verify code.";
+      setEmailCodeError(message);
+      toast.error(message);
+    } finally {
+      setVerifyingEmailCode(false);
+    }
+  }, [data.email, handleDone, updateData, verifyingEmailCode]);
+
   const handleCreateAccount = useCallback(async () => {
     if (creatingAccount) return;
 
@@ -271,18 +358,12 @@ export function ScrollingForm({
       return;
     }
 
-    const base = (() => {
-      const fromEnv = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-      const normalize = (u: string) => u.replace(/\/$/, "");
-      if (fromEnv && /^https?:\/\//.test(fromEnv) && !/\/\/backend(?=[:/]|$)/.test(fromEnv)) {
-        return normalize(fromEnv);
-      }
-      if (typeof window !== "undefined") {
-        const host = (window.location.hostname === "0.0.0.0" || window.location.hostname === "") ? "localhost" : window.location.hostname;
-        return normalize(`${window.location.protocol}//${host}:8000`);
-      }
-      return "http://localhost:8000";
-    })();
+    const base = getApiBase();
+
+    if (email && (!data.emailVerified || !(data.emailVerificationToken || "").trim())) {
+      toast.error("Please verify your email before creating the account.");
+      return;
+    }
 
     try {
       setCreatingAccount(true);
@@ -315,6 +396,7 @@ export function ScrollingForm({
 
       const fd = new FormData();
       if (email) fd.append("email", email);
+      if (email && data.emailVerificationToken) fd.append("email_verification_token", data.emailVerificationToken);
       if (phone) fd.append("phone", phone);
       fd.append("first_name", (data.firstName || "").trim());
       fd.append("last_name", (data.lastName || "").trim());
@@ -546,12 +628,22 @@ export function ScrollingForm({
             <InpWithAction
               label="your@email.com"
               value={data.email}
-              onChange={(v) => { updateData({ email: v, emailVerified: false }); setEmailCodeSent(false); }}
+              onChange={(v) => {
+                updateData({
+                  email: v,
+                  emailCode: "",
+                  emailVerified: false,
+                  emailVerificationToken: "",
+                });
+                setEmailCodeSent(false);
+                setEmailCodeError("");
+              }}
               type="email"
               actionLabel="Send Code"
-              actionActive={isValidEmail(data.email)}
+              actionActive={isValidEmail(data.email) && !sendingEmailCode}
               actionDone={emailCodeSent}
-              onAction={() => setEmailCodeSent(true)}
+              actionBusy={sendingEmailCode}
+              onAction={handleRequestEmailCode}
             />
             <AnimatePresence>
               {emailCodeSent && (
@@ -560,8 +652,27 @@ export function ScrollingForm({
                     label="6-digit verification code"
                     value={data.emailCode || ""}
                     onChange={(v) => updateData({ emailCode: v })}
-                    onComplete={() => { updateData({ emailVerified: true }); handleDone("email"); }}
+                    busy={verifyingEmailCode}
+                    verified={Boolean(data.emailVerified)}
+                    onComplete={(code) => { void handleVerifyEmailCode(code); }}
                   />
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => { void handleRequestEmailCode(); }}
+                      disabled={sendingEmailCode}
+                      className="font-['Urbanist',sans-serif] text-[11px] font-semibold text-[#0171e3] disabled:text-[#c8c8cd] cursor-pointer disabled:cursor-not-allowed"
+                    >
+                      {sendingEmailCode ? "Sending..." : "Resend code"}
+                    </button>
+                    {data.emailVerified ? (
+                      <span className="font-['Urbanist',sans-serif] text-[11px] text-[#34C759]">Verified</span>
+                    ) : emailCodeError ? (
+                      <span className="font-['Urbanist',sans-serif] text-[11px] text-[#FF3B30] text-right">{emailCodeError}</span>
+                    ) : (
+                      <span className="font-['Urbanist',sans-serif] text-[11px] text-[#b0b0b5]">Enter the code from your inbox</span>
+                    )}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1097,9 +1208,9 @@ function H({ b, m }: { b: string; m: string }) {
 }
 
 /* Input with inline right-side action button */
-function InpWithAction({ label, value, onChange, type = "text", actionLabel, actionActive, actionDone, onAction }: {
+function InpWithAction({ label, value, onChange, type = "text", actionLabel, actionActive, actionDone, actionBusy = false, onAction }: {
   label: string; value: string; onChange: (v: string) => void; type?: string;
-  actionLabel: string; actionActive: boolean; actionDone: boolean; onAction: () => void;
+  actionLabel: string; actionActive: boolean; actionDone: boolean; actionBusy?: boolean; onAction: () => void;
 }) {
   const [f, setF] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
@@ -1144,7 +1255,7 @@ function InpWithAction({ label, value, onChange, type = "text", actionLabel, act
             className="px-3 h-[34px] rounded-[10px] font-['Urbanist',sans-serif] font-semibold text-[12px] whitespace-nowrap cursor-pointer disabled:cursor-not-allowed transition-all"
             style={{ background: actionActive ? "rgba(1,113,227,0.09)" : "rgba(134,134,139,0.05)", color: actionActive ? "#0171e3" : "#c8c8cd" }}
             whileHover={actionActive ? { scale: 1.03 } : {}} whileTap={actionActive ? { scale: 0.96 } : {}}>
-            {actionLabel}
+            {actionBusy ? "Sending..." : actionLabel}
           </motion.button>
         )}
       </div>
@@ -1153,8 +1264,8 @@ function InpWithAction({ label, value, onChange, type = "text", actionLabel, act
 }
 
 /* Auto-completing 6-digit code input */
-function AutoCodeInp({ label, value, onChange, onComplete }: {
-  label: string; value: string; onChange: (v: string) => void; onComplete: () => void;
+function AutoCodeInp({ label, value, onChange, onComplete, busy = false, verified = false }: {
+  label: string; value: string; onChange: (v: string) => void; onComplete: (code: string) => void; busy?: boolean; verified?: boolean;
 }) {
   const [f, setF] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
@@ -1164,26 +1275,28 @@ function AutoCodeInp({ label, value, onChange, onComplete }: {
   const handleChange = (raw: string) => {
     const cleaned = raw.replace(/\D/g, "").slice(0, 6);
     onChange(cleaned);
-    if (cleaned.length === 6) setTimeout(() => onComplete(), 350);
+    if (cleaned.length === 6) setTimeout(() => onComplete(cleaned), 350);
   };
 
   return (
     <div onClick={() => ref.current?.focus()} className="relative w-full h-[52px] rounded-[14px] cursor-text"
-      style={{ border: complete ? "1.5px solid #34C759" : f ? "1.5px solid #0171e3" : digits.length > 0 ? "1.5px solid rgba(1,113,227,0.18)" : "1.5px solid rgba(134,134,139,0.12)", background: complete ? "rgba(52,199,89,0.02)" : f ? "rgba(1,113,227,0.01)" : "transparent", transition: "border-color .2s" }}>
-      <motion.span initial={{ color: "#b0b0b5", fontSize: 13 }} animate={{ top: digits.length > 0 || f ? 6 : 15, fontSize: digits.length > 0 || f ? 10 : 13, color: complete ? "#34C759" : f ? "#0171e3" : "#b0b0b5" }}
+      style={{ border: verified ? "1.5px solid #34C759" : f ? "1.5px solid #0171e3" : digits.length > 0 ? "1.5px solid rgba(1,113,227,0.18)" : "1.5px solid rgba(134,134,139,0.12)", background: verified ? "rgba(52,199,89,0.02)" : f ? "rgba(1,113,227,0.01)" : "transparent", transition: "border-color .2s" }}>
+      <motion.span initial={{ color: "#b0b0b5", fontSize: 13 }} animate={{ top: digits.length > 0 || f ? 6 : 15, fontSize: digits.length > 0 || f ? 10 : 13, color: verified ? "#34C759" : f ? "#0171e3" : "#b0b0b5" }}
         transition={{ duration: 0.15 }}
         className="absolute left-4 pointer-events-none font-['Urbanist',sans-serif] font-medium select-none">{label}</motion.span>
       <input ref={ref} type="text" inputMode="numeric" pattern="[0-9]*" value={digits}
         onChange={(e) => handleChange(e.target.value)}
         onFocus={() => setF(true)} onBlur={() => setF(false)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && complete) { e.preventDefault(); onComplete(); } }}
+        onKeyDown={(e) => { if (e.key === 'Enter' && complete) { e.preventDefault(); onComplete(digits); } }}
         aria-label={label} className="absolute inset-0 w-full h-full px-4 pt-5 pb-1 pr-12 bg-transparent border-none rounded-[14px] font-['Urbanist',sans-serif] font-semibold text-[16px] tracking-[0.15em] text-[#202425]" style={{ outline: "none" }} />
       <div className="absolute right-3 top-1/2 -translate-y-1/2">
-        {complete ? (
+        {verified ? (
           <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", stiffness: 300, damping: 18 }}
             className="w-6 h-6 rounded-full bg-[#34C759] flex items-center justify-center">
             <Check className="w-3.5 h-3.5 text-white" />
           </motion.div>
+        ) : busy ? (
+          <span className="font-['Urbanist',sans-serif] text-[10px] text-[#0171e3]">Verifying...</span>
         ) : (
           <span className="font-['Urbanist',sans-serif] text-[10px] text-[#c8c8cd]">{digits.length}/6</span>
         )}

@@ -10,6 +10,7 @@ export type SignupData = {
   email: string;
   emailCode?: string;
   emailVerified?: boolean;
+  emailVerificationToken?: string;
   phone: string;
   day: string;
   month: string;

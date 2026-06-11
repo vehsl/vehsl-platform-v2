@@ -150,6 +150,26 @@ CORS_ALLOW_ALL_ORIGINS = _env_bool("CORS_ALLOW_ALL_ORIGINS", False) or DEBUG
 
 CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS", [])
 
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend" if DEBUG else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = _env_bool("EMAIL_USE_TLS", True)
+EMAIL_USE_SSL = _env_bool("EMAIL_USE_SSL", False)
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "no-reply@vehsl.local")
+
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "").strip()
+SENDGRID_FROM_EMAIL = os.environ.get("SENDGRID_FROM_EMAIL", "").strip()
+
+EMAIL_VERIFICATION_CODE_TTL_SECONDS = int(os.environ.get("EMAIL_VERIFICATION_CODE_TTL_SECONDS", "600"))
+EMAIL_VERIFICATION_TOKEN_TTL_SECONDS = int(os.environ.get("EMAIL_VERIFICATION_TOKEN_TTL_SECONDS", "1800"))
+EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS = int(os.environ.get("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", "60"))
+EMAIL_VERIFICATION_MAX_ATTEMPTS = int(os.environ.get("EMAIL_VERIFICATION_MAX_ATTEMPTS", "5"))
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "apps.accounts.authentication.JWTActivityAuthentication",
