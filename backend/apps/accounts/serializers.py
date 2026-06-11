@@ -6,16 +6,19 @@ import hmac
 import time
 
 from django.contrib.auth.password_validation import validate_password
+from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
 from django.db.models import Q
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.utils import timezone
 
 from .models import (
     AdminProfile,
     BuyerAddress,
     BuyerProfile,
+    EmailVerificationCode,
     ChatMessage,
     ChatThread,
     HelpArticle,
@@ -73,6 +76,37 @@ def validate_password_for_platform(password: str) -> str:
         raise serializers.ValidationError(list(e.messages))
 
     return value
+
+
+EMAIL_VERIFICATION_SIGNING_SALT = "accounts.email_verification.signup"
+
+
+def _normalize_verification_email(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def make_signup_email_verification_token(email: str) -> str:
+    return signing.dumps(
+        {
+            "email": _normalize_verification_email(email),
+            "purpose": EmailVerificationCode.Purpose.SIGNUP,
+            "verified_at": timezone.now().isoformat(),
+        },
+        salt=EMAIL_VERIFICATION_SIGNING_SALT,
+        compress=True,
+    )
+
+
+def validate_signup_email_verification_token(token: str, email: str, *, max_age: int) -> None:
+    try:
+        payload = signing.loads(token, salt=EMAIL_VERIFICATION_SIGNING_SALT, max_age=max_age)
+    except signing.BadSignature as exc:
+        raise serializers.ValidationError("Email verification is invalid or expired.") from exc
+
+    token_email = _normalize_verification_email(str(payload.get("email") or ""))
+    purpose = str(payload.get("purpose") or "")
+    if purpose != EmailVerificationCode.Purpose.SIGNUP or token_email != _normalize_verification_email(email):
+        raise serializers.ValidationError("Email verification does not match this email address.")
 
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -721,8 +755,33 @@ class ChatThreadListSerializer(serializers.ModelSerializer):
 
 
 
+class EmailVerificationRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        email = _normalize_verification_email(value)
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError("Email already in use.")
+        return email
+
+
+class EmailVerificationVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    code = serializers.CharField(min_length=6, max_length=6)
+
+    def validate_email(self, value):
+        return _normalize_verification_email(value)
+
+    def validate_code(self, value):
+        code = re.sub(r"\D+", "", value or "")
+        if len(code) != 6:
+            raise serializers.ValidationError("Enter the 6-digit verification code.")
+        return code
+
+
 class RegisterSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False, allow_null=True, allow_blank=True)
+    email_verification_token = serializers.CharField(required=False, allow_blank=True, write_only=True)
     phone = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     first_name = serializers.CharField(required=False, allow_blank=True)
     last_name = serializers.CharField(required=False, allow_blank=True)
@@ -768,9 +827,16 @@ class RegisterSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         email = (attrs.get("email") or "").strip() or None
+        email_verification_token = (attrs.get("email_verification_token") or "").strip()
         phone = (attrs.get("phone") or "").strip() or None
         if not email and not phone:
             raise serializers.ValidationError("Email or phone is required.")
+        if email:
+            email = _normalize_verification_email(email)
+            if not email_verification_token:
+                raise serializers.ValidationError({"email_verification_token": "Email verification is required."})
+            token_max_age = int(self.context.get("email_verification_token_ttl_seconds", 1800) or 1800)
+            validate_signup_email_verification_token(email_verification_token, email, max_age=token_max_age)
         if email and User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError({"email": "Email already in use."})
         if phone and User.objects.filter(phone=phone).exists():
@@ -821,6 +887,7 @@ class RegisterSerializer(serializers.Serializer):
             "pep_status": validated_data.pop("pep_status", None),
         }
         validated_data.pop("pep_check", None)
+        validated_data.pop("email_verification_token", None)
 
         passport_file = validated_data.pop("passport", None)
         driving_license_file = validated_data.pop("driving_license", None)

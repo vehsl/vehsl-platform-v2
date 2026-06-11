@@ -49,6 +49,7 @@ from .models import (
     AuditLog,
     BuyerAddress,
     BuyerProfile,
+    EmailVerificationCode,
     ChatMessage,
     ChatThread,
     HelpArticle,
@@ -72,6 +73,8 @@ from .serializers import (
     ChatMessageSerializer,
     ChatThreadSerializer,
     ChatThreadListSerializer,
+    EmailVerificationRequestSerializer,
+    EmailVerificationVerifySerializer,
     HelpArticleSerializer,
     KycDocumentSelfSerializer,
     KycDocumentUploadSerializer,
@@ -83,6 +86,7 @@ from .serializers import (
     UserSerializer,
     UserSettingsSerializer,
     VehslTokenObtainPairSerializer,
+    make_signup_email_verification_token,
     validate_password_for_platform,
 )
 from .dashboard_serializers import (
@@ -98,6 +102,65 @@ from .dashboard_serializers import (
 from .admin_utils import AdminPageNumberPagination, response_list
 
 SERVER_BUILD = os.environ.get("VEHSL_SERVER_BUILD") or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _email_verification_ttl_seconds() -> int:
+    return max(60, int(os.environ.get("EMAIL_VERIFICATION_CODE_TTL_SECONDS", 600) or 600))
+
+
+def _email_verification_resend_cooldown_seconds() -> int:
+    return max(0, int(os.environ.get("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", 60) or 60))
+
+
+def _email_verification_max_attempts() -> int:
+    return max(1, int(os.environ.get("EMAIL_VERIFICATION_MAX_ATTEMPTS", 5) or 5))
+
+
+def _email_verification_token_ttl_seconds() -> int:
+    return max(60, int(os.environ.get("EMAIL_VERIFICATION_TOKEN_TTL_SECONDS", 1800) or 1800))
+
+
+def _send_transactional_email(to_email: str, subject: str, body: str) -> None:
+    sendgrid_key = str(getattr(django_settings, "SENDGRID_API_KEY", "") or os.environ.get("SENDGRID_API_KEY") or "").strip()
+    sendgrid_from = str(getattr(django_settings, "SENDGRID_FROM_EMAIL", "") or os.environ.get("SENDGRID_FROM_EMAIL") or "").strip()
+
+    if sendgrid_key and sendgrid_from:
+        payload = {
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": sendgrid_from},
+            "subject": subject,
+            "content": [{"type": "text/plain", "value": body}],
+        }
+        req = urllib.request.Request(
+            "https://api.sendgrid.com/v3/mail/send",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {sendgrid_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if int(resp.getcode() or 0) not in {200, 202}:
+                raise RuntimeError("SendGrid rejected the email request.")
+        return
+
+    send_mail(
+        subject=subject,
+        message=body,
+        from_email=getattr(django_settings, "DEFAULT_FROM_EMAIL", None) or "no-reply@vehsl.local",
+        recipient_list=[to_email],
+        fail_silently=False,
+    )
+
+
+def _send_signup_email_verification_code(email: str, code: str) -> None:
+    ttl_minutes = max(1, _email_verification_ttl_seconds() // 60)
+    subject = "Your Vehsl verification code"
+    body = (
+        "Use this verification code to continue your Vehsl signup.\n\n"
+        f"Code: {code}\n\n"
+        f"This code expires in {ttl_minutes} minute(s). "
+        "If you did not request it, you can ignore this email."
+    )
+    _send_transactional_email(email, subject, body)
 
 def _admin_role(user: User) -> str:
     prof = getattr(user, "admin_profile", None)
@@ -1937,9 +2000,111 @@ class AdminPlatformOverviewView(APIView):
         return Response(payload)
 
 
+class EmailVerificationRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = EmailVerificationRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"]
+        cooldown_seconds = _email_verification_resend_cooldown_seconds()
+        now = timezone.now()
+        existing = EmailVerificationCode.objects.filter(
+            email__iexact=email,
+            purpose=EmailVerificationCode.Purpose.SIGNUP,
+        ).first()
+
+        if existing and cooldown_seconds > 0:
+            elapsed = int((now - existing.sent_at).total_seconds())
+            retry_after = cooldown_seconds - elapsed
+            if retry_after > 0:
+                return Response(
+                    {
+                        "detail": f"Please wait {retry_after} second(s) before requesting another code.",
+                        "retry_after": retry_after,
+                    },
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        _send_signup_email_verification_code(email, code)
+
+        expires_at = now + timedelta(seconds=_email_verification_ttl_seconds())
+        obj, _ = EmailVerificationCode.objects.update_or_create(
+            email=email,
+            purpose=EmailVerificationCode.Purpose.SIGNUP,
+            defaults={
+                "expires_at": expires_at,
+                "attempt_count": 0,
+                "verified_at": None,
+            },
+        )
+        obj.set_code(code)
+        obj.save(update_fields=["code_hash", "expires_at", "attempt_count", "verified_at", "sent_at", "updated_at"])
+
+        return Response(
+            {
+                "detail": "Verification code sent.",
+                "expires_in": _email_verification_ttl_seconds(),
+                "retry_after": cooldown_seconds,
+            }
+        )
+
+
+class EmailVerificationVerifyView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = EmailVerificationVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"]
+        code = serializer.validated_data["code"]
+        max_attempts = _email_verification_max_attempts()
+
+        record = EmailVerificationCode.objects.filter(
+            email__iexact=email,
+            purpose=EmailVerificationCode.Purpose.SIGNUP,
+        ).first()
+        if not record:
+            return Response({"detail": "Request a verification code first."}, status=status.HTTP_400_BAD_REQUEST)
+        if record.is_expired():
+            record.delete()
+            return Response({"detail": "Verification code expired. Request a new code."}, status=status.HTTP_400_BAD_REQUEST)
+        if record.attempt_count >= max_attempts:
+            record.delete()
+            return Response({"detail": "Too many invalid attempts. Request a new code."}, status=status.HTTP_400_BAD_REQUEST)
+        if not record.matches(code):
+            record.attempt_count += 1
+            record.save(update_fields=["attempt_count", "updated_at"])
+            remaining = max(0, max_attempts - record.attempt_count)
+            if remaining == 0:
+                record.delete()
+                return Response({"detail": "Too many invalid attempts. Request a new code."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "detail": "Invalid verification code.",
+                    "attempts_remaining": remaining,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record.verified_at = timezone.now()
+        record.save(update_fields=["verified_at", "updated_at"])
+        token = make_signup_email_verification_token(email)
+        record.delete()
+        return Response({"detail": "Email verified.", "verification_token": token})
+
+
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["email_verification_token_ttl_seconds"] = _email_verification_token_ttl_seconds()
+        return context
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

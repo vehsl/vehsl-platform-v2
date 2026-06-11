@@ -40,6 +40,8 @@ from .views import (
     TotpEnableMeView,
     TotpDisableMeView,
     DeactivateMeView,
+    EmailVerificationRequestView,
+    EmailVerificationVerifyView,
     MarketingPromisesView,
     MarketingAssetUploadView,
 )
@@ -58,6 +60,8 @@ router.register(r"warehouse/dashboard", WarehouseDashboardViewSet, basename="war
 router.register(r"subscriptions", SubscriptionViewSet, basename="subscription")
 
 urlpatterns = [
+    path("auth/email-verification/request", EmailVerificationRequestView.as_view()),
+    path("auth/email-verification/verify", EmailVerificationVerifyView.as_view()),
     path("auth/register", RegisterView.as_view()),
     path("auth/login", LoginView.as_view()),
     path("auth/logout", LogoutView.as_view()),
