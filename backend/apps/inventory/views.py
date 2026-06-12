@@ -25,6 +25,47 @@ from .serializers import (
 )
 
 
+def build_admin_quality_stats_payload(days: int) -> dict:
+    now = timezone.now()
+    days = max(7, min(365, int(days or 30)))
+    cache_key = f"admin_quality_stats:{days}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    window = now - timedelta(days=days)
+    prev_window = window - timedelta(days=days)
+
+    base = QualityInspection.objects.filter(deleted_at__isnull=True)
+    recent = base.filter(created_at__gte=window)
+    prev = base.filter(created_at__gte=prev_window, created_at__lt=window)
+
+    avg_score = recent.aggregate(v=Avg("score"))["v"] or 0
+    prev_avg = prev.aggregate(v=Avg("score"))["v"] or 0
+    delta = float(avg_score) - float(prev_avg)
+
+    completed = recent.exclude(status=QualityInspection.Status.IN_PROGRESS)
+    passed = completed.filter(status=QualityInspection.Status.PASSED).count()
+    failed = completed.filter(status=QualityInspection.Status.FAILED).count()
+    pass_rate = (passed * 100.0 / (passed + failed)) if (passed + failed) else 0.0
+
+    pending = recent.filter(status=QualityInspection.Status.IN_PROGRESS).count()
+
+    start_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    failed_month = base.filter(created_at__gte=start_month, status=QualityInspection.Status.FAILED).count()
+
+    payload = {
+        "days": days,
+        "avg_quality_score": round(float(avg_score), 0),
+        "avg_quality_score_delta": round(delta, 0),
+        "pass_rate": round(pass_rate, 1),
+        "pending": pending,
+        "failed": failed_month,
+    }
+    cache.set(cache_key, payload, timeout=60)
+    return payload
+
+
 class SampleViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSeller]
     serializer_class = SampleSerializer
@@ -281,49 +322,12 @@ class AdminQualityViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
-        now = timezone.now()
         days_raw = (request.query_params.get("days") or "").strip()
         try:
-            days = max(7, min(365, int(days_raw or "30")))
+            days = int(days_raw or "30")
         except Exception:
             days = 30
-
-        cache_key = f"admin_quality_stats:{days}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return Response(cached)
-
-        window = now - timedelta(days=days)
-        prev_window = window - timedelta(days=days)
-
-        base = self.get_queryset()
-        recent = base.filter(created_at__gte=window)
-        prev = base.filter(created_at__gte=prev_window, created_at__lt=window)
-
-        avg_score = recent.aggregate(v=Avg("score"))["v"] or 0
-        prev_avg = prev.aggregate(v=Avg("score"))["v"] or 0
-        delta = float(avg_score) - float(prev_avg)
-
-        completed = recent.exclude(status=QualityInspection.Status.IN_PROGRESS)
-        passed = completed.filter(status=QualityInspection.Status.PASSED).count()
-        failed = completed.filter(status=QualityInspection.Status.FAILED).count()
-        pass_rate = (passed * 100.0 / (passed + failed)) if (passed + failed) else 0.0
-
-        pending = recent.filter(status=QualityInspection.Status.IN_PROGRESS).count()
-
-        start_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        failed_month = base.filter(created_at__gte=start_month, status=QualityInspection.Status.FAILED).count()
-
-        payload = {
-            "days": days,
-            "avg_quality_score": round(float(avg_score), 0),
-            "avg_quality_score_delta": round(delta, 0),
-            "pass_rate": round(pass_rate, 1),
-            "pending": pending,
-            "failed": failed_month,
-        }
-        cache.set(cache_key, payload, timeout=60)
-        return Response(payload)
+        return Response(build_admin_quality_stats_payload(days))
 
     @action(detail=False, methods=["get"], url_path="trend")
     def trend(self, request):

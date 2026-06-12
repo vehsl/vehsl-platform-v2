@@ -90,6 +90,7 @@ from .serializers import (
     validate_password_for_platform,
 )
 from .dashboard_serializers import (
+    CommandCenterSummarySerializer,
     SellerDashboardMetricsSerializer,
     SellerActionOrderSerializer,
     SellerActivitySerializer,
@@ -102,6 +103,21 @@ from .dashboard_serializers import (
 from .admin_utils import AdminPageNumberPagination, response_list
 
 SERVER_BUILD = os.environ.get("VEHSL_SERVER_BUILD") or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _command_center_period_days(period: str) -> int:
+    period = (period or "7d").strip().lower()
+    if period == "24h":
+        return 1
+    if period == "30d":
+        return 30
+    if period == "90d":
+        return 90
+    return 7
+
+
+def _command_center_cache_ttl_seconds(period: str) -> int:
+    return 60 if _command_center_period_days(period) <= 7 else 120
 
 
 def _email_verification_ttl_seconds() -> int:
@@ -1998,6 +2014,185 @@ class AdminPlatformOverviewView(APIView):
         }
         cache.set(cache_key, payload, timeout=ttl)
         return Response(payload)
+
+
+class AdminCommandCenterView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = (request.query_params.get("period") or "7d").strip().lower()
+        if period not in {"24h", "7d", "30d", "90d"}:
+            period = "7d"
+        ttl = _command_center_cache_ttl_seconds(period)
+        cache_key = f"admin_command_center:{period}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        overview_response = AdminPlatformOverviewView().get(request)
+        overview = overview_response.data if getattr(overview_response, "status_code", 500) < 400 else {}
+        overview_hero = overview.get("hero") or {}
+        overview_pipelines = overview.get("pipelines") or {}
+        overview_active_orders = overview_hero.get("active_orders") or {}
+        overview_users_online = overview_hero.get("users_online") or {}
+        overview_quality = overview_hero.get("quality_score") or {}
+        listing_counts = overview_pipelines.get("listings") or {}
+        order_counts = (overview_pipelines.get("orders") or {}).get("status_counts") or (overview_pipelines.get("orders") or {}).get("counts") or {}
+
+        days = _command_center_period_days(period)
+
+        from apps.inventory.views import build_admin_quality_stats_payload
+        from apps.orders.views import build_admin_logistics_stats_payload
+
+        quality_stats = build_admin_quality_stats_payload(days)
+        logistics_stats = build_admin_logistics_stats_payload(days)
+        generated_at = timezone.now()
+
+        def _int_list(values):
+            out = []
+            for value in list(values or []):
+                try:
+                    out.append(int(round(float(value))))
+                except Exception:
+                    continue
+            return out
+
+        def _float_list(values):
+            out = []
+            for value in list(values or []):
+                try:
+                    out.append(round(float(value), 2))
+                except Exception:
+                    continue
+            return out
+
+        listings_items = [
+            {
+                "key": "samples",
+                "label": "Samples",
+                "count": int(listing_counts.get("samples") or 0),
+                "path": "/admin/management/listings?mode=requests&rs=samples",
+            },
+            {
+                "key": "compliance",
+                "label": "Compliance",
+                "count": int(listing_counts.get("compliance") or 0),
+                "path": "/admin/management/listings?mode=requests&rs=compliance",
+            },
+            {
+                "key": "inspection",
+                "label": "Inspection",
+                "count": int(listing_counts.get("inspection") or 0),
+                "path": "/admin/management/listings?mode=requests&rs=inspection",
+            },
+            {
+                "key": "live",
+                "label": "Live",
+                "count": int(listing_counts.get("live") or 0),
+                "path": "/admin/management/listings?mode=requests&rs=live",
+            },
+            {
+                "key": "rejected",
+                "label": "Rejected",
+                "count": int(listing_counts.get("rejected_products") or 0),
+                "path": "/admin/management/listings?status=rejected",
+            },
+        ]
+        order_items = [
+            {
+                "key": "created",
+                "label": "Created",
+                "count": int(order_counts.get("created") or 0),
+                "path": "/admin/management/orders?status=created",
+            },
+            {
+                "key": "accepted",
+                "label": "Accepted",
+                "count": int(order_counts.get("accepted") or 0),
+                "path": "/admin/management/orders?status=accepted",
+            },
+            {
+                "key": "shipped",
+                "label": "Shipped",
+                "count": int(order_counts.get("shipped") or 0),
+                "path": "/admin/management/orders?status=shipped",
+            },
+            {
+                "key": "delivered",
+                "label": "Delivered",
+                "count": int(order_counts.get("delivered") or 0),
+                "path": "/admin/management/orders?status=delivered",
+            },
+            {
+                "key": "disputed",
+                "label": "Disputed",
+                "count": int(order_counts.get("disputed") or 0),
+                "path": "/admin/management/orders?status=disputed",
+            },
+        ]
+
+        payload = {
+            "meta": {
+                "period": period,
+                "generated_at": generated_at,
+                "last_updated": generated_at,
+                "cache_ttl_seconds": ttl,
+                "paths": {
+                    "orders": "/admin/management/orders",
+                    "listings": "/admin/management/listings",
+                    "logistics": "/admin/logistics",
+                    "users": "/admin/users",
+                    "quality": "/admin/quality",
+                },
+            },
+            "hero": {
+                "active_orders": {
+                    "snapshot_total": int(overview_active_orders.get("snapshot_total") or overview_active_orders.get("total") or 0),
+                    "snapshot_b2b": int(overview_active_orders.get("snapshot_b2b") or overview_active_orders.get("b2b") or 0),
+                    "snapshot_b2c": int(overview_active_orders.get("snapshot_b2c") or overview_active_orders.get("b2c") or 0),
+                    "sparkline": _int_list(overview_active_orders.get("sparkline")),
+                    "path": (overview_active_orders.get("path") or "/admin/management/orders").strip(),
+                },
+                "quality_score": {
+                    "total": round(float(quality_stats.get("avg_quality_score") or overview_quality.get("value") or 0.0), 1),
+                    "pass_rate": round(float(quality_stats.get("pass_rate") or 0.0), 1),
+                    "pending": int(quality_stats.get("pending") or 0),
+                    "inspections": int(overview_quality.get("inspections") or 0),
+                    "delta": round(float(quality_stats.get("avg_quality_score_delta") or overview_quality.get("change_pct") or 0.0), 1),
+                    "sparkline": _float_list(overview_quality.get("sparkline")),
+                    "path": (overview_quality.get("path") or "/admin/quality").strip(),
+                },
+                "users_online": {
+                    "snapshot_total": int(overview_users_online.get("snapshot_total") or 0),
+                    "snapshot_buyers": int(overview_users_online.get("snapshot_buyers") or overview_users_online.get("buyers") or 0),
+                    "snapshot_sellers": int(overview_users_online.get("snapshot_sellers") or overview_users_online.get("sellers") or 0),
+                    "snapshot_workers": int(overview_users_online.get("snapshot_workers") or overview_users_online.get("workers") or 0),
+                    "sparkline": _int_list(overview_users_online.get("sparkline")),
+                    "path": (overview_users_online.get("path") or "/admin/users").strip(),
+                },
+                "shipments_in_transit": {
+                    "total": int(logistics_stats.get("in_transit") or 0),
+                    "on_time_rate": round(float(logistics_stats.get("on_time_rate") or 0.0), 1),
+                    "delta": round(float(logistics_stats.get("on_time_delta") or 0.0), 1),
+                    "path": "/admin/logistics",
+                },
+            },
+            "pipelines": {
+                "listings": {
+                    "total": sum(int(item["count"]) for item in listings_items),
+                    "items": listings_items,
+                },
+                "orders": {
+                    "total": sum(int(item["count"]) for item in order_items),
+                    "items": order_items,
+                },
+            },
+        }
+        serializer = CommandCenterSummarySerializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.data
+        cache.set(cache_key, data, timeout=ttl)
+        return Response(data)
 
 
 class EmailVerificationRequestView(APIView):

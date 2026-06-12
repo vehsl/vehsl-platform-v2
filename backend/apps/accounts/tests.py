@@ -86,3 +86,34 @@ class EmailVerificationFlowTests(TestCase):
         self.assertEqual(response.status_code, 400)
         record = EmailVerificationCode.objects.get(email="wrong@example.com", purpose="signup")
         self.assertEqual(record.attempt_count, 1)
+
+
+class AdminCommandCenterTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            email="admin@example.com",
+            password="AdminPassword123!",
+            account_type="buyer",
+            is_staff=True,
+        )
+        self.client.force_authenticate(self.admin)
+
+    def test_command_center_contract_is_stable(self):
+        response = self.client.get("/api/v1/admin/command-center?period=7d")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["meta"]["period"], "7d")
+        self.assertIn("generated_at", response.data["meta"])
+        self.assertIn("last_updated", response.data["meta"])
+        self.assertIn("cache_ttl_seconds", response.data["meta"])
+        self.assertEqual(response.data["meta"]["paths"]["orders"], "/admin/management/orders")
+
+        hero = response.data["hero"]
+        self.assertEqual(sorted(hero.keys()), ["active_orders", "quality_score", "shipments_in_transit", "users_online"])
+        self.assertEqual(sorted(response.data["pipelines"].keys()), ["listings", "orders"])
+        self.assertEqual(len(response.data["pipelines"]["listings"]["items"]), 5)
+        self.assertEqual(len(response.data["pipelines"]["orders"]["items"]), 5)
+        self.assertIn("pass_rate", hero["quality_score"])
+        self.assertIn("pending", hero["quality_score"])
+        self.assertIn("on_time_rate", hero["shipments_in_transit"])

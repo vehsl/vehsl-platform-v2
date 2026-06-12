@@ -49,6 +49,70 @@ from .serializers import (
 )
 
 
+def build_admin_logistics_stats_payload(days: int) -> dict:
+    days = max(1, min(365, int(days or 7)))
+    cache_key = f"admin_logistics_stats:{days}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    now = timezone.now()
+    start_this = now - timedelta(days=days)
+    start_prev = now - timedelta(days=days * 2)
+    end_prev = now - timedelta(days=days)
+
+    qs_this = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_this)
+    qs_prev = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_prev, created_at__lt=end_prev)
+
+    delivered_this = qs_this.filter(status=Shipment.Status.DELIVERED)
+    delivered_prev = qs_prev.filter(status=Shipment.Status.DELIVERED)
+
+    active_vehicles = qs_this.exclude(status=Shipment.Status.DELIVERED).count()
+    total_vehicles = active_vehicles + delivered_this.count()
+    in_transit = qs_this.filter(
+        status__in=[
+            Shipment.Status.PICKED_UP,
+            Shipment.Status.IN_TRANSIT,
+            Shipment.Status.OUT_FOR_DELIVERY,
+            Shipment.Status.CUSTOMS,
+        ]
+    ).count()
+
+    dur_expr = ExpressionWrapper(F("actual_delivery_at") - F("created_at"), output_field=DurationField())
+    avg_dur_this = (
+        delivered_this.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
+    )
+    avg_dur_prev = (
+        delivered_prev.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
+    )
+    avg_hours_this = (avg_dur_this.total_seconds() / 3600.0) if avg_dur_this else 0.0
+    avg_hours_prev = (avg_dur_prev.total_seconds() / 3600.0) if avg_dur_prev else 0.0
+    avg_delta_minutes = int(round((avg_hours_this - avg_hours_prev) * 60))
+
+    on_time_this_base = delivered_this.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
+    on_time_prev_base = delivered_prev.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
+    on_time_this_total = on_time_this_base.count()
+    on_time_prev_total = on_time_prev_base.count()
+    on_time_this = on_time_this_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
+    on_time_prev = on_time_prev_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
+    on_time_rate = (on_time_this * 100.0 / on_time_this_total) if on_time_this_total else 0.0
+    on_time_prev_rate = (on_time_prev * 100.0 / on_time_prev_total) if on_time_prev_total else 0.0
+    on_time_delta = on_time_rate - on_time_prev_rate
+
+    payload = {
+        "days": days,
+        "active_vehicles": active_vehicles,
+        "total_vehicles": total_vehicles,
+        "in_transit": in_transit,
+        "avg_delivery_hours": round(avg_hours_this, 2),
+        "avg_delivery_delta_minutes": avg_delta_minutes,
+        "on_time_rate": round(on_time_rate, 2),
+        "on_time_delta": round(on_time_delta, 2),
+    }
+    cache.set(cache_key, payload, timeout=60)
+    return payload
+
+
 class CartMeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1011,65 +1075,7 @@ class AdminLogisticsViewSet(viewsets.GenericViewSet):
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         days = self._parse_days(request, default=7)
-        cache_key = f"admin_logistics_stats:{days}"
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return Response(cached)
-        now = timezone.now()
-        start_this = now - timedelta(days=days)
-        start_prev = now - timedelta(days=days * 2)
-        end_prev = now - timedelta(days=days)
-
-        qs_this = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_this)
-        qs_prev = Shipment.objects.filter(deleted_at__isnull=True, created_at__gte=start_prev, created_at__lt=end_prev)
-
-        delivered_this = qs_this.filter(status=Shipment.Status.DELIVERED)
-        delivered_prev = qs_prev.filter(status=Shipment.Status.DELIVERED)
-
-        active_vehicles = qs_this.exclude(status=Shipment.Status.DELIVERED).count()
-        total_vehicles = active_vehicles + delivered_this.count()
-        in_transit = qs_this.filter(
-            status__in=[
-                Shipment.Status.PICKED_UP,
-                Shipment.Status.IN_TRANSIT,
-                Shipment.Status.OUT_FOR_DELIVERY,
-                Shipment.Status.CUSTOMS,
-            ]
-        ).count()
-
-        dur_expr = ExpressionWrapper(F("actual_delivery_at") - F("created_at"), output_field=DurationField())
-        avg_dur_this = (
-            delivered_this.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
-        )
-        avg_dur_prev = (
-            delivered_prev.exclude(actual_delivery_at__isnull=True).annotate(dur=dur_expr).aggregate(v=Avg("dur"))["v"]
-        )
-        avg_hours_this = (avg_dur_this.total_seconds() / 3600.0) if avg_dur_this else 0.0
-        avg_hours_prev = (avg_dur_prev.total_seconds() / 3600.0) if avg_dur_prev else 0.0
-        avg_delta_minutes = int(round((avg_hours_this - avg_hours_prev) * 60))
-
-        on_time_this_base = delivered_this.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
-        on_time_prev_base = delivered_prev.exclude(actual_delivery_at__isnull=True).exclude(estimated_delivery_at__isnull=True)
-        on_time_this_total = on_time_this_base.count()
-        on_time_prev_total = on_time_prev_base.count()
-        on_time_this = on_time_this_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
-        on_time_prev = on_time_prev_base.filter(actual_delivery_at__lte=F("estimated_delivery_at")).count()
-        on_time_rate = (on_time_this * 100.0 / on_time_this_total) if on_time_this_total else 0.0
-        on_time_prev_rate = (on_time_prev * 100.0 / on_time_prev_total) if on_time_prev_total else 0.0
-        on_time_delta = on_time_rate - on_time_prev_rate
-
-        payload = {
-            "days": days,
-            "active_vehicles": active_vehicles,
-            "total_vehicles": total_vehicles,
-            "in_transit": in_transit,
-            "avg_delivery_hours": round(avg_hours_this, 2),
-            "avg_delivery_delta_minutes": avg_delta_minutes,
-            "on_time_rate": round(on_time_rate, 2),
-            "on_time_delta": round(on_time_delta, 2),
-        }
-        cache.set(cache_key, payload, timeout=60)
-        return Response(payload)
+        return Response(build_admin_logistics_stats_payload(days))
 
     @action(detail=False, methods=["get"], url_path="flow")
     def flow(self, request):
