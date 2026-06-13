@@ -267,3 +267,150 @@ class CommandCenterSummarySerializer(serializers.Serializer):
     meta = CommandCenterMetaSerializer()
     hero = CommandCenterHeroSerializer()
     pipelines = CommandCenterPipelinesSerializer()
+
+
+class SellerTrendsOptionSerializer(serializers.Serializer):
+    value = serializers.CharField(required=False)
+    label = serializers.CharField(required=False)
+    code = serializers.CharField(required=False)
+    name = serializers.CharField(required=False)
+    flag = serializers.CharField(required=False)
+
+
+class SellerTrendsSummaryMetricsSerializer(serializers.Serializer):
+    total_sales_value = serializers.FloatField()
+    total_orders = serializers.IntegerField()
+    total_views = serializers.IntegerField()
+    active_sellers = serializers.IntegerField()
+    avg_order_value = serializers.FloatField()
+    buy_rate = serializers.FloatField()
+
+
+class SellerTrendsSummaryFiltersSerializer(serializers.Serializer):
+    industry_options = SellerTrendsOptionSerializer(many=True)
+    country_options = SellerTrendsOptionSerializer(many=True)
+
+
+class SellerTrendsSummarySerializer(serializers.Serializer):
+    period = serializers.CharField()
+    generated_at = serializers.DateTimeField()
+    is_partial = serializers.BooleanField()
+    warnings = serializers.ListField(child=serializers.CharField(), required=False)
+    data_sources = serializers.ListField(child=serializers.CharField(), required=False)
+    metrics = SellerTrendsSummaryMetricsSerializer()
+    filters = SellerTrendsSummaryFiltersSerializer()
+
+
+class SellerTrendsMarketSerializer(serializers.Serializer):
+    code = serializers.CharField(required=False)
+    name = serializers.CharField()
+    flag = serializers.CharField()
+    orders = serializers.IntegerField()
+    revenue = serializers.FloatField()
+
+
+class SellerTrendsWeeklyPointSerializer(serializers.Serializer):
+    day = serializers.CharField()
+    orders = serializers.IntegerField()
+    revenue = serializers.FloatField()
+    views = serializers.IntegerField(required=False)
+
+
+class SellerTrendsProductSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    product_id = serializers.CharField()
+    rank = serializers.IntegerField()
+    name = serializers.CharField()
+    image = serializers.CharField(allow_blank=True)
+    category = serializers.CharField()
+    industry = serializers.CharField()
+    popularityScore = serializers.IntegerField()
+    change = serializers.IntegerField()
+    badge = serializers.CharField()
+    sparkline = serializers.ListField(child=serializers.IntegerField())
+    orders7d = serializers.IntegerField()
+    views7d = serializers.IntegerField()
+    revenue7d = serializers.FloatField()
+    avgPrice = serializers.FloatField()
+    avg_price = serializers.FloatField()
+    topMarkets = SellerTrendsMarketSerializer(many=True)
+    buyerInterest = serializers.IntegerField()
+    competitorCount = serializers.IntegerField()
+    relatedKeywords = serializers.ListField(child=serializers.CharField())
+    weeklyData = SellerTrendsWeeklyPointSerializer(many=True)
+    sellers = serializers.IntegerField()
+    views_source = serializers.CharField()
+    path = serializers.CharField()
+
+
+class SellerTrendsTopProductSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    image = serializers.CharField(allow_blank=True)
+    orders = serializers.IntegerField()
+    revenue = serializers.FloatField()
+
+
+class SellerTrendsMonthlySalesSerializer(serializers.Serializer):
+    month = serializers.CharField()
+    orders = serializers.IntegerField()
+    revenue = serializers.FloatField()
+
+
+class SellerTrendsSellerMetricsSourceSerializer(serializers.Serializer):
+    return_rate = serializers.CharField()
+
+
+class SellerTrendsSellerSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    seller_id = serializers.CharField()
+    rank = serializers.IntegerField()
+    name = serializers.CharField()
+    avatar = serializers.CharField()
+    orders = serializers.IntegerField()
+    revenue = serializers.FloatField()
+    products = serializers.IntegerField()
+    rating = serializers.FloatField()
+    change = serializers.IntegerField()
+    avgOrderValue = serializers.FloatField()
+    joinedMonthsAgo = serializers.IntegerField()
+    topProducts = SellerTrendsTopProductSerializer(many=True)
+    monthlySales = SellerTrendsMonthlySalesSerializer(many=True)
+    topMarkets = SellerTrendsMarketSerializer(many=True)
+    returnRate = serializers.FloatField()
+    repeatBuyerRate = serializers.IntegerField()
+    rating_count = serializers.IntegerField()
+    path = serializers.CharField()
+    metrics_source = SellerTrendsSellerMetricsSourceSerializer()
+
+
+class SellerTrendsKeywordSerializer(serializers.Serializer):
+    keyword = serializers.CharField()
+    product = serializers.CharField()
+    volume = serializers.IntegerField()
+    change = serializers.IntegerField()
+    competition = serializers.CharField()
+    source_type = serializers.CharField()
+
+
+class SellerTrendsReelSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    video_id = serializers.CharField()
+    thumbnail = serializers.CharField(allow_blank=True)
+    caption = serializers.CharField()
+    title = serializers.CharField()
+    product = serializers.CharField()
+    productId = serializers.CharField()
+    product_id = serializers.CharField()
+    seller_id = serializers.CharField()
+    seller_name = serializers.CharField()
+    status = serializers.CharField()
+    views = serializers.IntegerField()
+    likes = serializers.IntegerField()
+    comments = serializers.IntegerField()
+    shares = serializers.IntegerField()
+    duration = serializers.CharField()
+    postedAt = serializers.CharField()
+    published_at = serializers.DateTimeField(allow_null=True)
+    hashtags = serializers.ListField(child=serializers.CharField())
+    visibility = serializers.CharField()
+    stats_source = serializers.CharField()

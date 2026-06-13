@@ -1,14 +1,15 @@
 import re
+from datetime import timedelta
 
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.accounts.models import BuyerProfile, EmailVerificationCode, User
-from apps.catalog.models import Category, ListingRequest, Product
+from apps.accounts.models import BuyerProfile, EmailVerificationCode, SellerProfile, User
+from apps.catalog.models import Category, ListingRequest, Product, ProductMedia
 from apps.inventory.models import QualityInspection
-from apps.orders.models import Dispute, Order, Shipment
+from apps.orders.models import Dispute, Order, OrderItem, Review, Shipment
 
 
 @override_settings(
@@ -257,3 +258,197 @@ class AdminCommandCenterTests(TestCase):
 
         cached = self.client.get("/api/v1/admin/command-center?period=7d")
         self.assertTrue(cached.data["meta"]["generated_from_cache"])
+
+
+class AdminSellerTrendsTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(
+            email="ops-admin@example.com",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            is_staff=True,
+        )
+        self.client.force_authenticate(self.admin)
+        self.category = Category.objects.create(name="Tea & Wellness", slug="tea-wellness")
+        self.second_category = Category.objects.create(name="Lighting", slug="lighting")
+        self.seller_one = User.objects.create_user(
+            email="seller-one@example.com",
+            password="SellerPassword123!",
+            role=User.Role.SELLER,
+            account_type=User.AccountType.SELLER,
+        )
+        self.seller_two = User.objects.create_user(
+            email="seller-two@example.com",
+            password="SellerPassword123!",
+            role=User.Role.SELLER,
+            account_type=User.AccountType.SELLER,
+        )
+        SellerProfile.objects.filter(user=self.seller_one).update(
+            business_name="GreenLeaf Organics",
+            country="Pakistan",
+            region="Punjab",
+            verification_status=SellerProfile.VerificationStatus.APPROVED,
+            vehsl_rating="4.8",
+        )
+        SellerProfile.objects.filter(user=self.seller_two).update(
+            business_name="Meridian Lighting",
+            country="United Arab Emirates",
+            region="Dubai",
+            verification_status=SellerProfile.VerificationStatus.APPROVED,
+            vehsl_rating="4.6",
+        )
+        self.buyer_one = User.objects.create_user(
+            email="buyer-one@example.com",
+            password="BuyerPassword123!",
+            role=User.Role.BUYER,
+            account_type=User.AccountType.BUYER,
+        )
+        self.buyer_two = User.objects.create_user(
+            email="buyer-two@example.com",
+            password="BuyerPassword123!",
+            role=User.Role.BUYER,
+            account_type=User.AccountType.BUYER,
+        )
+        self.product_one = Product.objects.create(
+            seller=self.seller_one,
+            category=self.category,
+            name="Organic Herbal Tea Blend",
+            sku="TEA-01",
+            currency="USD",
+            price="24.99",
+            status=Product.Status.ACTIVE,
+        )
+        self.product_two = Product.objects.create(
+            seller=self.seller_two,
+            category=self.second_category,
+            name="Smart LED Panel Light",
+            sku="LED-01",
+            currency="USD",
+            price="89.90",
+            status=Product.Status.ACTIVE,
+        )
+        ProductMedia.objects.create(
+            product=self.product_one,
+            media_type=ProductMedia.MediaType.IMAGE,
+            url="https://cdn.example.com/tea.png",
+            title="Tea image",
+        )
+        ProductMedia.objects.create(
+            product=self.product_one,
+            media_type=ProductMedia.MediaType.VIDEO,
+            url="https://cdn.example.com/tea-reel.mp4",
+            title="Tea reel",
+        )
+        ProductMedia.objects.create(
+            product=self.product_two,
+            media_type=ProductMedia.MediaType.IMAGE,
+            url="https://cdn.example.com/light.png",
+            title="Light image",
+        )
+        now = timezone.now()
+        current_one = Order.objects.create(
+            buyer=self.buyer_one,
+            seller=self.seller_one,
+            status=Order.Status.DELIVERED,
+            total_amount="124.95",
+            shipping_address={"country": "Pakistan", "city": "Lahore"},
+        )
+        OrderItem.objects.create(order=current_one, product=self.product_one, quantity=5, unit_price="24.99")
+        current_two = Order.objects.create(
+            buyer=self.buyer_two,
+            seller=self.seller_two,
+            status=Order.Status.DELIVERED,
+            total_amount="179.80",
+            shipping_address={"country": "United Arab Emirates", "city": "Dubai"},
+        )
+        OrderItem.objects.create(order=current_two, product=self.product_two, quantity=2, unit_price="89.90")
+        disputed_current = Order.objects.create(
+            buyer=self.buyer_one,
+            seller=self.seller_one,
+            status=Order.Status.DISPUTED,
+            total_amount="49.98",
+            shipping_address={"country": "Pakistan", "city": "Karachi"},
+        )
+        OrderItem.objects.create(order=disputed_current, product=self.product_one, quantity=2, unit_price="24.99")
+        Dispute.objects.create(order=disputed_current, opened_by=self.buyer_one, status=Dispute.Status.OPEN)
+        previous_order = Order.objects.create(
+            buyer=self.buyer_one,
+            seller=self.seller_one,
+            status=Order.Status.DELIVERED,
+            total_amount="24.99",
+            shipping_address={"country": "Pakistan", "city": "Lahore"},
+        )
+        OrderItem.objects.create(order=previous_order, product=self.product_one, quantity=1, unit_price="24.99")
+        Order.objects.filter(pk=current_one.pk).update(created_at=now - timedelta(days=1))
+        Order.objects.filter(pk=current_two.pk).update(created_at=now - timedelta(days=2))
+        Order.objects.filter(pk=disputed_current.pk).update(created_at=now - timedelta(days=3))
+        Order.objects.filter(pk=previous_order.pk).update(created_at=now - timedelta(days=10))
+        Review.objects.create(
+            order=current_one,
+            reviewer=self.buyer_one,
+            target_type=Review.TargetType.SELLER,
+            target_seller=self.seller_one,
+            rating="5.0",
+            text="Excellent seller",
+        )
+
+    def test_admin_seller_trends_endpoints_return_real_aggregates(self):
+        summary = self.client.get("/api/v1/admin/seller-trends/summary?period=7d")
+        products = self.client.get("/api/v1/admin/seller-trends/products?period=7d")
+        revenue_sorted_products = self.client.get("/api/v1/admin/seller-trends/products?period=7d&sort=revenue")
+        sellers = self.client.get("/api/v1/admin/seller-trends/sellers?period=7d")
+        keywords = self.client.get("/api/v1/admin/seller-trends/keywords?period=7d")
+        reels = self.client.get("/api/v1/admin/seller-trends/reels?period=7d")
+
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(products.status_code, 200)
+        self.assertEqual(revenue_sorted_products.status_code, 200)
+        self.assertEqual(sellers.status_code, 200)
+        self.assertEqual(keywords.status_code, 200)
+        self.assertEqual(reels.status_code, 200)
+
+        self.assertEqual(summary.data["period"], "7d")
+        self.assertEqual(summary.data["metrics"]["total_orders"], 9)
+        self.assertEqual(summary.data["metrics"]["active_sellers"], 2)
+        self.assertGreater(summary.data["metrics"]["total_sales_value"], 350)
+        self.assertTrue(summary.data["filters"]["industry_options"])
+        self.assertTrue(summary.data["filters"]["country_options"])
+
+        self.assertGreaterEqual(len(products.data), 2)
+        self.assertEqual(products.data[0]["name"], "Organic Herbal Tea Blend")
+        self.assertEqual(products.data[0]["orders7d"], 7)
+        self.assertGreater(products.data[0]["revenue7d"], 170)
+        self.assertEqual(products.data[0]["topMarkets"][0]["code"], "pk")
+        self.assertEqual(products.data[0]["views_source"], "derived")
+        self.assertEqual(revenue_sorted_products.data[0]["name"], "Smart LED Panel Light")
+
+        self.assertEqual(sellers.data[0]["name"], "GreenLeaf Organics")
+        self.assertEqual(sellers.data[0]["orders"], 7)
+        self.assertEqual(sellers.data[0]["repeatBuyerRate"], 100)
+        self.assertEqual(sellers.data[0]["metrics_source"]["return_rate"], "derived_dispute_rate")
+        self.assertEqual(len(sellers.data[0]["monthlySales"]), 6)
+
+        self.assertTrue(any(row["keyword"] == "organic" for row in keywords.data))
+        self.assertEqual(keywords.data[0]["source_type"], "derived_order_tokens")
+        self.assertEqual(reels.data[0]["seller_name"], "GreenLeaf Organics")
+        self.assertIn(reels.data[0]["stats_source"], {"detail_config", "derived"})
+
+    def test_admin_seller_trends_country_filter_and_cache_invalidation(self):
+        cached_before = self.client.get("/api/v1/admin/seller-trends/products?period=7d&country=pk")
+        self.assertEqual(cached_before.status_code, 200)
+        self.assertEqual(len(cached_before.data), 1)
+        self.assertEqual(cached_before.data[0]["name"], "Organic Herbal Tea Blend")
+
+        new_order = Order.objects.create(
+            buyer=self.buyer_two,
+            seller=self.seller_two,
+            status=Order.Status.DELIVERED,
+            total_amount="269.70",
+            shipping_address={"country": "United Arab Emirates", "city": "Dubai"},
+        )
+        OrderItem.objects.create(order=new_order, product=self.product_two, quantity=3, unit_price="89.90")
+
+        updated_summary = self.client.get("/api/v1/admin/seller-trends/summary?period=7d")
+        self.assertEqual(updated_summary.status_code, 200)
+        self.assertEqual(updated_summary.data["metrics"]["total_orders"], 12)

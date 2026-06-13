@@ -98,8 +98,26 @@ from .dashboard_serializers import (
     WarehouseInventorySerializer,
     WarehouseReleaseRequestSerializer,
     WarehouseReleaseRecordSerializer,
+    SellerTrendsKeywordSerializer,
+    SellerTrendsProductSerializer,
+    SellerTrendsReelSerializer,
+    SellerTrendsSellerSerializer,
+    SellerTrendsSummarySerializer,
 )
 from .command_center import build_command_center_summary, normalize_command_center_period
+from .seller_trends import (
+    build_top_sellers,
+    build_trend_keywords,
+    build_trend_products,
+    build_trend_reels,
+    build_trend_summary,
+    build_trends_cache_params,
+    invalidate_seller_trends_caches,
+    normalize_product_trend_sort,
+    normalize_seller_trends_period,
+    seller_trends_cache_key,
+    seller_trends_cache_ttl_seconds,
+)
 from .admin_utils import AdminPageNumberPagination, response_list
 
 SERVER_BUILD = os.environ.get("VEHSL_SERVER_BUILD") or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -2007,6 +2025,176 @@ class AdminCommandCenterView(APIView):
     def get(self, request):
         period = normalize_command_center_period(request.query_params.get("period"))
         return Response(build_command_center_summary(period))
+
+
+class AdminSellerTrendsSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = normalize_seller_trends_period(request.query_params.get("period"))
+        params = build_trends_cache_params(
+            period=period,
+            search=(request.query_params.get("search") or "").strip(),
+            industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+            country=(request.query_params.get("country") or "all").strip().lower() or "all",
+            limit=1,
+        )
+        cache_key = seller_trends_cache_key("admin-summary", params)
+        payload = cache.get(cache_key)
+        if payload is None:
+            payload = build_trend_summary(
+                period=period,
+                search=params["search"],
+                industry=params["industry"],
+                country=params["country"],
+            )
+            serializer = SellerTrendsSummarySerializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.data
+            cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
+        return Response(payload)
+
+
+class AdminSellerTrendsProductsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = normalize_seller_trends_period(request.query_params.get("period"))
+        sort_by = normalize_product_trend_sort(request.query_params.get("sort"))
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw or "100")
+        except Exception:
+            limit = 100
+        params = build_trends_cache_params(
+            period=period,
+            search=(request.query_params.get("search") or "").strip(),
+            industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+            country=(request.query_params.get("country") or "all").strip().lower() or "all",
+            sort_by=sort_by,
+            limit=max(1, min(limit, 200)),
+        )
+        cache_key = seller_trends_cache_key("admin-products", params)
+        payload = cache.get(cache_key)
+        if payload is None:
+            rows = build_trend_products(
+                period=period,
+                search=params["search"],
+                industry=params["industry"],
+                country=params["country"],
+                sort_by=params["sort_by"],
+                limit=params["limit"],
+                request=request,
+            )
+            serializer = SellerTrendsProductSerializer(data=rows, many=True)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.data
+            cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
+        return Response(payload)
+
+
+class AdminSellerTrendsSellersView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = normalize_seller_trends_period(request.query_params.get("period"))
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw or "50")
+        except Exception:
+            limit = 50
+        params = build_trends_cache_params(
+            period=period,
+            search=(request.query_params.get("search") or "").strip(),
+            industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+            country=(request.query_params.get("country") or "all").strip().lower() or "all",
+            limit=max(1, min(limit, 100)),
+        )
+        cache_key = seller_trends_cache_key("admin-sellers", params)
+        payload = cache.get(cache_key)
+        if payload is None:
+            rows = build_top_sellers(
+                period=period,
+                search=params["search"],
+                industry=params["industry"],
+                country=params["country"],
+                limit=params["limit"],
+                request=request,
+            )
+            serializer = SellerTrendsSellerSerializer(data=rows, many=True)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.data
+            cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
+        return Response(payload)
+
+
+class AdminSellerTrendsKeywordsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = normalize_seller_trends_period(request.query_params.get("period"))
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw or "50")
+        except Exception:
+            limit = 50
+        params = build_trends_cache_params(
+            period=period,
+            search=(request.query_params.get("search") or "").strip(),
+            industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+            country=(request.query_params.get("country") or "all").strip().lower() or "all",
+            limit=max(1, min(limit, 100)),
+        )
+        cache_key = seller_trends_cache_key("admin-keywords", params)
+        payload = cache.get(cache_key)
+        if payload is None:
+            rows = build_trend_keywords(
+                period=period,
+                search=params["search"],
+                industry=params["industry"],
+                country=params["country"],
+                limit=params["limit"],
+            )
+            serializer = SellerTrendsKeywordSerializer(data=rows, many=True)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.data
+            cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
+        return Response(payload)
+
+
+class AdminSellerTrendsReelsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = normalize_seller_trends_period(request.query_params.get("period"))
+        limit_raw = (request.query_params.get("limit") or "").strip()
+        try:
+            limit = int(limit_raw or "24")
+        except Exception:
+            limit = 24
+        params = build_trends_cache_params(
+            period=period,
+            search=(request.query_params.get("search") or "").strip(),
+            industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+            country=(request.query_params.get("country") or "all").strip().lower() or "all",
+            limit=max(1, min(limit, 48)),
+        )
+        cache_key = seller_trends_cache_key("admin-reels", params)
+        payload = cache.get(cache_key)
+        if payload is None:
+            rows = build_trend_reels(
+                period=period,
+                search=params["search"],
+                industry=params["industry"],
+                country=params["country"],
+                limit=params["limit"],
+                request=request,
+            )
+            serializer = SellerTrendsReelSerializer(data=rows, many=True)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.data
+            cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
+        return Response(payload)
 
 
 class EmailVerificationRequestView(APIView):
@@ -5075,62 +5263,20 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-        user = request.user
-        qs = (
-            ProductMedia.objects.select_related("product")
-            .filter(
-                deleted_at__isnull=True,
-                media_type=ProductMedia.MediaType.VIDEO,
-                product__seller=user,
-                product__deleted_at__isnull=True,
-            )
-            .order_by("id")[:100]
+        period = normalize_seller_trends_period(request.query_params.get("range"))
+        serializer = SellerTrendsReelSerializer(
+            build_trend_reels(
+                period=period,
+                seller=request.user,
+                industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+                country=(request.query_params.get("country") or "all").strip().lower() or "all",
+                search=(request.query_params.get("search") or "").strip(),
+                limit=(request.query_params.get("limit") or 100) or 100,
+                request=request,
+            ),
+            many=True,
         )
-        out = []
-        for m in qs:
-            p = m.product
-            caption = (m.title or "").strip() or p.name
-            thumb = (ProductMediaSerializer(m, context={"request": request}).data.get("public_url") or "").strip()
-            if not thumb:
-                img = p.media.filter(media_type="image", deleted_at__isnull=True).first()
-                thumb = (ProductMediaSerializer(img, context={"request": request}).data.get("public_url") or "").strip() if img else ""
-            stats = (p.detail_config or {}).get("reels_stats") or {}
-            s = stats.get(str(m.id)) if isinstance(stats, dict) else None
-            if not isinstance(s, dict):
-                seed = int(m.id) * 2654435761 % 100000
-                s = {
-                    "views": int(500 + (seed % 25000)),
-                    "likes": int(30 + (seed % 2000)),
-                    "comments": int(seed % 200),
-                    "shares": int(seed % 300),
-                }
-            hashtags = []
-            for part in (p.name or "").replace("—", " ").replace("-", " ").split(" "):
-                part = part.strip().lower()
-                if len(part) < 4:
-                    continue
-                if len(hashtags) >= 4:
-                    break
-                hashtags.append(part)
-            out.append(
-                {
-                    "id": f"r{m.id}",
-                    "thumbnail": thumb,
-                    "caption": caption,
-                    "product": p.name,
-                    "productId": str(p.id),
-                    "status": "published",
-                    "views": int(s.get("views") or 0),
-                    "likes": int(s.get("likes") or 0),
-                    "comments": int(s.get("comments") or 0),
-                    "shares": int(s.get("shares") or 0),
-                    "duration": "0:20",
-                    "postedAt": "Recently",
-                    "hashtags": hashtags,
-                    "visibility": "public",
-                }
-            )
-        return Response(out)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get"], url_path="insights/portfolio")
     def insights_portfolio(self, request):
@@ -5452,235 +5598,38 @@ class SellerDashboardViewSet(viewsets.ViewSet):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-
-        now, start_curr, start_prev, _delta = self._parse_range_window(request)
-        user = request.user
-
-        limit_raw = (request.query_params.get("limit") or "").strip()
-        try:
-            limit = int(limit_raw) if limit_raw else 50
-        except Exception:
-            limit = 50
-        limit = max(1, min(100, limit))
-
-        items_qs = (
-            OrderItem.objects.select_related("order", "product", "product__category")
-            .filter(
-                deleted_at__isnull=True,
-                order__deleted_at__isnull=True,
-                order__seller=user,
-                order__created_at__gte=start_prev,
-                order__created_at__lt=now,
-            )
-            .exclude(order__status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+        serializer = SellerTrendsKeywordSerializer(
+            build_trend_keywords(
+                period=normalize_seller_trends_period(request.query_params.get("range")),
+                seller=request.user,
+                industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+                country=(request.query_params.get("country") or "all").strip().lower() or "all",
+                search=(request.query_params.get("search") or "").strip(),
+                limit=(request.query_params.get("limit") or 50) or 50,
+            ),
+            many=True,
         )
-
-        kw: dict[str, dict] = {}
-        for it in items_qs.iterator(chunk_size=500):
-            created_at = getattr(it.order, "created_at", None)
-            is_curr = bool(created_at and created_at >= start_curr)
-            qty = int(it.quantity or 0)
-
-            p = it.product
-            parts = []
-            parts.extend(self._tokenize_keywords(getattr(p, "name", "") or ""))
-            parts.extend(self._tokenize_keywords(getattr(getattr(p, "category", None), "name", "") or ""))
-            if not parts:
-                continue
-
-            for token in parts:
-                d = kw.get(token)
-                if d is None:
-                    d = {"curr": 0, "prev": 0, "product": "", "product_qty": 0}
-                    kw[token] = d
-                if is_curr:
-                    d["curr"] += qty
-                    if qty > int(d.get("product_qty") or 0):
-                        d["product_qty"] = qty
-                        d["product"] = getattr(p, "name", "") or ""
-                else:
-                    d["prev"] += qty
-
-        rows = []
-        for token, d in kw.items():
-            curr = int(d.get("curr") or 0)
-            prev = int(d.get("prev") or 0)
-            if curr <= 0 and prev <= 0:
-                continue
-            change = int(round(((curr - prev) / max(prev, 1)) * 100))
-            volume = int(curr * 120 + (hash(token) % 80))
-            rows.append({"token": token, "product": d.get("product") or "", "volume": volume, "change": change, "curr": curr})
-
-        rows.sort(key=lambda r: int(r.get("curr") or 0), reverse=True)
-        rows = rows[:limit]
-
-        out = []
-        for r in rows:
-            token = r["token"]
-            try:
-                comp = (
-                    Product.objects.filter(deleted_at__isnull=True)
-                    .exclude(status=Product.Status.ARCHIVED)
-                    .filter(Q(name__icontains=token) | Q(category__name__icontains=token))
-                    .count()
-                )
-            except Exception:
-                comp = 0
-            competition = "High" if comp > 40 else "Medium" if comp > 20 else "Low"
-
-            out.append(
-                {
-                    "keyword": token,
-                    "product": r.get("product") or "—",
-                    "volume": int(r.get("volume") or 0),
-                    "change": int(r.get("change") or 0),
-                    "competition": competition,
-                }
-            )
-
-        out.sort(key=lambda r: int(r.get("volume") or 0), reverse=True)
-        return Response(out)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get"])
     def trends(self, request):
         gate = self._kyc_gate(request)
         if gate is not None:
             return gate
-
-        now, start_curr, start_prev, delta = self._parse_range_window(request)
-        user = request.user
-        industry = (request.query_params.get("industry") or "").strip().lower()
-        search = (request.query_params.get("search") or "").strip()
-        limit_raw = (request.query_params.get("limit") or "").strip()
-        try:
-            limit = int(limit_raw) if limit_raw else 15
-        except Exception:
-            limit = 15
-        limit = max(1, min(200, limit))
-
-        qs = (
-            OrderItem.objects.select_related("order", "product", "product__category")
-            .filter(
-                deleted_at__isnull=True,
-                order__deleted_at__isnull=True,
-                order__seller=user,
-                order__created_at__gte=start_prev,
-                product__deleted_at__isnull=True,
-            )
-            .exclude(order__status__in=[Order.Status.CANCELLED, Order.Status.REJECTED])
+        serializer = SellerTrendsProductSerializer(
+            build_trend_products(
+                period=normalize_seller_trends_period(request.query_params.get("range")),
+                seller=request.user,
+                industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+                country=(request.query_params.get("country") or "all").strip().lower() or "all",
+                search=(request.query_params.get("search") or "").strip(),
+                sort_by=normalize_product_trend_sort(request.query_params.get("sort")),
+                limit=(request.query_params.get("limit") or 15) or 15,
+                request=request,
+            ),
+            many=True,
         )
-        if industry and industry != "all":
-            qs = qs.filter(product__category__slug=industry)
-        if search:
-            qs = qs.filter(Q(product__name__icontains=search) | Q(product__sku__icontains=search))
-
-        stats: dict[int, dict] = {}
-        for it in qs.iterator(chunk_size=500):
-            pid = int(it.product_id)
-            d = stats.get(pid)
-            if d is None:
-                d = {"product": it.product, "curr": 0, "prev": 0, "daily": {}, "markets": {}, "sum_price": 0.0, "sum_qty": 0}
-                stats[pid] = d
-            created_at = getattr(it.order, "created_at", None)
-            if created_at and created_at >= start_curr:
-                d["curr"] += int(it.quantity or 0)
-                key = created_at.date().isoformat()
-                d["daily"][key] = d["daily"].get(key, 0) + int(it.quantity or 0)
-                ship_addr = getattr(it.order, "shipping_address", None) or {}
-                raw_country = (ship_addr.get("country") or ship_addr.get("country_name") or "").strip()
-                iso = self._country_to_iso(raw_country)
-                if iso:
-                    d["markets"][iso] = d["markets"].get(iso, 0) + int(it.quantity or 0)
-            else:
-                d["prev"] += int(it.quantity or 0)
-            try:
-                d["sum_price"] += float(it.unit_price) * int(it.quantity or 0)
-                d["sum_qty"] += int(it.quantity or 0)
-            except Exception:
-                pass
-
-        rows = []
-        for pid, d in stats.items():
-            p: Product = d["product"]
-            curr = int(d["curr"])
-            prev = int(d["prev"])
-            if curr <= 0 and prev <= 0:
-                continue
-            change = int(round(((curr - prev) / max(prev, 1)) * 100))
-            score = max(0, min(100, int(25 + min(curr, 2000) / 25 + max(change, -50) / 2)))
-            badge = "breakout" if change >= 35 and curr >= 50 else "popular" if curr >= 200 else "rising" if change >= 10 else "steady"
-
-            media = p.media.filter(media_type="image", deleted_at__isnull=True).first()
-            img = media.url if media else ""
-
-            cat_name = getattr(getattr(p, "category", None), "name", "") or ""
-            industry = getattr(getattr(p, "category", None), "slug", "") or "all"
-
-            days_count = max(1, int(delta.total_seconds() // 86400))
-            days_count = min(days_count, 60)
-            days = [(now - timedelta(days=i)).date().isoformat() for i in range(min(6, days_count - 1), -1, -1)]
-            daily_vals = [int(d["daily"].get(day, 0)) for day in days]
-            spark = (daily_vals + daily_vals)[-12:] if daily_vals else [0] * 12
-
-            weekly_data = []
-            for day, orders in zip(days, daily_vals):
-                wd = day[-5:]
-                views = orders * 3 + (pid % 30)
-                weekly_data.append({"day": wd, "orders": orders, "views": views})
-
-            mk = d["markets"]
-            top_markets = [k for k, _ in sorted(mk.items(), key=lambda kv: kv[1], reverse=True)[:3]]
-
-            avg_price = float(p.price)
-            if d["sum_qty"] > 0:
-                avg_price = round(float(d["sum_price"]) / float(d["sum_qty"]), 2)
-
-            keywords = []
-            for part in (p.name or "").replace("—", " ").replace("-", " ").split(" "):
-                part = part.strip().lower()
-                if len(part) < 4:
-                    continue
-                if part in keywords:
-                    continue
-                keywords.append(part)
-                if len(keywords) >= 6:
-                    break
-            if cat_name:
-                for part in cat_name.replace("&", " ").split(" "):
-                    part = part.strip().lower()
-                    if len(part) < 4:
-                        continue
-                    if part in keywords:
-                        continue
-                    keywords.append(part)
-                    if len(keywords) >= 6:
-                        break
-
-            competitor_count = Product.objects.filter(category_id=p.category_id, deleted_at__isnull=True).exclude(status=Product.Status.ARCHIVED).count()
-
-            rows.append(
-                {
-                    "id": f"tp{pid}",
-                    "name": p.name,
-                    "image": img,
-                    "category": cat_name or "—",
-                    "industry": industry or "all",
-                    "popularityScore": score,
-                    "change": change,
-                    "badge": badge,
-                    "sparkline": spark,
-                    "orders7d": curr,
-                    "avgPrice": avg_price,
-                    "topMarkets": top_markets,
-                    "buyerInterest": int(curr * 3.2 + (pid % 50)),
-                    "competitorCount": competitor_count,
-                    "relatedKeywords": keywords,
-                    "weeklyData": weekly_data,
-                }
-            )
-
-        rows.sort(key=lambda r: int(r.get("orders7d") or 0), reverse=True)
-        return Response(rows[:limit])
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get"])
     def products(self, request):
