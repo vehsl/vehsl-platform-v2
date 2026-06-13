@@ -98,14 +98,20 @@ from .dashboard_serializers import (
     WarehouseInventorySerializer,
     WarehouseReleaseRequestSerializer,
     WarehouseReleaseRecordSerializer,
+    SellerTrendsKeywordListSerializer,
     SellerTrendsKeywordSerializer,
+    SellerTrendsProductListSerializer,
     SellerTrendsProductSerializer,
+    SellerTrendsReelListSerializer,
     SellerTrendsReelSerializer,
+    SellerTrendsSellerDetailSerializer,
+    SellerTrendsSellerListSerializer,
     SellerTrendsSellerSerializer,
     SellerTrendsSummarySerializer,
 )
 from .command_center import build_command_center_summary, normalize_command_center_period
 from .seller_trends import (
+    build_seller_trend_detail,
     build_top_sellers,
     build_trend_keywords,
     build_trend_products,
@@ -115,6 +121,7 @@ from .seller_trends import (
     invalidate_seller_trends_caches,
     normalize_product_trend_sort,
     normalize_seller_trends_period,
+    paginate_seller_trends_rows,
     seller_trends_cache_key,
     seller_trends_cache_ttl_seconds,
 )
@@ -2027,6 +2034,54 @@ class AdminCommandCenterView(APIView):
         return Response(build_command_center_summary(period))
 
 
+def _parse_bounded_int(raw_value, *, default: int, minimum: int = 1, maximum: int = 200) -> int:
+    try:
+        value = int((raw_value or "").strip() or default)
+    except Exception:
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _parse_seller_trends_pagination(request, *, default_page_size: int, max_page_size: int) -> tuple[int, int]:
+    page_size = _parse_bounded_int(
+        request.query_params.get("page_size") or request.query_params.get("limit"),
+        default=default_page_size,
+        minimum=1,
+        maximum=max_page_size,
+    )
+    offset_raw = (request.query_params.get("offset") or "").strip()
+    if offset_raw:
+        try:
+            offset = max(0, int(offset_raw))
+        except Exception:
+            offset = 0
+        return ((offset // page_size) + 1), page_size
+    page = _parse_bounded_int(request.query_params.get("page"), default=1, minimum=1, maximum=100000)
+    return page, page_size
+
+
+def _build_seller_trends_list_payload(*, rows: list[dict], serializer_class, period: str, page: int, page_size: int, **meta_extra) -> dict:
+    page_data = paginate_seller_trends_rows(rows, page=page, page_size=page_size)
+    serializer = serializer_class(data=page_data["results"], many=True)
+    serializer.is_valid(raise_exception=True)
+    return {
+        "meta": {
+            "period": normalize_seller_trends_period(period),
+            "generated_at": timezone.now(),
+            "count": page_data["count"],
+            "page": page_data["page"],
+            "page_size": page_data["page_size"],
+            "total_pages": page_data["total_pages"],
+            "has_next": page_data["has_next"],
+            "has_previous": page_data["has_previous"],
+            "is_partial": False,
+            "warnings": [],
+            **meta_extra,
+        },
+        "results": serializer.data,
+    }
+
+
 class AdminSellerTrendsSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
@@ -2061,19 +2116,17 @@ class AdminSellerTrendsProductsView(APIView):
     def get(self, request):
         period = normalize_seller_trends_period(request.query_params.get("period"))
         sort_by = normalize_product_trend_sort(request.query_params.get("sort"))
-        limit_raw = (request.query_params.get("limit") or "").strip()
-        try:
-            limit = int(limit_raw or "100")
-        except Exception:
-            limit = 100
+        breakout = (request.query_params.get("breakout") or "").strip().lower() in {"1", "true", "yes", "on"}
+        page, page_size = _parse_seller_trends_pagination(request, default_page_size=15, max_page_size=100)
         params = build_trends_cache_params(
             period=period,
             search=(request.query_params.get("search") or "").strip(),
             industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
             country=(request.query_params.get("country") or "all").strip().lower() or "all",
             sort_by=sort_by,
-            limit=max(1, min(limit, 200)),
+            limit=page_size,
         )
+        params["breakout"] = breakout
         cache_key = seller_trends_cache_key("admin-products", params)
         payload = cache.get(cache_key)
         if payload is None:
@@ -2083,14 +2136,27 @@ class AdminSellerTrendsProductsView(APIView):
                 industry=params["industry"],
                 country=params["country"],
                 sort_by=params["sort_by"],
-                limit=params["limit"],
+                limit=None,
                 request=request,
             )
+            if breakout:
+                rows = [row for row in rows if int(row.get("change_pct") or row.get("change") or 0) >= 25 or row.get("badge") == "breakout"]
             serializer = SellerTrendsProductSerializer(data=rows, many=True)
             serializer.is_valid(raise_exception=True)
             payload = serializer.data
             cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
-        return Response(payload)
+        response_payload = _build_seller_trends_list_payload(
+            rows=payload,
+            serializer_class=SellerTrendsProductSerializer,
+            period=period,
+            page=page,
+            page_size=page_size,
+            sort=sort_by,
+            breakout=breakout,
+        )
+        serializer = SellerTrendsProductListSerializer(data=response_payload)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
 
 
 class AdminSellerTrendsSellersView(APIView):
@@ -2098,17 +2164,13 @@ class AdminSellerTrendsSellersView(APIView):
 
     def get(self, request):
         period = normalize_seller_trends_period(request.query_params.get("period"))
-        limit_raw = (request.query_params.get("limit") or "").strip()
-        try:
-            limit = int(limit_raw or "50")
-        except Exception:
-            limit = 50
+        page, page_size = _parse_seller_trends_pagination(request, default_page_size=10, max_page_size=50)
         params = build_trends_cache_params(
             period=period,
             search=(request.query_params.get("search") or "").strip(),
             industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
             country=(request.query_params.get("country") or "all").strip().lower() or "all",
-            limit=max(1, min(limit, 100)),
+            limit=page_size,
         )
         cache_key = seller_trends_cache_key("admin-sellers", params)
         payload = cache.get(cache_key)
@@ -2118,14 +2180,23 @@ class AdminSellerTrendsSellersView(APIView):
                 search=params["search"],
                 industry=params["industry"],
                 country=params["country"],
-                limit=params["limit"],
+                limit=None,
                 request=request,
             )
             serializer = SellerTrendsSellerSerializer(data=rows, many=True)
             serializer.is_valid(raise_exception=True)
             payload = serializer.data
             cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
-        return Response(payload)
+        response_payload = _build_seller_trends_list_payload(
+            rows=payload,
+            serializer_class=SellerTrendsSellerSerializer,
+            period=period,
+            page=page,
+            page_size=page_size,
+        )
+        serializer = SellerTrendsSellerListSerializer(data=response_payload)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
 
 
 class AdminSellerTrendsKeywordsView(APIView):
@@ -2133,17 +2204,13 @@ class AdminSellerTrendsKeywordsView(APIView):
 
     def get(self, request):
         period = normalize_seller_trends_period(request.query_params.get("period"))
-        limit_raw = (request.query_params.get("limit") or "").strip()
-        try:
-            limit = int(limit_raw or "50")
-        except Exception:
-            limit = 50
+        page, page_size = _parse_seller_trends_pagination(request, default_page_size=12, max_page_size=50)
         params = build_trends_cache_params(
             period=period,
             search=(request.query_params.get("search") or "").strip(),
             industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
             country=(request.query_params.get("country") or "all").strip().lower() or "all",
-            limit=max(1, min(limit, 100)),
+            limit=page_size,
         )
         cache_key = seller_trends_cache_key("admin-keywords", params)
         payload = cache.get(cache_key)
@@ -2153,13 +2220,22 @@ class AdminSellerTrendsKeywordsView(APIView):
                 search=params["search"],
                 industry=params["industry"],
                 country=params["country"],
-                limit=params["limit"],
+                limit=None,
             )
             serializer = SellerTrendsKeywordSerializer(data=rows, many=True)
             serializer.is_valid(raise_exception=True)
             payload = serializer.data
             cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
-        return Response(payload)
+        response_payload = _build_seller_trends_list_payload(
+            rows=payload,
+            serializer_class=SellerTrendsKeywordSerializer,
+            period=period,
+            page=page,
+            page_size=page_size,
+        )
+        serializer = SellerTrendsKeywordListSerializer(data=response_payload)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
 
 
 class AdminSellerTrendsReelsView(APIView):
@@ -2167,17 +2243,13 @@ class AdminSellerTrendsReelsView(APIView):
 
     def get(self, request):
         period = normalize_seller_trends_period(request.query_params.get("period"))
-        limit_raw = (request.query_params.get("limit") or "").strip()
-        try:
-            limit = int(limit_raw or "24")
-        except Exception:
-            limit = 24
+        page, page_size = _parse_seller_trends_pagination(request, default_page_size=12, max_page_size=24)
         params = build_trends_cache_params(
             period=period,
             search=(request.query_params.get("search") or "").strip(),
             industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
             country=(request.query_params.get("country") or "all").strip().lower() or "all",
-            limit=max(1, min(limit, 48)),
+            limit=page_size,
         )
         cache_key = seller_trends_cache_key("admin-reels", params)
         payload = cache.get(cache_key)
@@ -2187,10 +2259,52 @@ class AdminSellerTrendsReelsView(APIView):
                 search=params["search"],
                 industry=params["industry"],
                 country=params["country"],
-                limit=params["limit"],
+                limit=None,
                 request=request,
             )
             serializer = SellerTrendsReelSerializer(data=rows, many=True)
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.data
+            cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))
+        response_payload = _build_seller_trends_list_payload(
+            rows=payload,
+            serializer_class=SellerTrendsReelSerializer,
+            period=period,
+            page=page,
+            page_size=page_size,
+        )
+        serializer = SellerTrendsReelListSerializer(data=response_payload)
+        serializer.is_valid(raise_exception=True)
+        return Response(serializer.data)
+
+
+class AdminSellerTrendsSellerDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request, seller_id: int):
+        period = normalize_seller_trends_period(request.query_params.get("period"))
+        params = build_trends_cache_params(
+            period=period,
+            search=(request.query_params.get("search") or "").strip(),
+            industry=(request.query_params.get("industry") or "all").strip().lower() or "all",
+            country=(request.query_params.get("country") or "all").strip().lower() or "all",
+            limit=1,
+            seller_id=seller_id,
+        )
+        cache_key = seller_trends_cache_key("admin-seller-detail", params)
+        payload = cache.get(cache_key)
+        if payload is None:
+            payload = build_seller_trend_detail(
+                seller_id=seller_id,
+                period=period,
+                search=params["search"],
+                industry=params["industry"],
+                country=params["country"],
+                request=request,
+            )
+            if payload is None:
+                return Response({"detail": "Seller not found."}, status=status.HTTP_404_NOT_FOUND)
+            serializer = SellerTrendsSellerDetailSerializer(data=payload)
             serializer.is_valid(raise_exception=True)
             payload = serializer.data
             cache.set(cache_key, payload, timeout=seller_trends_cache_ttl_seconds(period))

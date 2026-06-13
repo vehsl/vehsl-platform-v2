@@ -215,6 +215,44 @@ function ErrorState({ message }: { message: string }) {
   return <div className="rounded-2xl border border-[#E5484D]/20 bg-[#E5484D]/5 p-4 text-[0.8125rem] text-[#B42318]">{message}</div>;
 }
 
+function PaginationControls({
+  page,
+  totalPages,
+  count,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  count: number;
+  onPageChange: (page: number) => void;
+}) {
+  if (count <= 0) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-border/20 px-5 py-4 text-[0.75rem] text-muted-foreground sm:px-6">
+      <span>{count} total items</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+          className="rounded-lg border border-border/40 px-3 py-1.5 text-foreground transition hover:bg-muted/30 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Previous
+        </button>
+        <span>Page {page} / {Math.max(totalPages, 1)}</span>
+        <button
+          type="button"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= totalPages}
+          className="rounded-lg border border-border/40 px-3 py-1.5 text-foreground transition hover:bg-muted/30 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SellerTrends() {
   const {
     period,
@@ -236,6 +274,19 @@ export function SellerTrends() {
     sellers,
     keywords,
     reels,
+    productsMeta,
+    sellersMeta,
+    keywordsMeta,
+    reelsMeta,
+    setProductsPage,
+    setSellersPage,
+    setKeywordsPage,
+    setReelsPage,
+    sellerDetail,
+    sellerDetailLoading,
+    sellerDetailError,
+    loadSellerDetail,
+    clearSellerDetail,
     summaryLoading,
     productsLoading,
     sellersLoading,
@@ -266,6 +317,7 @@ export function SellerTrends() {
   const industryOptions = useMemo(() => summary?.filters.industry_options || [{ value: "all", label: "All Industries" }], [summary]);
   const countryOptions = useMemo(() => summary?.filters.country_options || [{ code: "all", name: "All Regions", flag: "" }], [summary]);
   const currentProducts = activeTab === "breakout" ? breakoutProducts : products;
+  const sellerDrawer = sellerDetail && selectedSeller && sellerDetail.seller_id === selectedSeller.seller_id ? sellerDetail : null;
   const tabs = [
     { id: "trending" as const, label: "Trending Products", short: "Trending" },
     { id: "breakout" as const, label: "Breakout", short: "Breakout" },
@@ -321,7 +373,7 @@ export function SellerTrends() {
           iconBg="bg-[#E5484D]/10"
           label="Active Sellers"
           value={summaryLoading && !hero ? "..." : `${hero?.active_sellers || 0}`}
-          sub={`Tracking ${formatNum(products.length)} ranked products`}
+          sub={`Tracking ${formatNum(productsMeta.count)} ranked products`}
         />
       </div>
 
@@ -516,6 +568,12 @@ export function SellerTrends() {
               </AnimatePresence>
             </motion.div>
           ))}
+          <PaginationControls
+            page={productsMeta.page}
+            totalPages={productsMeta.total_pages}
+            count={productsMeta.count}
+            onPageChange={setProductsPage}
+          />
         </div>
       )}
 
@@ -534,7 +592,10 @@ export function SellerTrends() {
           {sellers.map((seller) => (
             <div
               key={seller.id}
-              onClick={() => setSelectedSeller(seller)}
+              onClick={() => {
+                setSelectedSeller(seller);
+                void loadSellerDetail(seller.seller_id);
+              }}
               className="flex cursor-pointer items-center gap-4 border-b border-border/15 px-5 py-5 transition-all hover:bg-muted/15 sm:px-6"
             >
               <div className="flex w-10 flex-shrink-0 items-center justify-center">
@@ -564,6 +625,12 @@ export function SellerTrends() {
               <ArrowRight size={16} className="hidden flex-shrink-0 text-muted-foreground/40 sm:block" />
             </div>
           ))}
+          <PaginationControls
+            page={sellersMeta.page}
+            totalPages={sellersMeta.total_pages}
+            count={sellersMeta.count}
+            onPageChange={setSellersPage}
+          />
         </div>
       )}
 
@@ -605,6 +672,12 @@ export function SellerTrends() {
               </div>
             </div>
           ))}
+          <PaginationControls
+            page={keywordsMeta.page}
+            totalPages={keywordsMeta.total_pages}
+            count={keywordsMeta.count}
+            onPageChange={setKeywordsPage}
+          />
         </div>
       )}
 
@@ -640,12 +713,20 @@ export function SellerTrends() {
             </div>
           ))}
         </div>
+        <div className="mt-4">
+          <PaginationControls
+            page={reelsMeta.page}
+            totalPages={reelsMeta.total_pages}
+            count={reelsMeta.count}
+            onPageChange={setReelsPage}
+          />
+        </div>
       </div>
 
       <AnimatePresence>
         {selectedSeller ? (
           <motion.div className="fixed inset-0 z-50 flex justify-end" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setSelectedSeller(null)} />
+            <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => { setSelectedSeller(null); clearSellerDetail(); }} />
             <motion.div
               className="relative h-full w-full max-w-[560px] overflow-y-auto bg-card shadow-2xl"
               initial={{ x: 560 }}
@@ -658,20 +739,22 @@ export function SellerTrends() {
                   <div className="flex items-center gap-4">
                     <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-primary/40 text-[1.125rem] text-primary">{selectedSeller.avatar}</div>
                     <div>
-                      <h2 className="text-foreground">{selectedSeller.name}</h2>
+                      <h2 className="text-foreground">{sellerDrawer?.name || selectedSeller.name}</h2>
                       <div className="mt-0.5 flex items-center gap-3 text-[0.6875rem] text-muted-foreground">
-                        <span className="flex items-center gap-0.5"><Star size={10} className="text-[#FFB224]" />{selectedSeller.rating.toFixed(1)}</span>
+                        <span className="flex items-center gap-0.5"><Star size={10} className="text-[#FFB224]" />{(sellerDrawer?.rating ?? selectedSeller.rating).toFixed(1)}</span>
                         <span>{selectedSeller.products} products</span>
-                        <span>Joined {selectedSeller.joinedMonthsAgo} months ago</span>
+                        <span>Joined {sellerDrawer?.joined_months_ago ?? selectedSeller.joinedMonthsAgo} months ago</span>
                       </div>
                     </div>
                   </div>
-                  <button onClick={() => setSelectedSeller(null)} className="cursor-pointer rounded-xl p-2 hover:bg-muted/40">
+                  <button onClick={() => { setSelectedSeller(null); clearSellerDetail(); }} className="cursor-pointer rounded-xl p-2 hover:bg-muted/40">
                     <X size={20} />
                   </button>
                 </div>
               </div>
               <div className="space-y-8 p-6">
+                {sellerDetailError ? <ErrorState message={sellerDetailError} /> : null}
+                {sellerDetailLoading ? <EmptyState message="Loading seller detail..." /> : null}
                 <div>
                   <p className="mb-3 text-[0.75rem] uppercase tracking-wider text-muted-foreground">Performance Snapshot</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -686,15 +769,15 @@ export function SellerTrends() {
                   </div>
                   <div className="mt-3 grid grid-cols-3 gap-2">
                     <div className="rounded-xl border border-border/20 bg-muted/10 p-3 text-center">
-                      <p className="text-[1rem] text-foreground">{formatMoney(selectedSeller.avgOrderValue)}</p>
+                      <p className="text-[1rem] text-foreground">{formatMoney(sellerDrawer?.avg_order_value ?? selectedSeller.avgOrderValue)}</p>
                       <p className="text-[0.5625rem] text-muted-foreground">Avg Order</p>
                     </div>
                     <div className="rounded-xl border border-border/20 bg-muted/10 p-3 text-center">
-                      <p className="text-[1rem] text-foreground">{selectedSeller.repeatBuyerRate}%</p>
+                      <p className="text-[1rem] text-foreground">{sellerDrawer?.repeat_buyer_rate ?? selectedSeller.repeatBuyerRate}%</p>
                       <p className="text-[0.5625rem] text-muted-foreground">Repeat Buyers</p>
                     </div>
                     <div className="rounded-xl border border-border/20 bg-muted/10 p-3 text-center">
-                      <p className="text-[1rem] text-foreground">{selectedSeller.returnRate}%</p>
+                      <p className="text-[1rem] text-foreground">{sellerDrawer?.refund_or_return_rate ?? selectedSeller.returnRate}%</p>
                       <p className="text-[0.5625rem] text-muted-foreground">Return / Dispute</p>
                     </div>
                   </div>
@@ -707,14 +790,14 @@ export function SellerTrends() {
                       {selectedSeller.change >= 0 ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
                       {Math.abs(selectedSeller.change)}% in the selected trend window
                     </div>
-                    <SimpleBarChart data={selectedSeller.monthlySales.map((item) => ({ day: item.month, orders: item.orders, revenue: item.revenue }))} />
+                    <SimpleBarChart data={(sellerDrawer?.monthly_sales || selectedSeller.monthlySales).map((item) => ({ day: item.month, orders: item.orders, revenue: item.revenue }))} />
                   </div>
                 </div>
 
                 <div>
                   <p className="mb-3 text-[0.75rem] uppercase tracking-wider text-muted-foreground">Top Products</p>
                   <div className="space-y-2.5">
-                    {selectedSeller.topProducts.map((product, index) => (
+                    {(sellerDrawer?.top_products || selectedSeller.topProducts).map((product, index) => (
                       <div key={`${selectedSeller.id}-${product.name}`} className="flex items-center gap-4 rounded-2xl border border-border/20 bg-muted/8 p-4">
                         <span className="text-[1.125rem]">{index + 1}</span>
                         <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-xl bg-muted/30">
@@ -736,13 +819,13 @@ export function SellerTrends() {
                 <div>
                   <p className="mb-3 text-[0.75rem] uppercase tracking-wider text-muted-foreground">Top Markets</p>
                   <div className="space-y-3 rounded-2xl border border-border/20 bg-muted/8 p-5">
-                    {selectedSeller.topMarkets.length ? (
-                      selectedSeller.topMarkets.map((market) => (
+                    {(sellerDrawer?.top_markets || selectedSeller.topMarkets).length ? (
+                      (sellerDrawer?.top_markets || selectedSeller.topMarkets).map((market) => (
                         <div key={`${selectedSeller.id}-${market.name}`} className="flex items-center gap-3">
                           <span>{market.flag}</span>
                           <span className="w-[100px] truncate text-[0.8125rem] text-foreground">{market.name}</span>
                           <div className="h-3.5 flex-1 overflow-hidden rounded-full bg-muted/30">
-                            <div className="h-full rounded-full bg-gradient-to-r from-[#0171E3] to-[#348DE9]" style={{ width: `${(market.revenue / Math.max(selectedSeller.topMarkets[0]?.revenue || 1, 1)) * 100}%` }} />
+                            <div className="h-full rounded-full bg-gradient-to-r from-[#0171E3] to-[#348DE9]" style={{ width: `${(market.revenue / Math.max((sellerDrawer?.top_markets || selectedSeller.topMarkets)[0]?.revenue || 1, 1)) * 100}%` }} />
                           </div>
                           <span className="w-[65px] text-right text-[0.8125rem] text-foreground">{formatMoney(market.revenue)}</span>
                         </div>
@@ -756,7 +839,7 @@ export function SellerTrends() {
                 <div className="rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/5 to-primary/10 p-5">
                   <p className="mb-2 text-[0.75rem] uppercase tracking-wider text-muted-foreground">Quick Summary</p>
                   <p className="text-[0.8125rem] text-foreground">
-                    {selectedSeller.name} generated {formatMoney(selectedSeller.revenue)} from {formatNum(selectedSeller.orders)} units, with {selectedSeller.repeatBuyerRate}% repeat buyers and a {selectedSeller.returnRate}% derived return/dispute rate.
+                    {sellerDrawer?.summary || `${selectedSeller.name} generated ${formatMoney(selectedSeller.revenue)} from ${formatNum(selectedSeller.orders)} units, with ${selectedSeller.repeatBuyerRate}% repeat buyers and a ${selectedSeller.returnRate}% derived return/dispute rate.`}
                   </p>
                 </div>
               </div>

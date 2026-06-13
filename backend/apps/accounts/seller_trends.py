@@ -211,6 +211,24 @@ def build_trends_cache_params(
     }
 
 
+def paginate_seller_trends_rows(rows: list[dict], *, page: int = 1, page_size: int = 25) -> dict:
+    total_count = len(rows)
+    normalized_page_size = max(1, min(int(page_size or 25), 200))
+    total_pages = max(1, ((total_count - 1) // normalized_page_size) + 1) if total_count else 1
+    current_page = max(1, min(int(page or 1), total_pages))
+    start = (current_page - 1) * normalized_page_size
+    end = start + normalized_page_size
+    return {
+        "count": total_count,
+        "page": current_page,
+        "page_size": normalized_page_size,
+        "total_pages": total_pages,
+        "has_next": current_page < total_pages,
+        "has_previous": current_page > 1,
+        "results": rows[start:end],
+    }
+
+
 def _stable_seed(value: str) -> int:
     return int(hashlib.sha1(value.encode("utf-8")).hexdigest()[:8], 16)
 
@@ -501,7 +519,7 @@ def build_trend_products(
     country: str = "all",
     search: str = "",
     sort_by: str = "orders",
-    limit: int = 100,
+    limit: int | None = 100,
     request=None,
 ) -> list[dict]:
     normalized = normalize_seller_trends_period(period)
@@ -628,25 +646,41 @@ def build_trend_products(
             {
                 "id": f"tp{product_id}",
                 "product_id": str(product_id),
+                "product": {
+                    "id": str(product_id),
+                    "name": product.name,
+                    "category": getattr(getattr(product, "category", None), "name", "") or "—",
+                    "industry": getattr(getattr(product, "category", None), "slug", "") or "all",
+                    "hero_image": product_primary_image_url(product, request=request),
+                    "path": f"/admin/management/listings?product_id={product_id}",
+                },
                 "name": product.name,
                 "image": product_primary_image_url(product, request=request),
+                "hero_image": product_primary_image_url(product, request=request),
                 "category": getattr(getattr(product, "category", None), "name", "") or "—",
                 "industry": getattr(getattr(product, "category", None), "slug", "") or "all",
                 "popularityScore": max(0, min(100, int(25 + min(curr_qty, 2000) / 25 + max(change, -50) / 2))),
                 "change": change,
+                "change_pct": change,
                 "badge": _badge_for(curr_qty, change),
                 "sparkline": sparkline or [0] * 7,
                 "orders7d": curr_qty,
+                "orders": curr_qty,
                 "views7d": int(views),
                 "revenue7d": round(_safe_float(data["curr_rev"]), 2),
+                "revenue": round(_safe_float(data["curr_rev"]), 2),
                 "avgPrice": avg_price,
                 "avg_price": avg_price,
                 "topMarkets": top_markets,
+                "top_markets": top_markets,
                 "buyerInterest": int(curr_qty * 3.2 + (product_id % 50)),
                 "competitorCount": _safe_int(category_counts.get(int(product.category_id or 0))),
                 "relatedKeywords": keywords,
+                "related_keywords": keywords,
                 "weeklyData": weekly_data,
+                "weekly_data": weekly_data,
                 "sellers": int(len(data.get("sellers") or [])),
+                "seller_count": int(len(data.get("sellers") or [])),
                 "views_source": "derived",
                 "path": f"/admin/management/listings?product_id={product_id}",
             }
@@ -659,6 +693,8 @@ def build_trend_products(
         rows.sort(key=lambda row: (_safe_int(row.get("orders7d")), _safe_float(row.get("revenue7d"))), reverse=True)
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
+    if limit is None:
+        return rows
     return rows[: max(1, min(int(limit or 100), 200))]
 
 
@@ -669,7 +705,7 @@ def build_trend_keywords(
     industry: str = "all",
     country: str = "all",
     search: str = "",
-    limit: int = 50,
+    limit: int | None = 50,
 ) -> list[dict]:
     normalized = normalize_seller_trends_period(period)
     now, start_curr, start_prev, _delta = parse_seller_trends_window(normalized)
@@ -722,13 +758,17 @@ def build_trend_keywords(
             {
                 "keyword": token,
                 "product": data.get("top_product") or "—",
+                "top_product": data.get("top_product") or "—",
                 "volume": volume,
                 "change": change,
+                "change_pct": change,
                 "competition": competition,
                 "source_type": "derived_order_tokens",
             }
         )
     rows.sort(key=lambda row: (_safe_int(row.get("volume")), _safe_int(row.get("change"))), reverse=True)
+    if limit is None:
+        return rows
     return rows[: max(1, min(int(limit or 50), 100))]
 
 
@@ -739,7 +779,7 @@ def build_trend_reels(
     industry: str = "all",
     country: str = "all",
     search: str = "",
-    limit: int = 24,
+    limit: int | None = 24,
     request=None,
 ) -> list[dict]:
     normalized = normalize_seller_trends_period(period)
@@ -808,6 +848,7 @@ def build_trend_reels(
                 "product": product.name,
                 "productId": str(product.id),
                 "product_id": str(product.id),
+                "product_name": product.name,
                 "seller_id": str(getattr(seller_user, "id", "")),
                 "seller_name": _seller_label(seller_user),
                 "status": "published",
@@ -824,23 +865,26 @@ def build_trend_reels(
             }
         )
     rows.sort(key=lambda row: (_safe_int(row.get("views")), _safe_int(row.get("likes"))), reverse=True)
+    if limit is None:
+        return rows
     return rows[: max(1, min(int(limit or 24), 48))]
 
 
 def build_top_sellers(
     *,
     period: str,
+    seller: User | None = None,
     industry: str = "all",
     country: str = "all",
     search: str = "",
-    limit: int = 50,
+    limit: int | None = 50,
     request=None,
 ) -> list[dict]:
     normalized = normalize_seller_trends_period(period)
     now, start_curr, start_prev, _delta = parse_seller_trends_window(normalized)
     selected_country = (country or "all").strip().lower() or "all"
     items_qs = _order_items_queryset(
-        seller=None,
+        seller=seller,
         start_prev=start_prev,
         now=now,
         industry=(industry or "all").strip().lower(),
@@ -971,15 +1015,25 @@ def build_top_sellers(
                 "orders": curr_qty,
                 "revenue": round(_safe_float(data["curr_rev"]), 2),
                 "products": len(data["products"]),
+                "product_count": len(data["products"]),
                 "rating": rating,
                 "change": change,
+                "growth_pct": change,
                 "avgOrderValue": round(_safe_float(data["curr_rev"]) / max(order_count, 1), 2),
+                "avg_order_value": round(_safe_float(data["curr_rev"]) / max(order_count, 1), 2),
                 "joinedMonthsAgo": months_ago,
+                "joined_months_ago": months_ago,
+                "joined_at": seller_user.date_joined,
                 "topProducts": top_products,
+                "top_products_preview": top_products,
                 "monthlySales": [],
+                "monthly_sales": [],
                 "topMarkets": top_markets,
+                "top_markets": top_markets,
                 "returnRate": disputed_rate,
+                "refund_or_return_rate": disputed_rate,
                 "repeatBuyerRate": repeat_rate,
+                "repeat_buyer_rate": repeat_rate,
                 "rating_count": _safe_int(rating_data.get("count")),
                 "path": f"/admin/users?seller_id={seller_id}",
                 "metrics_source": {
@@ -988,8 +1042,8 @@ def build_top_sellers(
             }
         )
     rows.sort(key=lambda row: (_safe_int(row.get("orders")), _safe_float(row.get("revenue"))), reverse=True)
-    rows = rows[: max(1, min(int(limit or 50), 100))]
-    top_seller_ids = [int(row["seller_id"]) for row in rows]
+    working_rows = rows if limit is None else rows[: max(1, min(int(limit or 50), 100))]
+    top_seller_ids = [int(row["seller_id"]) for row in working_rows]
     month_start = now - timedelta(days=180)
     monthly_qs = (
         OrderItem.objects.select_related("order")
@@ -1019,7 +1073,7 @@ def build_top_sellers(
         entry["orders"] += qty
         entry["revenue"] = round(_safe_float(entry.get("revenue")) + (_safe_float(item.unit_price) * qty), 2)
     month_labels = [(now - timedelta(days=30 * idx)).strftime("%b") for idx in range(5, -1, -1)]
-    for row in rows:
+    for row in working_rows:
         seller_id = int(row["seller_id"])
         seller_months = monthly_map.get(seller_id, {})
         row["monthlySales"] = [
@@ -1030,6 +1084,71 @@ def build_top_sellers(
             }
             for label in month_labels
         ]
-    for rank, row in enumerate(rows, start=1):
+        row["monthly_sales"] = row["monthlySales"]
+    for rank, row in enumerate(working_rows, start=1):
         row["rank"] = rank
-    return rows
+    return working_rows
+
+
+def build_seller_trend_detail(
+    *,
+    seller_id: int,
+    period: str,
+    industry: str = "all",
+    country: str = "all",
+    search: str = "",
+    request=None,
+) -> dict | None:
+    seller = User.objects.filter(pk=seller_id).select_related("seller_profile").first()
+    if seller is None:
+        return None
+    rows = build_top_sellers(
+        period=period,
+        seller=seller,
+        industry=industry,
+        country=country,
+        search=search,
+        limit=None,
+        request=request,
+    )
+    if not rows:
+        profile = getattr(seller, "seller_profile", None)
+        months_ago = max(0, int((timezone.now().date() - seller.date_joined.date()).days // 30))
+        return {
+            "seller_id": str(seller.id),
+            "name": _seller_label(seller),
+            "avatar": _initials(seller),
+            "rating": round(_safe_float(getattr(profile, "vehsl_rating", 0)), 1),
+            "joined_at": seller.date_joined,
+            "joined_months_ago": months_ago,
+            "monthly_sales": [],
+            "top_products": [],
+            "top_markets": [],
+            "repeat_buyer_rate": 0,
+            "refund_or_return_rate": 0.0,
+            "avg_order_value": 0.0,
+            "summary": f"{_seller_label(seller)} has no seller trend data for the selected filters.",
+            "metrics_source": {"return_rate": "derived_dispute_rate"},
+            "path": f"/admin/users?seller_id={seller.id}",
+        }
+    row = rows[0]
+    return {
+        "seller_id": row["seller_id"],
+        "name": row["name"],
+        "avatar": row["avatar"],
+        "rating": row["rating"],
+        "joined_at": row["joined_at"],
+        "joined_months_ago": row["joined_months_ago"],
+        "monthly_sales": row["monthlySales"],
+        "top_products": row["topProducts"],
+        "top_markets": row["topMarkets"],
+        "repeat_buyer_rate": row["repeatBuyerRate"],
+        "refund_or_return_rate": row["returnRate"],
+        "avg_order_value": row["avgOrderValue"],
+        "summary": (
+            f'{row["name"]} generated ${row["revenue"]:.2f} from {row["orders"]} units, '
+            f'with {row["repeatBuyerRate"]}% repeat buyers and a {row["returnRate"]}% derived return/dispute rate.'
+        ),
+        "metrics_source": row["metrics_source"],
+        "path": row["path"],
+    }
