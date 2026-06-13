@@ -120,6 +120,14 @@ function fmtBytes(bytes: number) {
   return `${Math.round(n)} B`;
 }
 
+function lowerText(value: unknown) {
+  return String(value ?? "").toLowerCase();
+}
+
+function normalizeSearchText(value: unknown) {
+  return lowerText(value).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
 const PRODUCT_VIEW_CLIENT_ID_KEY = "vehsl.product-view-client-id";
 
 function getProductViewClientId() {
@@ -246,27 +254,6 @@ export function ProductPage() {
       timer = window.setTimeout(async () => {
         if (cancelled || viewTrackedRef.current) return;
         const clientId = getProductViewClientId();
-        // #region debug-point B:frontend-track-start
-        fetch("http://127.0.0.1:7777/event", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId: "product-view-zero",
-            runId: "pre-fix",
-            hypothesisId: "B",
-            location: "product-page.tsx:246",
-            msg: "[DEBUG] product detail view tracking timer fired",
-            data: {
-              productId,
-              pathname: window.location.pathname,
-              visibilityState: document.visibilityState,
-              hasProduct: Boolean(product),
-              hasClientId: Boolean(clientId),
-            },
-            ts: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         try {
           const response = await authedFetch(`/api/v1/products/${productId}/view/`, {
             method: "POST",
@@ -278,32 +265,6 @@ export function ProductPage() {
               source: "product_detail",
             }),
           });
-          // #region debug-point B:frontend-track-response
-          response
-            .clone()
-            .json()
-            .catch(() => null)
-            .then((payload) =>
-              fetch("http://127.0.0.1:7777/event", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  sessionId: "product-view-zero",
-                  runId: "pre-fix",
-                  hypothesisId: "B",
-                  location: "product-page.tsx:260",
-                  msg: "[DEBUG] product detail view tracking response",
-                  data: {
-                    productId,
-                    status: response.status,
-                    ok: response.ok,
-                    payload,
-                  },
-                  ts: Date.now(),
-                }),
-              }).catch(() => {}),
-            );
-          // #endregion
           if (!response.ok) return;
           viewTrackedRef.current = true;
         } catch {}
@@ -384,7 +345,7 @@ export function ProductPage() {
 
   const normalizedGroups = useMemo(() => {
     const groups = optionGroups.map((g) => {
-      const keyLower = g.key.toLowerCase();
+      const keyLower = lowerText(g.key);
       const kind = keyLower.includes("color") || keyLower.includes("colour")
         ? "color"
         : keyLower.includes("length") || keyLower.includes("size")
@@ -697,7 +658,6 @@ export function ProductPage() {
   }, [product?.media]);
 
   const documentSlots = useMemo(() => {
-    const normalize = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const slots = [
       {
         key: "vehsl_report",
@@ -742,8 +702,8 @@ export function ProductPage() {
 
     for (const s of slots) {
       const hitIdx = remaining.findIndex((d) => {
-        const title = normalize(d.title);
-        const ct = normalize(d.contentType);
+        const title = normalizeSearchText(d.title);
+        const ct = normalizeSearchText(d.contentType);
         return s.keywords.some((k) => title.includes(k) || ct.includes(k));
       });
       assigned[s.key] = hitIdx >= 0 ? remaining.splice(hitIdx, 1)[0] : null;
@@ -1547,7 +1507,7 @@ export function ProductPage() {
                           <div className="mt-3 flex flex-wrap items-center gap-3">
                             {g.values.map((v) => {
                               const selected = v === value;
-                              const token = v.toLowerCase().replace(/\s+/g, "");
+                              const token = lowerText(v).replace(/\s+/g, "");
                               const isHex = /^#?[0-9a-f]{6}$/i.test(token);
                               const bg = isHex ? (token.startsWith("#") ? token : `#${token}`) : "";
                               const map: Record<string, string> = {
