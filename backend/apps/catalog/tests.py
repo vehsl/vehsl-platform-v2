@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.catalog.models import Category, ListingRequest, Product, ProductFeedback, Warehouse
+from apps.catalog.models import Category, ListingRequest, Product, ProductFeedback, ProductViewEvent, Warehouse
 from apps.accounts.models import BuyerAddress, Notification
 
 
@@ -450,6 +450,95 @@ class ProductFeedbackTests(TestCase):
         first = rows[0]
         self.assertIn("product_feedback_unread", first)
         self.assertIn("product_feedback_latest", first)
+
+
+class ProductViewTrackingTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        User = get_user_model()
+        self.admin = User.objects.create_user(email="admin-view@test.local", password="pass1234", role="admin", is_staff=True)
+        self.seller = User.objects.create_user(email="seller-view@test.local", password="pass1234", role="seller", account_type="seller")
+        self.buyer = User.objects.create_user(email="buyer-view@test.local", password="pass1234", role="buyer", account_type="buyer")
+        self.category = Category.objects.create(name="Cat View", slug="cat-view")
+        self.product = Product.objects.create(
+            seller=self.seller,
+            category=self.category,
+            name="Tracked Product",
+            title="Tracked Product",
+            currency="USD",
+            price="18.00",
+            status=Product.Status.ACTIVE,
+        )
+
+    def test_buyer_view_is_recorded_and_deduped_in_30_minute_bucket(self):
+        self.client.force_authenticate(user=self.buyer)
+
+        first = self.client.post(
+            f"/api/v1/products/{self.product.id}/view/",
+            {
+                "client_id": "buyer-client-1",
+                "path": f"/products/{self.product.id}",
+                "referrer": "/explore",
+                "country_hint": "PK",
+                "source": "product_detail",
+            },
+            format="json",
+        )
+        second = self.client.post(
+            f"/api/v1/products/{self.product.id}/view/",
+            {
+                "client_id": "buyer-client-1",
+                "path": f"/products/{self.product.id}",
+                "referrer": "/explore",
+                "country_hint": "PK",
+                "source": "product_detail",
+            },
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["recorded"], True)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data["recorded"], False)
+        self.assertEqual(second.data["reason"], "deduped")
+        self.assertEqual(ProductViewEvent.objects.count(), 1)
+        event = ProductViewEvent.objects.get()
+        self.assertEqual(event.product_id, self.product.id)
+        self.assertEqual(event.seller_id, self.seller.id)
+        self.assertEqual(event.viewer_id, self.buyer.id)
+        self.assertEqual(event.country_code, "pk")
+
+    def test_seller_and_admin_views_are_excluded(self):
+        self.client.force_authenticate(user=self.seller)
+        seller_res = self.client.post(
+            f"/api/v1/products/{self.product.id}/view/",
+            {"client_id": "seller-client", "source": "product_detail"},
+            format="json",
+        )
+        self.client.force_authenticate(user=self.admin)
+        admin_res = self.client.post(
+            f"/api/v1/products/{self.product.id}/view/",
+            {"client_id": "admin-client", "source": "product_detail"},
+            format="json",
+        )
+
+        self.assertEqual(seller_res.status_code, 200)
+        self.assertEqual(seller_res.data["recorded"], False)
+        self.assertEqual(admin_res.status_code, 200)
+        self.assertEqual(admin_res.data["recorded"], False)
+        self.assertEqual(ProductViewEvent.objects.count(), 0)
+
+    def test_anonymous_view_requires_client_id(self):
+        res = self.client.post(
+            f"/api/v1/products/{self.product.id}/view/",
+            {"source": "product_detail"},
+            format="json",
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["recorded"], False)
+        self.assertEqual(res.data["reason"], "missing_viewer_key")
+        self.assertEqual(ProductViewEvent.objects.count(), 0)
 
 
 class AdminDeleteProductTests(TestCase):

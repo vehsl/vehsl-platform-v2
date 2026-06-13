@@ -282,6 +282,7 @@ class SellerTrendsSummaryMetricsSerializer(serializers.Serializer):
     total_orders = serializers.IntegerField()
     units_sold = serializers.IntegerField(required=False)
     total_views = serializers.IntegerField()
+    unique_viewers = serializers.IntegerField(required=False)
     active_sellers = serializers.IntegerField()
     avg_order_value = serializers.FloatField()
     buy_rate = serializers.FloatField(required=False, allow_null=True)

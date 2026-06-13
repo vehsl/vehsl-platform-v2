@@ -8,7 +8,7 @@ from django.core.cache import cache
 from django.db.models import Avg, Count, Q
 from django.utils import timezone
 
-from apps.catalog.models import Category, Product, ProductMedia
+from apps.catalog.models import Category, Product, ProductMedia, ProductViewEvent
 from apps.catalog.serializers import ProductMediaSerializer
 from apps.orders.models import Order, OrderItem, Review
 
@@ -338,6 +338,24 @@ def _badge_for(curr: int, change: int) -> str:
     return "steady"
 
 
+def _empty_product_stats(product=None) -> dict:
+    return {
+        "product": product,
+        "curr_qty": 0,
+        "curr_rev": 0.0,
+        "prev_qty": 0,
+        "sum_price": 0.0,
+        "sum_qty": 0,
+        "daily_orders": {},
+        "daily_revenue": {},
+        "daily_views": {},
+        "markets": {},
+        "sellers": set(),
+        "view_count": 0,
+        "unique_viewers": 0,
+    }
+
+
 def _product_base_queryset(seller: User | None = None):
     qs = (
         Product.objects.filter(deleted_at__isnull=True)
@@ -347,6 +365,40 @@ def _product_base_queryset(seller: User | None = None):
     )
     if seller is not None:
         qs = qs.filter(seller=seller)
+    return qs
+
+
+def _view_events_queryset(
+    *,
+    seller: User | None,
+    start,
+    now,
+    industry: str,
+    search: str,
+    country: str,
+):
+    qs = (
+        ProductViewEvent.objects.select_related("product", "product__category", "seller", "seller__seller_profile")
+        .filter(
+            created_at__gte=start,
+            created_at__lt=now,
+            product__deleted_at__isnull=True,
+        )
+        .exclude(product__status=Product.Status.ARCHIVED)
+    )
+    if seller is not None:
+        qs = qs.filter(seller=seller)
+    if industry and industry != "all":
+        qs = qs.filter(product__category__slug=industry)
+    if search:
+        qs = qs.filter(
+            Q(product__name__icontains=search)
+            | Q(product__sku__icontains=search)
+            | Q(product__category__name__icontains=search)
+            | Q(seller__seller_profile__business_name__icontains=search)
+        )
+    if country and country != "all":
+        qs = qs.filter(country_code=country)
     return qs
 
 
@@ -466,7 +518,47 @@ def build_trend_summary(
     total_orders = 0
     units_sold = 0
     total_sales = 0.0
-    total_views = 0
+    view_qs = _view_events_queryset(
+        seller=seller,
+        start=start_curr,
+        now=now,
+        industry=(industry or "all").strip().lower(),
+        search=(search or "").strip(),
+        country=selected_country,
+    )
+    view_metrics = view_qs.aggregate(total_views=Count("id"), unique_viewers=Count("viewer_key", distinct=True))
+    total_views = _safe_int(view_metrics.get("total_views"))
+    unique_viewers = _safe_int(view_metrics.get("unique_viewers"))
+    # #region debug-point D:summary-view-metrics
+    import json, urllib.request
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(
+                "http://host.docker.internal:7777/event",
+                data=json.dumps(
+                    {
+                        "sessionId": "product-view-zero",
+                        "runId": "pre-fix",
+                        "hypothesisId": "D",
+                        "location": "accounts/seller_trends.py:532",
+                        "msg": "[DEBUG] seller trends summary view metrics",
+                        "data": {
+                            "seller_id": int(seller.id) if seller is not None else None,
+                            "period": normalized,
+                            "search": (search or "").strip(),
+                            "industry": (industry or "all").strip().lower(),
+                            "country": selected_country,
+                            "total_views": total_views,
+                            "unique_viewers": unique_viewers,
+                        },
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        ).read()
+    except Exception:
+        pass
+    # #endregion
     active_sellers: set[int] = set()
     order_ids: set[int] = set()
     for item in items_qs.iterator(chunk_size=500):
@@ -484,31 +576,31 @@ def build_trend_summary(
         active_sellers.add(int(order.seller_id))
     total_orders = len(order_ids)
     industries, countries = _filter_options_payload(seller=seller)
-    warnings = [
-        "Product view telemetry is not implemented in the current backend, so total views and buy rate are hidden until real tracking is added."
-    ]
+    buy_rate = None if unique_viewers <= 0 else round((total_orders / max(unique_viewers, 1)) * 100.0, 1)
     return {
         "period": normalized,
         "generated_at": now,
         "is_partial": False,
-        "warnings": warnings,
+        "warnings": [],
         "data_sources": [
             "orders",
             "order_items",
             "products",
             "seller_profiles",
             "product_media",
+            "product_view_events",
         ],
         "metrics": {
             "total_sales_value": round(total_sales, 2),
             "total_orders": int(total_orders),
             "units_sold": int(units_sold),
             "total_views": int(total_views),
+            "unique_viewers": int(unique_viewers),
             "active_sellers": int(len(active_sellers)),
             "avg_order_value": round(total_sales / max(total_orders, 1), 2),
-            "buy_rate": None,
-            "views_source": "unavailable",
-            "buy_rate_source": "unavailable_without_view_telemetry",
+            "buy_rate": buy_rate,
+            "views_source": "tracked_product_view_events",
+            "buy_rate_source": "tracked_unique_viewers",
         },
         "filters": {
             "industry_options": industries,
@@ -551,18 +643,7 @@ def build_trend_products(
         product_id = int(item.product_id)
         data = stats.get(product_id)
         if data is None:
-            data = {
-                "product": item.product,
-                "curr_qty": 0,
-                "curr_rev": 0.0,
-                "prev_qty": 0,
-                "sum_price": 0.0,
-                "sum_qty": 0,
-                "daily_orders": {},
-                "daily_revenue": {},
-                "markets": {},
-                "sellers": set(),
-            }
+            data = _empty_product_stats(item.product)
             stats[product_id] = data
         is_curr = bool(order.created_at and order.created_at >= start_curr)
         if is_curr:
@@ -583,6 +664,71 @@ def build_trend_products(
             data["prev_qty"] += qty
         data["sum_price"] += revenue
         data["sum_qty"] += qty
+    view_qs = _view_events_queryset(
+        seller=seller,
+        start=start_curr,
+        now=now,
+        industry=(industry or "all").strip().lower(),
+        search=(search or "").strip(),
+        country=selected_country,
+    )
+    for row in view_qs.values("product_id").annotate(total_views=Count("id"), unique_viewers=Count("viewer_key", distinct=True)):
+        product_id = _safe_int(row.get("product_id"))
+        if product_id <= 0:
+            continue
+        data = stats.get(product_id)
+        if data is None:
+            data = _empty_product_stats()
+            stats[product_id] = data
+        data["view_count"] = _safe_int(row.get("total_views"))
+        data["unique_viewers"] = _safe_int(row.get("unique_viewers"))
+    # #region debug-point D:products-view-metrics
+    try:
+        preview_rows = [
+            {
+                "product_id": int(pid),
+                "view_count": _safe_int(data.get("view_count")),
+                "unique_viewers": _safe_int(data.get("unique_viewers")),
+            }
+            for pid, data in list(stats.items())[:5]
+            if data.get("view_count") or data.get("unique_viewers")
+        ]
+        urllib.request.urlopen(
+            urllib.request.Request(
+                "http://host.docker.internal:7777/event",
+                data=json.dumps(
+                    {
+                        "sessionId": "product-view-zero",
+                        "runId": "pre-fix",
+                        "hypothesisId": "D",
+                        "location": "accounts/seller_trends.py:676",
+                        "msg": "[DEBUG] seller trends product view rows",
+                        "data": {
+                            "seller_id": int(seller.id) if seller is not None else None,
+                            "period": normalized,
+                            "search": (search or "").strip(),
+                            "industry": (industry or "all").strip().lower(),
+                            "country": selected_country,
+                            "rows": preview_rows,
+                        },
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        ).read()
+    except Exception:
+        pass
+    # #endregion
+    for event in view_qs.iterator(chunk_size=500):
+        product_id = _safe_int(getattr(event, "product_id", 0))
+        if product_id <= 0:
+            continue
+        data = stats.get(product_id)
+        if data is None:
+            data = _empty_product_stats()
+            stats[product_id] = data
+        label = _bucket_label_for_datetime(normalized, getattr(event, "created_at", None), now, start_curr)
+        data["daily_views"][label] = data["daily_views"].get(label, 0) + 1
     if not stats:
         return []
     products = _product_base_queryset(seller=seller).filter(id__in=list(stats.keys()))
@@ -600,13 +746,16 @@ def build_trend_products(
     rows: list[dict] = []
     for product_id, data in stats.items():
         product = product_map.get(product_id) or data["product"]
+        if product is None:
+            continue
         curr_qty = _safe_int(data["curr_qty"])
         prev_qty = _safe_int(data["prev_qty"])
-        if curr_qty <= 0 and prev_qty <= 0:
+        views = _safe_int(data.get("view_count"))
+        unique_viewers = _safe_int(data.get("unique_viewers"))
+        if curr_qty <= 0 and prev_qty <= 0 and views <= 0:
             continue
         change = 0 if prev_qty <= 0 else int(round(((curr_qty - prev_qty) / max(prev_qty, 1)) * 100))
         avg_price = round(data["sum_price"] / max(data["sum_qty"], 1), 2)
-        views = 0
         keywords: list[str] = []
         for token in tokenize_keywords(product.name):
             if token not in keywords:
@@ -639,12 +788,13 @@ def build_trend_products(
             label_key = label
             label_orders = _safe_int(data["daily_orders"].get(label_key))
             label_revenue = round(_safe_float(data["daily_revenue"].get(label_key)), 2)
+            label_views = _safe_int(data["daily_views"].get(label_key))
             weekly_data.append(
                 {
                     "day": label_key,
                     "orders": label_orders,
                     "revenue": label_revenue,
-                    "views": 0,
+                    "views": label_views,
                 }
             )
             sparkline.append(label_orders)
@@ -680,7 +830,7 @@ def build_trend_products(
                 "avg_price": avg_price,
                 "topMarkets": top_markets,
                 "top_markets": top_markets,
-                "buyerInterest": int(curr_qty * 3.2 + (product_id % 50)),
+                "buyerInterest": int(views + unique_viewers),
                 "competitorCount": _safe_int(category_counts.get(int(product.category_id or 0))),
                 "relatedKeywords": keywords,
                 "related_keywords": keywords,
@@ -688,7 +838,7 @@ def build_trend_products(
                 "weekly_data": weekly_data,
                 "sellers": int(len(data.get("sellers") or [])),
                 "seller_count": int(len(data.get("sellers") or [])),
-                "views_source": "unavailable",
+                "views_source": "tracked_product_view_events",
                 "path": f"/admin/management/listings?product_id={product_id}",
             }
         )

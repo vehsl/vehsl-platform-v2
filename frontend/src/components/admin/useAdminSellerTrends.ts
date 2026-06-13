@@ -28,6 +28,7 @@ export interface SellerTrendsSummary {
     total_orders: number;
     units_sold: number;
     total_views: number;
+    unique_viewers: number;
     active_sellers: number;
     avg_order_value: number;
     buy_rate: number | null;
@@ -328,6 +329,7 @@ function normalizeSummary(input: any): SellerTrendsSummary {
       total_orders: coerceNumber(input?.metrics?.total_orders),
       units_sold: coerceNumber(input?.metrics?.units_sold),
       total_views: coerceNumber(input?.metrics?.total_views),
+      unique_viewers: coerceNumber(input?.metrics?.unique_viewers),
       active_sellers: coerceNumber(input?.metrics?.active_sellers),
       avg_order_value: coerceNumber(input?.metrics?.avg_order_value, 2),
       buy_rate: input?.metrics?.buy_rate == null ? null : coerceNumber(input?.metrics?.buy_rate, 1),

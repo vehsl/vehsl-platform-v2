@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.models import BuyerProfile, EmailVerificationCode, SellerProfile, User
-from apps.catalog.models import Category, ListingRequest, Product, ProductMedia
+from apps.catalog.models import Category, ListingRequest, Product, ProductMedia, ProductViewEvent
 from apps.inventory.models import QualityInspection
 from apps.orders.models import Dispute, Order, OrderItem, Review, Shipment
 
@@ -392,6 +392,63 @@ class AdminSellerTrendsTests(TestCase):
             rating="5.0",
             text="Excellent seller",
         )
+        bucket_now = now.replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0)
+        ProductViewEvent.objects.create(
+            product=self.product_one,
+            seller=self.seller_one,
+            viewer=self.buyer_one,
+            viewer_key=f"user:{self.buyer_one.id}",
+            client_id="buyer-one",
+            dedupe_bucket=bucket_now,
+            country_code="pk",
+            source="product_detail",
+            path=f"/products/{self.product_one.id}",
+        )
+        ProductViewEvent.objects.create(
+            product=self.product_one,
+            seller=self.seller_one,
+            viewer=self.buyer_two,
+            viewer_key=f"user:{self.buyer_two.id}",
+            client_id="buyer-two",
+            dedupe_bucket=bucket_now + timedelta(minutes=30),
+            country_code="pk",
+            source="product_detail",
+            path=f"/products/{self.product_one.id}",
+        )
+        ProductViewEvent.objects.create(
+            product=self.product_one,
+            seller=self.seller_one,
+            viewer_key="anon:tea-viewer",
+            client_id="anon-tea-viewer",
+            dedupe_bucket=bucket_now + timedelta(minutes=60),
+            country_code="pk",
+            source="product_detail",
+            path=f"/products/{self.product_one.id}",
+        )
+        ProductViewEvent.objects.create(
+            product=self.product_two,
+            seller=self.seller_two,
+            viewer_key="anon:light-viewer",
+            client_id="anon-light-viewer",
+            dedupe_bucket=bucket_now + timedelta(minutes=90),
+            country_code="ae",
+            source="product_detail",
+            path=f"/products/{self.product_two.id}",
+        )
+        stale_view = ProductViewEvent.objects.create(
+            product=self.product_one,
+            seller=self.seller_one,
+            viewer_key="anon:stale-viewer",
+            client_id="anon-stale-viewer",
+            dedupe_bucket=bucket_now - timedelta(days=10),
+            country_code="pk",
+            source="product_detail",
+            path=f"/products/{self.product_one.id}",
+        )
+        ProductViewEvent.objects.filter(pk=stale_view.pk).update(
+            created_at=now - timedelta(days=10),
+            dedupe_bucket=bucket_now - timedelta(days=10),
+        )
 
     def test_admin_seller_trends_endpoints_return_real_aggregates(self):
         summary = self.client.get("/api/v1/admin/seller-trends/summary?period=7d")
@@ -415,11 +472,13 @@ class AdminSellerTrendsTests(TestCase):
         self.assertEqual(summary.data["period"], "7d")
         self.assertEqual(summary.data["metrics"]["total_orders"], 3)
         self.assertEqual(summary.data["metrics"]["units_sold"], 9)
-        self.assertEqual(summary.data["metrics"]["total_views"], 0)
+        self.assertEqual(summary.data["metrics"]["total_views"], 4)
+        self.assertEqual(summary.data["metrics"]["unique_viewers"], 4)
         self.assertEqual(summary.data["metrics"]["active_sellers"], 2)
         self.assertGreater(summary.data["metrics"]["total_sales_value"], 350)
-        self.assertIsNone(summary.data["metrics"]["buy_rate"])
-        self.assertEqual(summary.data["metrics"]["views_source"], "unavailable")
+        self.assertEqual(summary.data["metrics"]["buy_rate"], 75.0)
+        self.assertEqual(summary.data["metrics"]["views_source"], "tracked_product_view_events")
+        self.assertEqual(summary.data["metrics"]["buy_rate_source"], "tracked_unique_viewers")
         self.assertTrue(summary.data["filters"]["industry_options"])
         self.assertTrue(summary.data["filters"]["country_options"])
 
@@ -427,9 +486,10 @@ class AdminSellerTrendsTests(TestCase):
         self.assertGreaterEqual(products.data["meta"]["count"], 2)
         self.assertEqual(products.data["results"][0]["name"], "Organic Herbal Tea Blend")
         self.assertEqual(products.data["results"][0]["orders7d"], 7)
+        self.assertEqual(products.data["results"][0]["views7d"], 3)
         self.assertGreater(products.data["results"][0]["revenue7d"], 170)
         self.assertEqual(products.data["results"][0]["topMarkets"][0]["code"], "pk")
-        self.assertEqual(products.data["results"][0]["views_source"], "unavailable")
+        self.assertEqual(products.data["results"][0]["views_source"], "tracked_product_view_events")
         self.assertEqual(products.data["results"][0]["seller_count"], 1)
         self.assertEqual(products.data["results"][0]["change_pct"], products.data["results"][0]["change"])
         self.assertEqual(revenue_sorted_products.data["results"][0]["name"], "Smart LED Panel Light")
@@ -466,11 +526,25 @@ class AdminSellerTrendsTests(TestCase):
             shipping_address={"country": "United Arab Emirates", "city": "Dubai"},
         )
         OrderItem.objects.create(order=new_order, product=self.product_two, quantity=3, unit_price="89.90")
+        now = timezone.now()
+        bucket_now = now.replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0)
+        ProductViewEvent.objects.create(
+            product=self.product_two,
+            seller=self.seller_two,
+            viewer_key="anon:light-viewer-2",
+            client_id="anon-light-viewer-2",
+            dedupe_bucket=bucket_now + timedelta(minutes=120),
+            country_code="ae",
+            source="product_detail",
+            path=f"/products/{self.product_two.id}",
+        )
 
         updated_summary = self.client.get("/api/v1/admin/seller-trends/summary?period=7d")
         self.assertEqual(updated_summary.status_code, 200)
         self.assertEqual(updated_summary.data["metrics"]["total_orders"], 4)
         self.assertEqual(updated_summary.data["metrics"]["units_sold"], 12)
+        self.assertEqual(updated_summary.data["metrics"]["total_views"], 5)
+        self.assertEqual(updated_summary.data["metrics"]["unique_viewers"], 5)
 
     def test_admin_seller_trends_supports_offset_pagination(self):
         response = self.client.get("/api/v1/admin/seller-trends/keywords?period=7d&page_size=1&offset=1")

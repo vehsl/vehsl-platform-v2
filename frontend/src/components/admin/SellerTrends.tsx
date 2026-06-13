@@ -195,14 +195,14 @@ function BigStat({
   iconBg: string;
   label: string;
   value: string;
-  sub: string;
+  sub?: string;
 }) {
   return (
     <div className="rounded-3xl border border-border/40 bg-card p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
       <div className={`mb-4 flex h-11 w-11 items-center justify-center rounded-2xl ${iconBg}`}>{icon}</div>
       <p className="mb-1 text-[0.75rem] text-muted-foreground">{label}</p>
-      <p className="mb-1.5 text-[1.75rem] leading-none tracking-tight text-foreground">{value}</p>
-      <p className="text-[0.6875rem] text-muted-foreground">{sub}</p>
+      <p className={`${sub ? "mb-1.5" : ""} text-[1.75rem] leading-none tracking-tight text-foreground`}>{value}</p>
+      {sub ? <p className="text-[0.6875rem] text-muted-foreground">{sub}</p> : null}
     </div>
   );
 }
@@ -331,7 +331,6 @@ export function SellerTrends() {
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-[1.35rem] text-foreground">Seller Trends</h2>
-          <p className="text-[0.8125rem] text-muted-foreground">Real ops-manager analytics for products, sellers, keywords, and video content.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <BounceButton onClick={refresh} className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-card px-3.5 py-2 text-[0.8125rem] text-foreground">
@@ -342,38 +341,36 @@ export function SellerTrends() {
 
       {summaryError ? <ErrorState message={summaryError} /> : null}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <BigStat
           icon={<CircleDollarSign size={22} className="text-[#30A46C]" />}
           iconBg="bg-[#30A46C]/10"
           label="Total Sales Value"
           value={summaryLoading && !hero ? "..." : formatMoney(hero?.total_sales_value || 0)}
-          sub={`Avg ${formatMoney(hero?.avg_order_value || 0)} per order`}
         />
         <BigStat
           icon={<ShoppingCart size={22} className="text-[#0171E3]" />}
           iconBg="bg-[#0171E3]/10"
           label="Total Orders"
           value={summaryLoading && !hero ? "..." : formatNum(hero?.total_orders || 0)}
-          sub={`${formatNum(hero?.units_sold || 0)} units sold across ${formatNum(hero?.active_sellers || 0)} active sellers`}
         />
         <BigStat
           icon={<Eye size={22} className="text-[#D97706]" />}
           iconBg="bg-[#FFB224]/10"
           label="Total Views"
           value={summaryLoading && !hero ? "..." : formatNum(hero?.total_views || 0)}
-          sub={
-            hero?.buy_rate == null
-              ? `Unavailable until real product view telemetry is implemented`
-              : `${hero.buy_rate.toFixed(1)}% buy rate, ${hero?.views_source || "unavailable"} views`
-          }
+        />
+        <BigStat
+          icon={<Users size={22} className="text-[#8E4EC6]" />}
+          iconBg="bg-[#8E4EC6]/10"
+          label="Unique Viewers"
+          value={summaryLoading && !hero ? "..." : formatNum(hero?.unique_viewers || 0)}
         />
         <BigStat
           icon={<Users size={22} className="text-[#E5484D]" />}
           iconBg="bg-[#E5484D]/10"
           label="Active Sellers"
           value={summaryLoading && !hero ? "..." : `${hero?.active_sellers || 0}`}
-          sub={`Tracking ${formatNum(productsMeta.count)} ranked products`}
         />
       </div>
 
