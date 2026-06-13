@@ -5,6 +5,7 @@ from uuid import uuid4
 import hashlib
 
 from django.core.files.storage import default_storage
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Avg, BooleanField, Case, CharField, Count, DecimalField, ExpressionWrapper, F, IntegerField, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
@@ -573,6 +574,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         return f"anon:{digest}"
 
     @classmethod
+    def _safe_related(cls, instance, attr: str):
+        try:
+            return getattr(instance, attr, None)
+        except ObjectDoesNotExist:
+            return None
+
+    @classmethod
     def _request_country_code(cls, request, client_id: str) -> str:
         payload = request.data if isinstance(request.data, dict) else {}
         hinted = cls._normalize_country_code(str(payload.get("country_hint") or ""))
@@ -581,17 +589,17 @@ class ProductViewSet(viewsets.ModelViewSet):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return ""
-        buyer_profile = getattr(user, "buyer_profile", None)
+        buyer_profile = cls._safe_related(user, "buyer_profile")
         default_location = getattr(buyer_profile, "default_location", None)
         if isinstance(default_location, dict):
             hinted = cls._normalize_country_code(str(default_location.get("country") or default_location.get("country_name") or ""))
             if hinted:
                 return hinted
-        profile = getattr(user, "profile", None)
+        profile = cls._safe_related(user, "profile")
         hinted = cls._normalize_country_code(str(getattr(profile, "country", "") or ""))
         if hinted:
             return hinted
-        seller_profile = getattr(user, "seller_profile", None)
+        seller_profile = cls._safe_related(user, "seller_profile")
         return cls._normalize_country_code(str(getattr(seller_profile, "country", "") or ""))
 
     @staticmethod
@@ -617,93 +625,13 @@ class ProductViewSet(viewsets.ModelViewSet):
     def track_view(self, request, pk=None, *args, **kwargs):
         product = self.get_object()
         user = request.user
-        # #region debug-point C:track-view-entry
-        import json, urllib.request
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(
-                    "http://host.docker.internal:7777/event",
-                    data=json.dumps(
-                        {
-                            "sessionId": "product-view-zero",
-                            "runId": "pre-fix",
-                            "hypothesisId": "C",
-                            "location": "catalog/views.py:620",
-                            "msg": "[DEBUG] track_view entered",
-                            "data": {
-                                "product_id": int(product.id),
-                                "user_id": int(user.id) if getattr(user, "is_authenticated", False) else None,
-                                "role": getattr(user, "role", None),
-                                "account_type": getattr(user, "account_type", None),
-                                "is_staff": bool(getattr(user, "is_staff", False)),
-                                "payload_keys": sorted(list(request.data.keys())) if isinstance(request.data, dict) else [],
-                            },
-                        }
-                    ).encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-            ).read()
-        except Exception:
-            pass
-        # #endregion
         if self._exclude_viewer(user, product):
-            # #region debug-point C:track-view-excluded
-            try:
-                urllib.request.urlopen(
-                    urllib.request.Request(
-                        "http://host.docker.internal:7777/event",
-                        data=json.dumps(
-                            {
-                                "sessionId": "product-view-zero",
-                                "runId": "pre-fix",
-                                "hypothesisId": "C",
-                                "location": "catalog/views.py:645",
-                                "msg": "[DEBUG] track_view excluded viewer",
-                                "data": {
-                                    "product_id": int(product.id),
-                                    "user_id": int(user.id) if getattr(user, "is_authenticated", False) else None,
-                                    "role": getattr(user, "role", None),
-                                    "account_type": getattr(user, "account_type", None),
-                                },
-                            }
-                        ).encode(),
-                        headers={"Content-Type": "application/json"},
-                    )
-                ).read()
-            except Exception:
-                pass
-            # #endregion
             return Response({"recorded": False, "reason": "excluded_viewer"})
 
         payload = request.data if isinstance(request.data, dict) else {}
         client_id = self._normalized_client_id(str(payload.get("client_id") or ""))
         viewer_key = self._viewer_key(request, client_id)
         if not viewer_key:
-            # #region debug-point C:track-view-missing-key
-            try:
-                urllib.request.urlopen(
-                    urllib.request.Request(
-                        "http://host.docker.internal:7777/event",
-                        data=json.dumps(
-                            {
-                                "sessionId": "product-view-zero",
-                                "runId": "pre-fix",
-                                "hypothesisId": "C",
-                                "location": "catalog/views.py:669",
-                                "msg": "[DEBUG] track_view missing viewer key",
-                                "data": {
-                                    "product_id": int(product.id),
-                                    "client_id_present": bool(client_id),
-                                    "is_authenticated": bool(getattr(user, "is_authenticated", False)),
-                                },
-                            }
-                        ).encode(),
-                        headers={"Content-Type": "application/json"},
-                    )
-                ).read()
-            except Exception:
-                pass
-            # #endregion
             return Response({"recorded": False, "reason": "missing_viewer_key"})
 
         source = (str(payload.get("source") or "product_detail").strip() or "product_detail")[:64]
@@ -725,33 +653,6 @@ class ProductViewSet(viewsets.ModelViewSet):
                 "referrer": referrer,
             },
         )
-        # #region debug-point C:track-view-result
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request(
-                    "http://host.docker.internal:7777/event",
-                    data=json.dumps(
-                        {
-                            "sessionId": "product-view-zero",
-                            "runId": "pre-fix",
-                            "hypothesisId": "C",
-                            "location": "catalog/views.py:709",
-                            "msg": "[DEBUG] track_view persistence result",
-                            "data": {
-                                "product_id": int(product.id),
-                                "created": bool(created),
-                                "viewer_key": viewer_key,
-                                "bucket": dedupe_bucket.isoformat(),
-                                "seller_id": int(product.seller_id),
-                            },
-                        }
-                    ).encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-            ).read()
-        except Exception:
-            pass
-        # #endregion
         if not created:
             return Response({"recorded": False, "reason": "deduped"})
 

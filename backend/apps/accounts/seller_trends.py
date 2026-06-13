@@ -529,36 +529,6 @@ def build_trend_summary(
     view_metrics = view_qs.aggregate(total_views=Count("id"), unique_viewers=Count("viewer_key", distinct=True))
     total_views = _safe_int(view_metrics.get("total_views"))
     unique_viewers = _safe_int(view_metrics.get("unique_viewers"))
-    # #region debug-point D:summary-view-metrics
-    import json, urllib.request
-    try:
-        urllib.request.urlopen(
-            urllib.request.Request(
-                "http://host.docker.internal:7777/event",
-                data=json.dumps(
-                    {
-                        "sessionId": "product-view-zero",
-                        "runId": "pre-fix",
-                        "hypothesisId": "D",
-                        "location": "accounts/seller_trends.py:532",
-                        "msg": "[DEBUG] seller trends summary view metrics",
-                        "data": {
-                            "seller_id": int(seller.id) if seller is not None else None,
-                            "period": normalized,
-                            "search": (search or "").strip(),
-                            "industry": (industry or "all").strip().lower(),
-                            "country": selected_country,
-                            "total_views": total_views,
-                            "unique_viewers": unique_viewers,
-                        },
-                    }
-                ).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-        ).read()
-    except Exception:
-        pass
-    # #endregion
     active_sellers: set[int] = set()
     order_ids: set[int] = set()
     for item in items_qs.iterator(chunk_size=500):
@@ -682,43 +652,6 @@ def build_trend_products(
             stats[product_id] = data
         data["view_count"] = _safe_int(row.get("total_views"))
         data["unique_viewers"] = _safe_int(row.get("unique_viewers"))
-    # #region debug-point D:products-view-metrics
-    try:
-        preview_rows = [
-            {
-                "product_id": int(pid),
-                "view_count": _safe_int(data.get("view_count")),
-                "unique_viewers": _safe_int(data.get("unique_viewers")),
-            }
-            for pid, data in list(stats.items())[:5]
-            if data.get("view_count") or data.get("unique_viewers")
-        ]
-        urllib.request.urlopen(
-            urllib.request.Request(
-                "http://host.docker.internal:7777/event",
-                data=json.dumps(
-                    {
-                        "sessionId": "product-view-zero",
-                        "runId": "pre-fix",
-                        "hypothesisId": "D",
-                        "location": "accounts/seller_trends.py:676",
-                        "msg": "[DEBUG] seller trends product view rows",
-                        "data": {
-                            "seller_id": int(seller.id) if seller is not None else None,
-                            "period": normalized,
-                            "search": (search or "").strip(),
-                            "industry": (industry or "all").strip().lower(),
-                            "country": selected_country,
-                            "rows": preview_rows,
-                        },
-                    }
-                ).encode(),
-                headers={"Content-Type": "application/json"},
-            )
-        ).read()
-    except Exception:
-        pass
-    # #endregion
     for event in view_qs.iterator(chunk_size=500):
         product_id = _safe_int(getattr(event, "product_id", 0))
         if product_id <= 0:
