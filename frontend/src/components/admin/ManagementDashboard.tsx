@@ -15,6 +15,8 @@ import {
   Eye,
   RotateCcw,
   ShieldCheck,
+  Activity,
+  ArrowRight,
 } from "lucide-react";
 
 import { StatCard } from "./StatCard";
@@ -30,6 +32,24 @@ function Section({ children, className = "" }: { children: React.ReactNode; clas
   return (
     <div className={`bg-card rounded-[1.25rem] p-7 shadow-[0_0_0_1px_rgba(0,0,0,0.03),0_2px_6px_rgba(0,0,0,0.02),0_8px_24px_rgba(0,0,0,0.03)] ${className}`}>
       {children}
+    </div>
+  );
+}
+
+function SkeletonBlock({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded-2xl bg-black/[0.04] ${className}`} />;
+}
+
+function CardSkeletons() {
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div key={index} className="rounded-[1.25rem] border border-black/[0.03] p-5 bg-card">
+          <SkeletonBlock className="h-3 w-20 mb-5" />
+          <SkeletonBlock className="h-8 w-14 mb-3" />
+          <SkeletonBlock className="h-3 w-28" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -63,6 +83,48 @@ function formatRelativeUpdate(iso: string) {
   return `Updated ${hours}h ago`;
 }
 
+function getSyncPill({
+  summaryLoading,
+  shipmentsLoading,
+  summaryError,
+  lastUpdated,
+  cacheTtlSeconds,
+  generatedFromCache,
+}: {
+  summaryLoading: boolean;
+  shipmentsLoading: boolean;
+  summaryError: string;
+  lastUpdated: string;
+  cacheTtlSeconds: number;
+  generatedFromCache: boolean;
+}) {
+  if (summaryError) return { status: "error" as const, label: "Failed sync", pulse: false };
+  if (summaryLoading || shipmentsLoading) return { status: "pending" as const, label: "Refreshing", pulse: true };
+  const updatedAt = new Date(lastUpdated).getTime();
+  const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Number.POSITIVE_INFINITY;
+  const staleAfterMs = Math.max(cacheTtlSeconds || 60, 60) * 2000;
+  if (!Number.isFinite(updatedAt) || ageMs > staleAfterMs) return { status: "warning" as const, label: "Stale", pulse: false };
+  if (generatedFromCache) return { status: "info" as const, label: "Cached", pulse: false };
+  return { status: "success" as const, label: "Live", pulse: true };
+}
+
+function shipmentStatusTone(status: string) {
+  switch ((status || "").toLowerCase()) {
+    case "delivered":
+      return "success" as const;
+    case "customs":
+      return "warning" as const;
+    case "out_for_delivery":
+      return "pending" as const;
+    case "label_created":
+    case "picked_up":
+    case "in_transit":
+      return "info" as const;
+    default:
+      return "neutral" as const;
+  }
+}
+
 export function ManagementDashboard() {
   const navigate = useNavigate();
   const {
@@ -77,6 +139,7 @@ export function ManagementDashboard() {
     shipmentsError,
     lastUpdated,
     initialLoading,
+    refreshing,
   } = useAdminCommandCenter();
 
   const listingItems = summary?.pipelines.listings.items || [];
@@ -103,13 +166,19 @@ export function ManagementDashboard() {
       })),
     [orderItems],
   );
+  const syncPill = getSyncPill({
+    summaryLoading,
+    shipmentsLoading,
+    summaryError,
+    lastUpdated,
+    cacheTtlSeconds: summary?.meta.cache_ttl_seconds || 0,
+    generatedFromCache: Boolean(summary?.meta.generated_from_cache),
+  });
 
   if (initialLoading) {
     return (
       <div className="space-y-7">
-        <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.875rem] text-muted-foreground/60">
-          Loading command center...
-        </div>
+        <CardSkeletons />
       </div>
     );
   }
@@ -132,7 +201,11 @@ export function ManagementDashboard() {
           <motion.p className="text-muted-foreground/70 text-[0.875rem]" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
             Live operations aligned to domain APIs.
           </motion.p>
-          <p className="text-[0.6875rem] text-muted-foreground/50 mt-2">{formatRelativeUpdate(lastUpdated)}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <p className="text-[0.6875rem] text-muted-foreground/50">{formatRelativeUpdate(lastUpdated)}</p>
+            <StatusPill status={syncPill.status} label={syncPill.label} pulse={syncPill.pulse} />
+            {summary?.meta.is_partial ? <StatusPill status="warning" label="Partial data" /> : null}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -146,7 +219,7 @@ export function ManagementDashboard() {
             <option value="90d">90d</option>
           </select>
           <BounceButton variant="secondary" size="sm" icon={<RotateCcw size={14} />} onClick={refresh}>
-            {summaryLoading || shipmentsLoading ? "Refreshing" : "Refresh"}
+            {refreshing ? "Refreshing" : "Refresh"}
           </BounceButton>
         </div>
       </div>
@@ -154,6 +227,11 @@ export function ManagementDashboard() {
       {summaryError ? (
         <div className="px-5 py-4 rounded-2xl bg-[#E5484D]/5 text-[#E5484D]/80 text-[0.8125rem]">
           Summary sync issue: {summaryError}
+        </div>
+      ) : null}
+      {summary?.meta.warnings?.length ? (
+        <div className="px-5 py-4 rounded-2xl bg-[#FFB224]/8 text-[#A16207] text-[0.8125rem]">
+          Partial command-center data: {summary.meta.warnings.join(" | ")}
         </div>
       ) : null}
 
@@ -222,6 +300,7 @@ export function ManagementDashboard() {
             View
           </BounceButton>
         </div>
+        {summaryLoading ? <p className="text-[0.6875rem] text-muted-foreground/45 mb-4">Refreshing listing pipeline…</p> : null}
         <div className="flex flex-wrap gap-2.5">
           {listingSummary.map((item) => (
             <button
@@ -253,6 +332,7 @@ export function ManagementDashboard() {
             View Orders
           </BounceButton>
         </div>
+        {summaryLoading ? <p className="text-[0.6875rem] text-muted-foreground/45 mb-4">Refreshing order flow…</p> : null}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           {orderFlow.map((stage, i) => {
             const pct = orderTotal ? Math.round((stage.count / orderTotal) * 100) : 0;
@@ -302,7 +382,7 @@ export function ManagementDashboard() {
           </div>
           <div className="flex items-center gap-2">
             {shipmentsError ? <StatusPill status="warning" label="sync issue" /> : null}
-            <StatusPill status="info" label={`${shipments.length} items`} pulse={shipments.length > 0} />
+            <StatusPill status={shipmentsLoading ? "pending" : "info"} label={`${shipments.length} items`} pulse={shipments.length > 0 || shipmentsLoading} />
           </div>
         </div>
         {shipmentsError ? (
@@ -314,7 +394,20 @@ export function ManagementDashboard() {
           </div>
         ) : shipments.length === 0 ? (
           <div className="px-5 py-10 rounded-2xl bg-black/[0.012] text-center text-[0.8125rem] text-muted-foreground/60">
-            No active shipments yet.
+            <div className="flex justify-center mb-4">
+              <div className="w-10 h-10 rounded-2xl bg-[#3B82F6]/8 flex items-center justify-center">
+                <Activity size={18} className="text-[#3B82F6]/70" />
+              </div>
+            </div>
+            <p className="mb-4">No active shipments yet.</p>
+            <div className="flex items-center justify-center gap-2">
+              <BounceButton variant="secondary" size="sm" icon={<Truck size={14} />} onClick={() => navigate(summary?.meta.paths.logistics || "/admin/logistics")}>
+                Open Logistics
+              </BounceButton>
+              <BounceButton variant="secondary" size="sm" icon={<ArrowRight size={14} />} onClick={() => navigate(summary?.meta.paths.orders || "/admin/management/orders")}>
+                View Orders
+              </BounceButton>
+            </div>
           </div>
         ) : (
           <div className="space-y-2">
@@ -336,7 +429,7 @@ export function ManagementDashboard() {
                     {shipment.seller || "-"} · ORD-{shipment.order_id ?? "-"} · {shipment.tracking_number ? `#${shipment.tracking_number}` : "no tracking"}
                   </p>
                 </div>
-                <StatusPill status="info" label={(shipment.status || "-").replaceAll("_", " ")} />
+                <StatusPill status={shipmentStatusTone(shipment.status)} label={(shipment.status || "-").replaceAll("_", " ")} />
               </motion.div>
             ))}
           </div>

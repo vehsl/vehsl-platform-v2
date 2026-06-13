@@ -40,11 +40,12 @@ def build_admin_quality_stats_payload(days: int) -> dict:
     recent = base.filter(created_at__gte=window)
     prev = base.filter(created_at__gte=prev_window, created_at__lt=window)
 
-    avg_score = recent.aggregate(v=Avg("score"))["v"] or 0
-    prev_avg = prev.aggregate(v=Avg("score"))["v"] or 0
+    completed = recent.exclude(status=QualityInspection.Status.IN_PROGRESS)
+    prev_completed = prev.exclude(status=QualityInspection.Status.IN_PROGRESS)
+    avg_score = completed.aggregate(v=Avg("score"))["v"] or 0
+    prev_avg = prev_completed.aggregate(v=Avg("score"))["v"] or 0
     delta = float(avg_score) - float(prev_avg)
 
-    completed = recent.exclude(status=QualityInspection.Status.IN_PROGRESS)
     passed = completed.filter(status=QualityInspection.Status.PASSED).count()
     failed = completed.filter(status=QualityInspection.Status.FAILED).count()
     pass_rate = (passed * 100.0 / (passed + failed)) if (passed + failed) else 0.0

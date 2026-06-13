@@ -198,6 +198,10 @@ class CommandCenterMetaSerializer(serializers.Serializer):
     generated_at = serializers.DateTimeField()
     last_updated = serializers.DateTimeField()
     cache_ttl_seconds = serializers.IntegerField()
+    generated_from_cache = serializers.BooleanField()
+    is_partial = serializers.BooleanField()
+    warnings = serializers.ListField(child=serializers.CharField(), required=False)
+    data_sources = serializers.ListField(child=serializers.CharField(), required=False)
     paths = serializers.DictField(child=serializers.CharField())
 
 

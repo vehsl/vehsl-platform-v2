@@ -12,6 +12,10 @@ export interface CommandCenterMeta {
   generated_at: string;
   last_updated: string;
   cache_ttl_seconds: number;
+  generated_from_cache: boolean;
+  is_partial: boolean;
+  warnings: string[];
+  data_sources: string[];
   paths: {
     orders: string;
     listings: string;
@@ -102,6 +106,7 @@ interface UseAdminCommandCenterResult {
   shipmentsError: string;
   lastUpdated: string;
   initialLoading: boolean;
+  refreshing: boolean;
 }
 
 const PERIODS: CommandCenterPeriod[] = ["24h", "7d", "30d", "90d"];
@@ -152,6 +157,10 @@ function normalizeSummary(input: any): CommandCenterSummary {
       generated_at: String(meta?.generated_at || ""),
       last_updated: String(meta?.last_updated || meta?.generated_at || ""),
       cache_ttl_seconds: coerceNumber(meta?.cache_ttl_seconds),
+      generated_from_cache: Boolean(meta?.generated_from_cache),
+      is_partial: Boolean(meta?.is_partial),
+      warnings: Array.isArray(meta?.warnings) ? meta.warnings.map((value: unknown) => String(value || "")) : [],
+      data_sources: Array.isArray(meta?.data_sources) ? meta.data_sources.map((value: unknown) => String(value || "")) : [],
       paths: {
         orders: String(meta?.paths?.orders || "/admin/management/orders"),
         listings: String(meta?.paths?.listings || "/admin/management/listings"),
@@ -226,6 +235,7 @@ export function useAdminCommandCenter(): UseAdminCommandCenterResult {
   const [summaryNonce, setSummaryNonce] = useState(0);
   const [shipmentsNonce, setShipmentsNonce] = useState(0);
   const [lastUpdated, setLastUpdated] = useState("");
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
   useEffect(() => {
     setPeriodState(urlPeriod);
@@ -267,6 +277,7 @@ export function useAdminCommandCenter(): UseAdminCommandCenterResult {
         const normalized = normalizeSummary(data);
         setSummary(normalized);
         setLastUpdated(normalized.meta.last_updated || new Date().toISOString());
+        setHasLoadedOnce(true);
       } catch (error: unknown) {
         if (isAbortError(error)) return;
         setSummaryError(error instanceof Error ? error.message : "Failed to load command center summary.");
@@ -294,6 +305,7 @@ export function useAdminCommandCenter(): UseAdminCommandCenterResult {
           signal: controller.signal,
         });
         setShipments(normalizeShipments(data));
+        setHasLoadedOnce(true);
       } catch (error: unknown) {
         if (isAbortError(error)) return;
         setShipmentsError(error instanceof Error ? error.message : "Failed to load live shipments.");
@@ -330,5 +342,6 @@ export function useAdminCommandCenter(): UseAdminCommandCenterResult {
     shipmentsError,
     lastUpdated,
     initialLoading: summaryLoading && !summary,
+    refreshing: hasLoadedOnce && (summaryLoading || shipmentsLoading),
   };
 }
