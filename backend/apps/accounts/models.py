@@ -404,8 +404,8 @@ class EmailVerificationCode(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["email", "purpose"]),
-            models.Index(fields=["purpose", "expires_at"]),
+            models.Index(fields=["email", "purpose"], name="accounts_em_email_1d0d0f_idx"),
+            models.Index(fields=["purpose", "expires_at"], name="accounts_em_purpose_51c170_idx"),
         ]
         constraints = [
             models.UniqueConstraint(fields=["email", "purpose"], name="uniq_email_verification_email_purpose"),

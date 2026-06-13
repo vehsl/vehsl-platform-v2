@@ -110,6 +110,44 @@ class Product(models.Model):
         super().save(*args, **kwargs)
 
 
+class ProductViewEvent(models.Model):
+    product = models.ForeignKey("Product", on_delete=models.CASCADE, related_name="view_events")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="product_view_events")
+    viewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="viewed_product_events",
+    )
+    viewer_key = models.CharField(max_length=128)
+    client_id = models.CharField(max_length=128, blank=True)
+    dedupe_bucket = models.DateTimeField()
+    country_code = models.CharField(max_length=8, blank=True)
+    source = models.CharField(max_length=64, default="product_detail")
+    path = models.CharField(max_length=255, blank=True)
+    referrer = models.CharField(max_length=512, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["seller", "created_at"]),
+            models.Index(fields=["product", "created_at"]),
+            models.Index(fields=["product", "dedupe_bucket"]),
+            models.Index(fields=["seller", "country_code", "created_at"]),
+            models.Index(fields=["viewer_key", "created_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "viewer_key", "dedupe_bucket", "source"],
+                name="uniq_product_view_event_bucket",
+            ),
+        ]
+
+    def __str__(self):
+        return f"product_view:{self.product_id}:{self.viewer_key}:{self.dedupe_bucket.isoformat()}"
+
+
 def _listing_request_upload_to(instance, filename: str) -> str:
     folder = getattr(getattr(instance, "listing_request", None), "folder_uuid", None) or getattr(instance, "folder_uuid", None) or uuid4()
     return f"listing_requests/{folder}/{filename}"

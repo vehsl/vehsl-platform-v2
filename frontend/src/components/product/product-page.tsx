@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { fetchJsonAuthed } from "@/lib/api";
+import { authedFetch, fetchJsonAuthed } from "@/lib/api";
 import { safeJsonParse, fmtMoney as fmtMoneyUtil } from "@/lib/utils";
 import { useCart } from "@/components/product/cart-context";
 import { useLanguage } from "@/context/language";
@@ -120,6 +120,24 @@ function fmtBytes(bytes: number) {
   return `${Math.round(n)} B`;
 }
 
+const PRODUCT_VIEW_CLIENT_ID_KEY = "vehsl.product-view-client-id";
+
+function getProductViewClientId() {
+  if (typeof window === "undefined") return "";
+  try {
+    const existing = window.localStorage.getItem(PRODUCT_VIEW_CLIENT_ID_KEY);
+    if (existing && existing.trim()) return existing.trim();
+    const next =
+      typeof window.crypto !== "undefined" && typeof window.crypto.randomUUID === "function"
+        ? window.crypto.randomUUID()
+        : `pv-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    window.localStorage.setItem(PRODUCT_VIEW_CLIENT_ID_KEY, next);
+    return next;
+  } catch {
+    return "";
+  }
+}
+
 export function ProductPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -153,6 +171,7 @@ export function ProductPage() {
   const [compareIds, setCompareIds] = useState<number[]>([]);
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareProducts, setCompareProducts] = useState<Product[]>([]);
+  const viewTrackedRef = useRef(false);
 
   const fulfillmentMode = useMemo(() => (product?.fulfillment_mode || "").toString().toLowerCase(), [product?.fulfillment_mode]);
   const isSellerStock = fulfillmentMode === "seller_stock";
@@ -188,6 +207,7 @@ export function ProductPage() {
   }, [fetchProduct]);
 
   useEffect(() => {
+    viewTrackedRef.current = false;
     setQty(1);
     setQtyDraft("1");
     setQtyEditing(false);
@@ -210,6 +230,105 @@ export function ProductPage() {
     setCompareLoading(false);
     setCompareProducts([]);
   }, [productId]);
+
+  useEffect(() => {
+    if (!productId || !product) return;
+    if (viewTrackedRef.current) return;
+    if (typeof document === "undefined") return;
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const schedule = () => {
+      if (cancelled || viewTrackedRef.current) return;
+      if (document.visibilityState !== "visible") return;
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        if (cancelled || viewTrackedRef.current) return;
+        const clientId = getProductViewClientId();
+        // #region debug-point B:frontend-track-start
+        fetch("http://127.0.0.1:7777/event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: "product-view-zero",
+            runId: "pre-fix",
+            hypothesisId: "B",
+            location: "product-page.tsx:246",
+            msg: "[DEBUG] product detail view tracking timer fired",
+            data: {
+              productId,
+              pathname: window.location.pathname,
+              visibilityState: document.visibilityState,
+              hasProduct: Boolean(product),
+              hasClientId: Boolean(clientId),
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        try {
+          const response = await authedFetch(`/api/v1/products/${productId}/view/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              client_id: clientId,
+              path: window.location.pathname,
+              referrer: document.referrer || "",
+              source: "product_detail",
+            }),
+          });
+          // #region debug-point B:frontend-track-response
+          response
+            .clone()
+            .json()
+            .catch(() => null)
+            .then((payload) =>
+              fetch("http://127.0.0.1:7777/event", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sessionId: "product-view-zero",
+                  runId: "pre-fix",
+                  hypothesisId: "B",
+                  location: "product-page.tsx:260",
+                  msg: "[DEBUG] product detail view tracking response",
+                  data: {
+                    productId,
+                    status: response.status,
+                    ok: response.ok,
+                    payload,
+                  },
+                  ts: Date.now(),
+                }),
+              }).catch(() => {}),
+            );
+          // #endregion
+          if (!response.ok) return;
+          viewTrackedRef.current = true;
+        } catch {}
+      }, 1500);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        schedule();
+        return;
+      }
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    schedule();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [product, productId]);
 
   useEffect(() => {
     if (!product) return;

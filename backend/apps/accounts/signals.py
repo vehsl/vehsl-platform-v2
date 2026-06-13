@@ -2,6 +2,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 from .command_center import invalidate_command_center_caches
+from .seller_trends import invalidate_seller_trends_caches
 from .models import BuyerProfile, SellerProfile, User, UserProfile
 
 
@@ -14,3 +15,4 @@ def ensure_profile(sender, instance: User, created: bool, **kwargs):
         elif instance.account_type == User.AccountType.SELLER:
             SellerProfile.objects.get_or_create(user=instance)
     invalidate_command_center_caches()
+    invalidate_seller_trends_caches()
