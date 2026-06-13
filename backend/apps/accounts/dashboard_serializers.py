@@ -280,10 +280,13 @@ class SellerTrendsOptionSerializer(serializers.Serializer):
 class SellerTrendsSummaryMetricsSerializer(serializers.Serializer):
     total_sales_value = serializers.FloatField()
     total_orders = serializers.IntegerField()
+    units_sold = serializers.IntegerField(required=False)
     total_views = serializers.IntegerField()
     active_sellers = serializers.IntegerField()
     avg_order_value = serializers.FloatField()
-    buy_rate = serializers.FloatField()
+    buy_rate = serializers.FloatField(required=False, allow_null=True)
+    views_source = serializers.CharField(required=False)
+    buy_rate_source = serializers.CharField(required=False)
 
 
 class SellerTrendsSummaryFiltersSerializer(serializers.Serializer):

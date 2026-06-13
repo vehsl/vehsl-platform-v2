@@ -26,10 +26,13 @@ export interface SellerTrendsSummary {
   metrics: {
     total_sales_value: number;
     total_orders: number;
+    units_sold: number;
     total_views: number;
     active_sellers: number;
     avg_order_value: number;
-    buy_rate: number;
+    buy_rate: number | null;
+    views_source: string;
+    buy_rate_source: string;
   };
   filters: {
     industry_options: SellerTrendsOption[];
@@ -323,10 +326,13 @@ function normalizeSummary(input: any): SellerTrendsSummary {
     metrics: {
       total_sales_value: coerceNumber(input?.metrics?.total_sales_value, 2),
       total_orders: coerceNumber(input?.metrics?.total_orders),
+      units_sold: coerceNumber(input?.metrics?.units_sold),
       total_views: coerceNumber(input?.metrics?.total_views),
       active_sellers: coerceNumber(input?.metrics?.active_sellers),
       avg_order_value: coerceNumber(input?.metrics?.avg_order_value, 2),
-      buy_rate: coerceNumber(input?.metrics?.buy_rate, 1),
+      buy_rate: input?.metrics?.buy_rate == null ? null : coerceNumber(input?.metrics?.buy_rate, 1),
+      views_source: String(input?.metrics?.views_source || "unavailable"),
+      buy_rate_source: String(input?.metrics?.buy_rate_source || "unavailable"),
     },
     filters: {
       industry_options: Array.isArray(input?.filters?.industry_options) ? input.filters.industry_options : [],

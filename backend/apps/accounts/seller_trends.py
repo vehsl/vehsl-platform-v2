@@ -285,7 +285,7 @@ def _range_labels(period: str, now, start_curr) -> list[tuple[str, timezone.date
         labels = []
         for idx in range(6, -1, -1):
             point = now - timedelta(hours=idx * 4)
-            labels.append((point.strftime("%H:%M"), point))
+            labels.append((point.strftime("%d %H:%M"), point))
         return labels
     if normalized == "120d":
         labels = []
@@ -314,7 +314,7 @@ def _bucket_label_for_datetime(period: str, created_at, now, start_curr) -> str:
         diff = max(0.0, (now - created_at).total_seconds())
         slot = min(6, int(diff // (4 * 3600)))
         point = now - timedelta(hours=slot * 4)
-        return point.strftime("%H:%M")
+        return point.strftime("%d %H:%M")
     if normalized == "120d":
         diff_days = max(0, (created_at.date() - start_curr.date()).days)
         slot = min(6, max(0, diff_days // 20))
@@ -464,10 +464,11 @@ def build_trend_summary(
         search=(search or "").strip(),
     )
     total_orders = 0
+    units_sold = 0
     total_sales = 0.0
     total_views = 0
     active_sellers: set[int] = set()
-    current_products: dict[int, int] = {}
+    order_ids: set[int] = set()
     for item in items_qs.iterator(chunk_size=500):
         order = item.order
         if not order.created_at or order.created_at < start_curr:
@@ -477,18 +478,20 @@ def build_trend_summary(
         if selected_country != "all" and order_country != selected_country:
             continue
         qty = _safe_int(item.quantity)
-        total_orders += qty
+        units_sold += qty
         total_sales += _safe_float(item.unit_price) * qty
+        order_ids.add(int(order.id))
         active_sellers.add(int(order.seller_id))
-        current_products[int(item.product_id)] = current_products.get(int(item.product_id), 0) + qty
-    for product_id, qty in current_products.items():
-        total_views += max(qty * (12 + (product_id % 7)) + (product_id % 300), qty)
+    total_orders = len(order_ids)
     industries, countries = _filter_options_payload(seller=seller)
+    warnings = [
+        "Product view telemetry is not implemented in the current backend, so total views and buy rate are hidden until real tracking is added."
+    ]
     return {
         "period": normalized,
         "generated_at": now,
         "is_partial": False,
-        "warnings": [],
+        "warnings": warnings,
         "data_sources": [
             "orders",
             "order_items",
@@ -499,10 +502,13 @@ def build_trend_summary(
         "metrics": {
             "total_sales_value": round(total_sales, 2),
             "total_orders": int(total_orders),
+            "units_sold": int(units_sold),
             "total_views": int(total_views),
             "active_sellers": int(len(active_sellers)),
             "avg_order_value": round(total_sales / max(total_orders, 1), 2),
-            "buy_rate": round((total_orders / max(total_views, 1)) * 100.0, 1),
+            "buy_rate": None,
+            "views_source": "unavailable",
+            "buy_rate_source": "unavailable_without_view_telemetry",
         },
         "filters": {
             "industry_options": industries,
@@ -598,9 +604,9 @@ def build_trend_products(
         prev_qty = _safe_int(data["prev_qty"])
         if curr_qty <= 0 and prev_qty <= 0:
             continue
-        change = int(round(((curr_qty - prev_qty) / max(prev_qty, 1)) * 100))
+        change = 0 if prev_qty <= 0 else int(round(((curr_qty - prev_qty) / max(prev_qty, 1)) * 100))
         avg_price = round(data["sum_price"] / max(data["sum_qty"], 1), 2)
-        views = max(curr_qty * (12 + (product_id % 7)) + (product_id % 300), curr_qty)
+        views = 0
         keywords: list[str] = []
         for token in tokenize_keywords(product.name):
             if token not in keywords:
@@ -638,10 +644,11 @@ def build_trend_products(
                     "day": label_key,
                     "orders": label_orders,
                     "revenue": label_revenue,
-                    "views": max(label_orders * 3 + (product_id % 30), label_orders),
+                    "views": 0,
                 }
             )
             sparkline.append(label_orders)
+        badge = "new" if prev_qty <= 0 and curr_qty > 0 else _badge_for(curr_qty, change)
         rows.append(
             {
                 "id": f"tp{product_id}",
@@ -662,7 +669,7 @@ def build_trend_products(
                 "popularityScore": max(0, min(100, int(25 + min(curr_qty, 2000) / 25 + max(change, -50) / 2))),
                 "change": change,
                 "change_pct": change,
-                "badge": _badge_for(curr_qty, change),
+                "badge": badge,
                 "sparkline": sparkline or [0] * 7,
                 "orders7d": curr_qty,
                 "orders": curr_qty,
@@ -681,7 +688,7 @@ def build_trend_products(
                 "weekly_data": weekly_data,
                 "sellers": int(len(data.get("sellers") or [])),
                 "seller_count": int(len(data.get("sellers") or [])),
-                "views_source": "derived",
+                "views_source": "unavailable",
                 "path": f"/admin/management/listings?product_id={product_id}",
             }
         )

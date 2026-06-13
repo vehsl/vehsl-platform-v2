@@ -413,9 +413,13 @@ class AdminSellerTrendsTests(TestCase):
         self.assertEqual(reels.status_code, 200)
 
         self.assertEqual(summary.data["period"], "7d")
-        self.assertEqual(summary.data["metrics"]["total_orders"], 9)
+        self.assertEqual(summary.data["metrics"]["total_orders"], 3)
+        self.assertEqual(summary.data["metrics"]["units_sold"], 9)
+        self.assertEqual(summary.data["metrics"]["total_views"], 0)
         self.assertEqual(summary.data["metrics"]["active_sellers"], 2)
         self.assertGreater(summary.data["metrics"]["total_sales_value"], 350)
+        self.assertIsNone(summary.data["metrics"]["buy_rate"])
+        self.assertEqual(summary.data["metrics"]["views_source"], "unavailable")
         self.assertTrue(summary.data["filters"]["industry_options"])
         self.assertTrue(summary.data["filters"]["country_options"])
 
@@ -425,7 +429,7 @@ class AdminSellerTrendsTests(TestCase):
         self.assertEqual(products.data["results"][0]["orders7d"], 7)
         self.assertGreater(products.data["results"][0]["revenue7d"], 170)
         self.assertEqual(products.data["results"][0]["topMarkets"][0]["code"], "pk")
-        self.assertEqual(products.data["results"][0]["views_source"], "derived")
+        self.assertEqual(products.data["results"][0]["views_source"], "unavailable")
         self.assertEqual(products.data["results"][0]["seller_count"], 1)
         self.assertEqual(products.data["results"][0]["change_pct"], products.data["results"][0]["change"])
         self.assertEqual(revenue_sorted_products.data["results"][0]["name"], "Smart LED Panel Light")
@@ -465,7 +469,8 @@ class AdminSellerTrendsTests(TestCase):
 
         updated_summary = self.client.get("/api/v1/admin/seller-trends/summary?period=7d")
         self.assertEqual(updated_summary.status_code, 200)
-        self.assertEqual(updated_summary.data["metrics"]["total_orders"], 12)
+        self.assertEqual(updated_summary.data["metrics"]["total_orders"], 4)
+        self.assertEqual(updated_summary.data["metrics"]["units_sold"], 12)
 
     def test_admin_seller_trends_supports_offset_pagination(self):
         response = self.client.get("/api/v1/admin/seller-trends/keywords?period=7d&page_size=1&offset=1")

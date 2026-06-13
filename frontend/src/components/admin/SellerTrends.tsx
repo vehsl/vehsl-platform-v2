@@ -334,9 +334,6 @@ export function SellerTrends() {
           <p className="text-[0.8125rem] text-muted-foreground">Real ops-manager analytics for products, sellers, keywords, and video content.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {summary?.data_sources?.length ? (
-            <div className="rounded-full bg-muted/30 px-3 py-1 text-[0.6875rem] text-muted-foreground">Sources: {summary.data_sources.join(", ")}</div>
-          ) : null}
           <BounceButton onClick={refresh} className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-card px-3.5 py-2 text-[0.8125rem] text-foreground">
             <RefreshCw size={14} /> Refresh
           </BounceButton>
@@ -344,7 +341,6 @@ export function SellerTrends() {
       </div>
 
       {summaryError ? <ErrorState message={summaryError} /> : null}
-      {summary?.warnings?.length ? <ErrorState message={summary.warnings.join(" ")} /> : null}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <BigStat
@@ -359,14 +355,18 @@ export function SellerTrends() {
           iconBg="bg-[#0171E3]/10"
           label="Total Orders"
           value={summaryLoading && !hero ? "..." : formatNum(hero?.total_orders || 0)}
-          sub={`Across ${formatNum(hero?.active_sellers || 0)} active sellers`}
+          sub={`${formatNum(hero?.units_sold || 0)} units sold across ${formatNum(hero?.active_sellers || 0)} active sellers`}
         />
         <BigStat
           icon={<Eye size={22} className="text-[#D97706]" />}
           iconBg="bg-[#FFB224]/10"
           label="Total Views"
           value={summaryLoading && !hero ? "..." : formatNum(hero?.total_views || 0)}
-          sub={`${(hero?.buy_rate || 0).toFixed(1)}% buy rate, ${products[0]?.views_source || "derived"} views`}
+          sub={
+            hero?.buy_rate == null
+              ? `Unavailable until real product view telemetry is implemented`
+              : `${hero.buy_rate.toFixed(1)}% buy rate, ${hero?.views_source || "unavailable"} views`
+          }
         />
         <BigStat
           icon={<Users size={22} className="text-[#E5484D]" />}
