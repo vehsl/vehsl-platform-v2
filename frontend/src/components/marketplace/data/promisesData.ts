@@ -10,7 +10,7 @@ export interface PromiseItem {
 export const promisesData: PromiseItem[] = [
   {
     id: "sellers-verified",
-    imageUrl: "",
+    imageUrl: "/marketing/promises/sellers-verified.png",
     titleEn: "100% Sellers verified.",
     titleZh: "100% 卖家已认证。",
     descriptionEn:
@@ -21,7 +21,7 @@ export const promisesData: PromiseItem[] = [
 
   {
     id: "manufacturing-visit",
-    imageUrl: "",
+    imageUrl: "/marketing/promises/manufacturing-visit.png",
     titleEn: "Each manufacturing unit is visited.",
     titleZh: "实地探访每个制造工厂。",
     descriptionEn:
@@ -32,7 +32,7 @@ export const promisesData: PromiseItem[] = [
 
   {
     id: "payment-protection",
-    imageUrl: "",
+    imageUrl: "/marketing/promises/payment-protection.png",
     titleEn: "Each Payment and product is protected.",
     titleZh: "每一笔付款与商品都受保护。",
     descriptionEn:
@@ -43,7 +43,7 @@ export const promisesData: PromiseItem[] = [
 
   {
     id: "customer-support",
-    imageUrl: "",
+    imageUrl: "/marketing/promises/customer-support.png",
     titleEn: "Questions at midnight? No problem. Our team is always online.",
     titleZh: "半夜有疑问？没问题。我们的团队始终在线。",
     descriptionEn:
@@ -54,7 +54,7 @@ export const promisesData: PromiseItem[] = [
 
   {
     id: "buyer-kyc-verified",
-    imageUrl: "",
+    imageUrl: "/marketing/promises/buyer-kyc-verified.png",
     titleEn: "Buyer KYC Verified.",
     titleZh: "买家 KYC 已验证。",
     descriptionEn:

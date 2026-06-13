@@ -13,6 +13,7 @@ export function PromisesSection() {
   const [canScrollRight, setCanScrollRight] = useState(true);
   const [needsScroll, setNeedsScroll] = useState(false);
   const [items, setItems] = useState<PromiseItem[]>(promisesData);
+  const fallbackById = new Map(promisesData.map((item) => [item.id, item]));
 
   const updateScrollState = () => {
     const el = scrollRef.current;
@@ -41,13 +42,14 @@ export function PromisesSection() {
         const mapped: PromiseItem[] = rows
           .map((r: any) => {
             const id = String(r?.id || "").trim();
+            const fallback = fallbackById.get(id);
             return {
               id,
-              imageUrl: String(r?.image_url || r?.imageUrl || "").trim(),
-              titleEn: String(r?.title_en || r?.titleEn || "").trim(),
-              titleZh: String(r?.title_zh || r?.titleZh || "").trim(),
-              descriptionEn: String(r?.description_en || r?.descriptionEn || "").trim(),
-              descriptionZh: String(r?.description_zh || r?.descriptionZh || "").trim(),
+              imageUrl: String(r?.image_url || r?.imageUrl || fallback?.imageUrl || "").trim(),
+              titleEn: String(r?.title_en || r?.titleEn || fallback?.titleEn || "").trim(),
+              titleZh: String(r?.title_zh || r?.titleZh || fallback?.titleZh || "").trim(),
+              descriptionEn: String(r?.description_en || r?.descriptionEn || fallback?.descriptionEn || "").trim(),
+              descriptionZh: String(r?.description_zh || r?.descriptionZh || fallback?.descriptionZh || "").trim(),
             };
           })
           .filter((x: PromiseItem) => x.id && x.titleEn);

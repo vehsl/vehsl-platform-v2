@@ -99,6 +99,7 @@ from .dashboard_serializers import (
     WarehouseReleaseRequestSerializer,
     WarehouseReleaseRecordSerializer,
 )
+from .command_center import build_command_center_summary, normalize_command_center_period
 from .admin_utils import AdminPageNumberPagination, response_list
 
 SERVER_BUILD = os.environ.get("VEHSL_SERVER_BUILD") or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -1998,6 +1999,14 @@ class AdminPlatformOverviewView(APIView):
         }
         cache.set(cache_key, payload, timeout=ttl)
         return Response(payload)
+
+
+class AdminCommandCenterView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        period = normalize_command_center_period(request.query_params.get("period"))
+        return Response(build_command_center_summary(period))
 
 
 class EmailVerificationRequestView(APIView):

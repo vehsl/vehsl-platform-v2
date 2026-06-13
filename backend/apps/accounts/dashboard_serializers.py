@@ -191,3 +191,79 @@ class WarehouseReleaseRecordSerializer(serializers.Serializer):
     payment_amount = serializers.FloatField()
     date = serializers.CharField()
     status = serializers.CharField()
+
+
+class CommandCenterMetaSerializer(serializers.Serializer):
+    period = serializers.CharField()
+    generated_at = serializers.DateTimeField()
+    last_updated = serializers.DateTimeField()
+    cache_ttl_seconds = serializers.IntegerField()
+    generated_from_cache = serializers.BooleanField()
+    is_partial = serializers.BooleanField()
+    warnings = serializers.ListField(child=serializers.CharField(), required=False)
+    data_sources = serializers.ListField(child=serializers.CharField(), required=False)
+    paths = serializers.DictField(child=serializers.CharField())
+
+
+class CommandCenterActiveOrdersSerializer(serializers.Serializer):
+    snapshot_total = serializers.IntegerField()
+    snapshot_b2b = serializers.IntegerField()
+    snapshot_b2c = serializers.IntegerField()
+    sparkline = serializers.ListField(child=serializers.IntegerField(), required=False)
+    path = serializers.CharField()
+
+
+class CommandCenterQualityScoreSerializer(serializers.Serializer):
+    total = serializers.FloatField()
+    pass_rate = serializers.FloatField()
+    pending = serializers.IntegerField()
+    inspections = serializers.IntegerField()
+    delta = serializers.FloatField()
+    sparkline = serializers.ListField(child=serializers.FloatField(), required=False)
+    path = serializers.CharField()
+
+
+class CommandCenterUsersOnlineSerializer(serializers.Serializer):
+    snapshot_total = serializers.IntegerField()
+    snapshot_buyers = serializers.IntegerField()
+    snapshot_sellers = serializers.IntegerField()
+    snapshot_workers = serializers.IntegerField()
+    sparkline = serializers.ListField(child=serializers.IntegerField(), required=False)
+    path = serializers.CharField()
+
+
+class CommandCenterShipmentsSerializer(serializers.Serializer):
+    total = serializers.IntegerField()
+    on_time_rate = serializers.FloatField()
+    delta = serializers.FloatField()
+    path = serializers.CharField()
+
+
+class CommandCenterHeroSerializer(serializers.Serializer):
+    active_orders = CommandCenterActiveOrdersSerializer()
+    quality_score = CommandCenterQualityScoreSerializer()
+    users_online = CommandCenterUsersOnlineSerializer()
+    shipments_in_transit = CommandCenterShipmentsSerializer()
+
+
+class CommandCenterPipelineItemSerializer(serializers.Serializer):
+    key = serializers.CharField()
+    label = serializers.CharField()
+    count = serializers.IntegerField()
+    path = serializers.CharField()
+
+
+class CommandCenterPipelineSerializer(serializers.Serializer):
+    total = serializers.IntegerField()
+    items = CommandCenterPipelineItemSerializer(many=True)
+
+
+class CommandCenterPipelinesSerializer(serializers.Serializer):
+    listings = CommandCenterPipelineSerializer()
+    orders = CommandCenterPipelineSerializer()
+
+
+class CommandCenterSummarySerializer(serializers.Serializer):
+    meta = CommandCenterMetaSerializer()
+    hero = CommandCenterHeroSerializer()
+    pipelines = CommandCenterPipelinesSerializer()
