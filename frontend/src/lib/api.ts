@@ -55,6 +55,24 @@ function clearAuthTokens() {
     } catch {}
 }
 
+async function getAuthFailureDetail(res: Response) {
+    try {
+        const data = await res.clone().json();
+        return (data?.detail || '').toString();
+    } catch {
+        try {
+            return await res.clone().text();
+        } catch {
+            return '';
+        }
+    }
+}
+
+function requiresInteractiveAdminAuth(detail: string) {
+    const v = (detail || '').toLowerCase();
+    return v.includes('two-factor authentication required') || v.includes('access restricted by ip whitelist');
+}
+
 async function refreshAccessToken(base: string, refresh: string) {
     if (!refresh) return '';
     try {
@@ -92,6 +110,9 @@ export async function authedFetch(input: RequestInfo | URL, init?: RequestInit) 
     let res = await doFetch(access);
     if (res.status !== 401) return res;
 
+    const firstDetail = await getAuthFailureDetail(res);
+    if (requiresInteractiveAdminAuth(firstDetail)) return res;
+
     const nextAccess = typeof window !== 'undefined' ? await refreshAccessToken(base, refresh) : '';
     if (!nextAccess) {
         if (typeof window !== 'undefined') {
@@ -110,6 +131,10 @@ export async function authedFetch(input: RequestInfo | URL, init?: RequestInit) 
 export async function fetchJsonAuthed(path: string, init?: RequestInit) {
     const res = await authedFetch(path, init);
     if (res.status === 401) {
+        const detail = await getAuthFailureDetail(res);
+        if (requiresInteractiveAdminAuth(detail)) {
+            throw new Error(detail || 'Additional authentication is required.');
+        }
         if (typeof window !== 'undefined') {
             try {
                 window.location.assign('/?signin=1');

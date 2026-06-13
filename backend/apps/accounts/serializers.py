@@ -997,6 +997,10 @@ class VehslTokenObtainPairSerializer(TokenObtainPairSerializer):
             if not ok:
                 raise serializers.ValidationError({"detail": "Invalid OTP.", "otp_required": True})
 
+        now = timezone.now()
+        User.objects.filter(pk=user.pk).update(last_login=now)
+        user.last_login = now
+
         refresh = self.get_token(user)
         return {
             "refresh": str(refresh),

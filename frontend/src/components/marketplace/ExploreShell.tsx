@@ -320,7 +320,6 @@ function ProfileMenu({
     </div>
   );
 }
-
 function StickyNav({
   visible,
   activeId,
@@ -343,32 +342,65 @@ function StickyNav({
   authed: boolean;
 }) {
   const { language } = useLanguage();
+
+  const categoryRefs = useRef<
+    Record<string, HTMLButtonElement | null>
+  >({});
+
+  useEffect(() => {
+    if (activeId && categoryRefs.current[activeId]) {
+      categoryRefs.current[activeId]?.scrollIntoView({
+        behavior: "smooth",
+        inline: "center",
+        block: "nearest",
+      });
+    }
+  }, [activeId]);
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: -8 }}
-      animate={visible ? { opacity: 1, y: 0 } : { opacity: 0, y: -8 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
+      initial={{ opacity: 0, y: -10 }}
+      animate={
+        visible
+          ? { opacity: 1, y: 0 }
+          : { opacity: 0, y: -10 }
+      }
+      transition={{ duration: 0.25, ease: "easeOut" }}
       className={cn(
-        "fixed inset-x-0 top-0 z-50 border-b border-white/50 bg-white/80 backdrop-blur-xl",
-        !visible && "pointer-events-none",
+        "fixed left-1/2 top-4 z-50 w-[95%] max-w-6xl -translate-x-1/2 rounded-2xl border border-white/50 bg-white/80 shadow-lg backdrop-blur-xl",
+        !visible && "pointer-events-none"
       )}
     >
-      <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3 sm:px-6">
-        <div className="text-sm font-semibold tracking-tight text-[#0f1115]">Vehsl</div>
-        <div className="h-5 w-px bg-black/10" />
+      <div className="flex items-center gap-4 px-4 py-3 sm:px-6">
+        {/* Logo */}
+        <div className="shrink-0 text-sm font-semibold tracking-tight text-[#0f1115]">
+          Vehsl
+        </div>
 
-        <div className="hidden flex-1 items-center gap-2 overflow-x-auto md:flex">
+        <div className="h-5 w-px shrink-0 bg-black/10" />
+
+        {/* Categories */}
+        <div className="hidden flex-1 items-center gap-2 overflow-x-auto scrollbar-hide md:flex">
           {categories.map((c) => {
             const isActive = c.id === activeId;
-            const label = language === "zh" ? c.nameZh || c.name : c.name;
+            const label =
+              language === "zh"
+                ? c.nameZh || c.name
+                : c.name;
+
             return (
               <button
                 key={c.id}
+                ref={(el) => {
+                  categoryRefs.current[c.id] = el;
+                }}
                 type="button"
                 onClick={() => onJump(c.id)}
                 className={cn(
-                  "whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium transition",
-                  isActive ? "bg-orange-500 text-white" : "text-[#1f2330] hover:text-black",
+                  "whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium transition-all duration-200",
+                  isActive
+                    ? "bg-orange-500 text-white shadow-sm"
+                    : "text-[#1f2330] hover:bg-black/5 hover:text-black"
                 )}
               >
                 {label}
@@ -377,16 +409,22 @@ function StickyNav({
           })}
         </div>
 
+        {/* Right Actions */}
         <div className="ml-auto flex items-center gap-2">
           <LanguageToggle className="h-10" />
+
           <button
             type="button"
             onClick={onSearch}
             className="flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
             aria-label="Search"
           >
-            <Search className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
+            <Search
+              className="h-5 w-5 text-[#1f2330]"
+              strokeWidth={1.5}
+            />
           </button>
+
           {authed ? (
             <>
               <Link
@@ -394,21 +432,33 @@ function StickyNav({
                 className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/60 bg-white/70 shadow-soft backdrop-blur-xl transition hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0071e3]/30"
                 aria-label="Cart"
               >
-                <ShoppingCart className="h-5 w-5 text-[#1f2330]" strokeWidth={1.5} />
-                {totalQuantity > 0 ? (
-                  <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#0071e3] text-white text-[11px] font-bold flex items-center justify-center">
-                    {totalQuantity > 99 ? "99+" : totalQuantity}
+                <ShoppingCart
+                  className="h-5 w-5 text-[#1f2330]"
+                  strokeWidth={1.5}
+                />
+
+                {totalQuantity > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[#0071e3] px-1 text-[11px] font-bold text-white">
+                    {totalQuantity > 99
+                      ? "99+"
+                      : totalQuantity}
                   </span>
-                ) : null}
+                )}
               </Link>
-              <ProfileMenu onProfileSettings={onProfileSettings} onLogout={onLogout} />
+
+              <ProfileMenu
+                onProfileSettings={onProfileSettings}
+                onLogout={onLogout}
+              />
             </>
           ) : (
             <Link
               href="/?signin=1"
-              className="inline-flex h-10 items-center justify-center rounded-full bg-black px-4 text-[12px] font-semibold text-white hover:bg-black/90"
+              className="inline-flex h-10 items-center justify-center rounded-full bg-black px-4 text-[12px] font-semibold text-white transition hover:bg-black/90"
             >
-              {language === "zh" ? "登录" : "Sign in"}
+              {language === "zh"
+                ? "登录"
+                : "Sign in"}
             </Link>
           )}
         </div>
@@ -416,6 +466,7 @@ function StickyNav({
     </motion.div>
   );
 }
+
 
 export function ExploreShell() {
   const { language } = useLanguage();
